@@ -72,7 +72,7 @@ main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 72
 .section-heading h2 { margin: 0 0 5px; font-size: 1.25rem; }
 .section-heading p { margin: 0; color: var(--muted); line-height: 1.5; }
 .step-number { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; flex: 0 0 auto; color: white; background: var(--purple); font-weight: 800; font-size: .8rem; }
-.selector-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.selector-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 label { color: #3e374e; font-weight: 700; font-size: .78rem; }
 select { width: 100%; margin-top: 7px; padding: 0 12px; border: 1px solid var(--border); border-radius: 11px; background: white; color: #171426; }
 select:disabled { opacity: .75; }

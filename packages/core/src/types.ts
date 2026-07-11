@@ -1,4 +1,5 @@
 export type JurisdictionCode = 'AR' | 'US';
+export type FounderResidency = 'local' | 'foreign';
 
 export type IsoDate = string;
 export type IsoDateTime = string;

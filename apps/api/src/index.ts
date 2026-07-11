@@ -14,6 +14,7 @@ if (process.env.NODE_ENV === 'production' && !apiKey) {
 const store = new TaxProfileStore();
 const argentinaErp = new ContabiliumSandboxProvider(null);
 const jurisdictionSchema = z.enum(['AR', 'US']);
+const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
   profileId: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -51,7 +52,8 @@ export const server = Bun.serve({
       if (request.method === 'GET' && url.pathname === '/v1/snapshots/demo') {
         const jurisdiction = jurisdictionSchema.parse(url.searchParams.get('jurisdiction') ?? 'AR');
         const regimeId = url.searchParams.get('regime') ?? undefined;
-        return applyCors(json({ data: await demoSnapshot(jurisdiction, regimeId) }), request);
+        const founderResidency = founderResidencySchema.parse(url.searchParams.get('founderResidency') ?? 'foreign');
+        return applyCors(json({ data: await demoSnapshot(jurisdiction, regimeId, founderResidency) }), request);
       }
       if (request.method === 'GET' && url.pathname === '/v1/providers/argentina-erp') {
         const tenantId = url.searchParams.get('tenantId') ?? 'unconfigured';
@@ -82,7 +84,9 @@ export const server = Bun.serve({
         const body = z.object({ workspaceId: z.string().min(1), jurisdiction: jurisdictionSchema }).strict().parse(await request.json());
         const persisted = store.get(body.workspaceId);
         const expectedJurisdiction = persisted?.jurisdiction ?? body.jurisdiction;
-        const snapshot = await demoSnapshot(expectedJurisdiction, persisted?.regimeId);
+        const persistedFounderResidency = persisted?.answers.find(answer => answer.questionId === 'founder_residency')?.value;
+        const founderResidency = persistedFounderResidency === 'local' ? 'local' : 'foreign';
+        const snapshot = await demoSnapshot(expectedJurisdiction, persisted?.regimeId, founderResidency);
         return applyCors(json({
           data: persisted ? { ...snapshot, workspaceId: body.workspaceId, profile: persisted } : snapshot,
           limitations: persisted ? ['Demo evidence adapters are active; connect production adapters before relying on calculations.'] : ['No confirmed profile exists; demo profile and evidence are shown.'],

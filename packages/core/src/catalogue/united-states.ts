@@ -50,7 +50,11 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
       const memberCount = answerMap.get('member_count');
       if (typeof memberCount !== 'number' || memberCount < 1) missing.push('member_count');
     }
-    return [...new Set(missing)].map(question => `MISSING_${question.toUpperCase()}`);
+    const errors = [...new Set(missing)].map(question => `MISSING_${question.toUpperCase()}`);
+    if (profile.regimeId === 's_corp' && answerMap.get('founder_residency') === 'foreign') {
+      errors.push('S_CORP_FOREIGN_OWNER_NEEDS_PROFESSIONAL_REVIEW');
+    }
+    return errors;
   }
 
   buildObligations({ profile, period }: WorkflowBuildContext): readonly TaxObligation[] {

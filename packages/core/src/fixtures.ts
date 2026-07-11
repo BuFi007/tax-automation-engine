@@ -2,7 +2,7 @@ import { hashScope } from './consent';
 import type { StaticAdapterInput } from './evidence';
 import { StaticEvidenceAdapter, TaxEvidenceResolver } from './evidence';
 import { buildTaxWidgetSnapshot } from './snapshot';
-import type { JurisdictionCode, TaxConsentGrant, TaxProfile } from './types';
+import type { FounderResidency, JurisdictionCode, TaxConsentGrant, TaxProfile } from './types';
 
 const PERIOD = { start: '2026-01-01', end: '2026-12-31' } as const;
 const AS_OF = '2026-07-10T12:00:00.000Z';
@@ -56,7 +56,7 @@ export function unitedStatesProfile(): TaxProfile {
   };
 }
 
-export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regimeId?: string) {
+export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regimeId?: string, founderResidency: FounderResidency = 'foreign') {
   const sourceIds = ['bufi-ledger', 'quickbooks', 'magic-inbox', 'knowledge-graph', 'financial-analytics'];
   const consent: TaxConsentGrant = {
     purpose: 'tax_workspace_processing',
@@ -77,15 +77,14 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regime
     asOf: AS_OF,
     dataScope: { mode: 'all_connected' },
   });
-  const profile = demoProfile(jurisdiction, regimeId);
+  const profile = demoProfile(jurisdiction, regimeId, founderResidency);
   return buildTaxWidgetSnapshot({ workspaceId: 'workspace:demo', profile, evidence });
 }
 
-function demoProfile(jurisdiction: JurisdictionCode, regimeId?: string): TaxProfile {
+function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefined, founderResidency: FounderResidency): TaxProfile {
   const base = jurisdiction === 'AR' ? argentinaProfile() : unitedStatesProfile();
-  if (!regimeId || regimeId === base.regimeId) return base;
-
   if (jurisdiction === 'AR') {
+    if (!regimeId || regimeId === base.regimeId) return base;
     if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
     return {
       ...base,
@@ -95,17 +94,20 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId?: string): TaxProf
     };
   }
 
-  if (!['llc_multi_member', 's_corp', 'c_corp'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
-  const isCorporation = regimeId === 's_corp' || regimeId === 'c_corp';
+  const selectedRegimeId = regimeId ?? base.regimeId;
+  if (!['llc_single_member', 'llc_multi_member', 's_corp', 'c_corp'].includes(selectedRegimeId)) throw new Error('UNSUPPORTED_REGIME');
+  const isCorporation = selectedRegimeId === 's_corp' || selectedRegimeId === 'c_corp';
   return {
     ...base,
-    profileId: `profile:us-demo:${regimeId}`,
-    regimeId,
+    profileId: `profile:us-demo:${selectedRegimeId}:${founderResidency}`,
+    regimeId: selectedRegimeId,
     entityType: isCorporation ? 'corporation' : 'llc',
+    ownerDomicileCountries: [founderResidency === 'local' ? 'US' : 'AR'],
+    ownerTaxResidenceCountries: [founderResidency === 'local' ? 'US' : 'AR'],
     answers: base.answers.map(answer => {
-      if (answer.questionId === 'member_count') return { ...answer, value: regimeId === 'llc_multi_member' ? 2 : 1 };
-      if (answer.questionId === 'tax_classification') return { ...answer, value: regimeId };
-      if (answer.questionId === 'founder_residency' && regimeId === 's_corp') return { ...answer, value: 'local' };
+      if (answer.questionId === 'member_count') return { ...answer, value: selectedRegimeId === 'llc_multi_member' ? 2 : 1 };
+      if (answer.questionId === 'tax_classification') return { ...answer, value: selectedRegimeId };
+      if (answer.questionId === 'founder_residency') return { ...answer, value: founderResidency };
       return answer;
     }),
   };
