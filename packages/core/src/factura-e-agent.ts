@@ -279,7 +279,7 @@ export function validateFacturaEIntent(intent: FacturaEIntentV1, asOf: IsoDate):
   if (intent.operationType !== 2) errors.push('SERVICE_EXPORT_OPERATION_TYPE_REQUIRED');
   if (!/^[A-Z]{2}$/.test(intent.destinationCountry)) errors.push('DESTINATION_COUNTRY_INVALID');
   if (!Number.isInteger(intent.destinationCountryArcaCode) || intent.destinationCountryArcaCode <= 0) errors.push('DESTINATION_ARCA_CODE_INVALID');
-  if (!Number.isInteger(intent.pointOfSale) || intent.pointOfSale <= 0 || intent.pointOfSale > 99999) errors.push('EXPORT_POINT_OF_SALE_INVALID');
+  if (!Number.isInteger(intent.pointOfSale) || intent.pointOfSale <= 0 || intent.pointOfSale > 99998) errors.push('EXPORT_POINT_OF_SALE_INVALID');
   if (!isIsoDate(intent.issueDate) || !isIsoDate(intent.paymentDate) || !isIsoDate(asOf)) errors.push('INVOICE_DATE_INVALID');
   if (isIsoDate(intent.issueDate) && isIsoDate(intent.paymentDate) && intent.paymentDate < intent.issueDate) errors.push('PAYMENT_DATE_BEFORE_ISSUE_DATE');
   if (isIsoDate(intent.issueDate) && isIsoDate(asOf) && Math.abs(daysBetween(intent.issueDate, asOf)) > 5) errors.push('AUTHORIZATION_DATE_OUTSIDE_FIVE_DAY_WINDOW');
@@ -542,10 +542,11 @@ export function recordWsfexAuthorityResult(run: FacturaEAgentRunV1, input: Reado
   idempotencyKey: string;
 }>): Readonly<{ run: FacturaEAgentRunV1; event: FacturaEAgentEventV1 }> {
   if (run.issuancePath !== 'wsfex_delegated') throw new Error('WSFEX_PATH_REQUIRED');
-  if (!/^[1-9]\d{0,18}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
+  if (!/^[1-9]\d{0,14}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
   if (run.issuanceState !== 'ready_for_wsfex' && run.issuanceState !== 'submitted' && run.issuanceState !== 'ambiguous') throw new Error('WSFEX_SUBMISSION_NOT_READY');
   if (run.authority.requestId && run.authority.requestId !== input.requestId) throw new Error('WSFEX_RECOVERY_REQUEST_ID_MISMATCH');
   if (run.authority.payloadReferenceHash && run.authority.payloadReferenceHash !== input.payloadReferenceHash) throw new Error('WSFEX_RECOVERY_PAYLOAD_MISMATCH');
+  if (input.invoiceNumber && !/^[1-9]\d{0,7}$/.test(input.invoiceNumber)) throw new Error('WSFEX_INVOICE_NUMBER_INVALID');
   if (input.status === 'accepted' && (!input.cae || !input.invoiceNumber)) throw new Error('ACCEPTED_WSFEX_RESULT_INCOMPLETE');
   const issuanceState = input.status === 'accepted' ? 'arca_authorized' : input.status;
   const event = eventFor(run.runId, run.workspaceId, input.actorId, 'wsfex', `wsfex_${input.status}`, input.occurredAt, input.idempotencyKey, {
@@ -584,7 +585,7 @@ export function recordWsfexAdjustmentAuthorityResult(run: FacturaEAgentRunV1, in
   idempotencyKey: string;
 }>): Readonly<{ run: FacturaEAgentRunV1; event: FacturaEAgentEventV1 }> {
   if (run.issuancePath !== 'wsfex_delegated') throw new Error('WSFEX_PATH_REQUIRED');
-  if (!/^[1-9]\d{0,18}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
+  if (!/^[1-9]\d{0,14}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
   const adjustment = run.adjustments.find(candidate => candidate.adjustmentId === input.adjustmentId);
   if (!adjustment) throw new Error('ADJUSTMENT_NOT_FOUND');
   if (!['ready_for_wsfex', 'ambiguous'].includes(adjustment.issuanceState)) throw new Error('ADJUSTMENT_WSFEX_SUBMISSION_NOT_READY');
@@ -592,6 +593,7 @@ export function recordWsfexAdjustmentAuthorityResult(run: FacturaEAgentRunV1, in
   if (adjustment.authority.payloadReferenceHash && adjustment.authority.payloadReferenceHash !== input.payloadReferenceHash) {
     throw new Error('ADJUSTMENT_WSFEX_RECOVERY_PAYLOAD_MISMATCH');
   }
+  if (input.documentNumber && !/^[1-9]\d{0,7}$/.test(input.documentNumber)) throw new Error('WSFEX_INVOICE_NUMBER_INVALID');
   if (input.status === 'accepted' && (!input.cae || !input.documentNumber)) throw new Error('ACCEPTED_ADJUSTMENT_WSFEX_RESULT_INCOMPLETE');
   const issuanceState = input.status === 'accepted' ? 'arca_authorized' as const : input.status;
   const adjustments = run.adjustments.map(candidate => candidate.adjustmentId === adjustment.adjustmentId

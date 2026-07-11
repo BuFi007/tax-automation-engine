@@ -5,6 +5,16 @@ import { approveFacturaEAdjustment, approveFacturaEAdjustmentByAccountant, creat
 import { HttpWsfexGateway } from './wsfex';
 
 describe('HTTP WSFEX signer boundary', () => {
+  test('rejects request IDs larger than the WSFEX N15 field before transport', async () => {
+    const run = approvedRun();
+    const gateway = new HttpWsfexGateway(
+      { baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' },
+      async () => { throw new Error('transport must not run'); }
+    );
+    await expect(gateway.authorize({ run, requestId: '1000000000000000', authorityPayloadRef: 'vault://payload/too-large' }))
+      .rejects.toThrow('WSFEX_REQUEST_ID_INVALID');
+  });
+
   test('accepts a CAE only when the signer echoes the exact frozen document', async () => {
     const run = approvedRun();
     const gateway = new HttpWsfexGateway(

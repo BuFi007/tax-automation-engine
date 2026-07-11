@@ -6,7 +6,7 @@ import type { FacturaEAgentService } from './factura-e-agent';
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const decimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
 const signedDecimalSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/);
-const wsfexRequestIdSchema = z.string().regex(/^[1-9]\d{0,18}$/);
+const wsfexRequestIdSchema = z.string().regex(/^[1-9]\d{0,14}$/);
 const moneySchema = z.object({ decimal: decimalSchema, currency: z.string().regex(/^[A-Z]{3,10}$/) }).strict();
 const exchangeRateSchema = z.object({
   decimal: decimalSchema,
@@ -25,7 +25,7 @@ const intentSchema = z.object({
   destinationCountryArcaCode: z.number().int().positive(),
   documentType: z.literal(19),
   operationType: z.literal(2),
-  pointOfSale: z.number().int().positive().max(99999),
+  pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
   paymentDate: z.iso.date(),
   sameCurrencyPayment: z.boolean(),
@@ -49,7 +49,7 @@ const evidenceProposalSchema = z.object({
   foreignCustomerSafeLabel: z.string().min(1).max(160),
   destinationCountry: z.string().regex(/^[A-Z]{2}$/),
   destinationCountryArcaCode: z.number().int().positive(),
-  pointOfSale: z.number().int().positive().max(99999),
+  pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
   paymentDate: z.iso.date(),
   sameCurrencyPayment: z.boolean(),
@@ -154,24 +154,24 @@ export const FACTURA_E_AGENT_TOOLS = [
   }, 'user_interaction_required'),
   tool('tax_ar_factura_e_submit_wsfex', 'Submit the exact approved Path A intent through the isolated WSFEX signer boundary. Never invent a retry.', {
     type: 'object', required: ['runId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,18}$' }, authorityPayloadRef: { type: 'string' } },
+    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' } },
   }, 'prior_human_approval_required'),
   tool('tax_ar_factura_e_recover_wsfex', 'Recover an ambiguous WSFEX outcome using the same request ID and payload reference.', {
     type: 'object', required: ['runId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,18}$' }, authorityPayloadRef: { type: 'string' } },
+    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' } },
   }, 'automatic_after_ambiguity'),
   tool('tax_ar_factura_e_submit_adjustment_wsfex', 'Submit one exact approved export debit/credit note through the isolated WSFEX signer boundary.', {
     type: 'object', required: ['runId', 'adjustmentId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
     properties: {
       runId: { type: 'string', format: 'uuid' }, adjustmentId: { type: 'string' },
-      requestId: { type: 'string', pattern: '^[1-9]\\d{0,18}$' }, authorityPayloadRef: { type: 'string' },
+      requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' },
     },
   }, 'prior_human_approval_required'),
   tool('tax_ar_factura_e_recover_adjustment_wsfex', 'Recover an ambiguous export adjustment using the same adjustment, request ID, and payload reference.', {
     type: 'object', required: ['runId', 'adjustmentId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
     properties: {
       runId: { type: 'string', format: 'uuid' }, adjustmentId: { type: 'string' },
-      requestId: { type: 'string', pattern: '^[1-9]\\d{0,18}$' }, authorityPayloadRef: { type: 'string' },
+      requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' },
     },
   }, 'automatic_after_ambiguity'),
   tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence. This does not mark FX ingress or tax declaration verified.', {

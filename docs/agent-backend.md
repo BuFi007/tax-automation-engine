@@ -169,11 +169,11 @@ The API never stores a private key or raw WSFEX authentication fields. It calls 
 - a vault reference to the authority payload
 - safe expected fields: document type, operation type 2, point of sale, issue date, and total; notes also include the exact original type-19 association
 
-The signer service owns WSAA, certificate delegation, payload resolution, WSFEX SOAP calls, CAE validation, and safe response normalization.
+The isolated signer resolves the authority payload, obtains an ephemeral `wsfex` access ticket from a separate WSAA/certificate broker, performs the official SOAP calls, validates the CAE echo, and normalizes a safe response. Private keys and certificates never enter Motora or the signer process.
 
 An accepted signer response must echo an `authorizedDocument` containing the frozen invoice/adjustment hash, document/operation types, point of sale, issue date, currency, and exact total. Notes must echo their original Factura E association. Motora rejects the CAE if any field differs.
 
-The signer contract is specified in [`providers/wsfex/openapi.yaml`](../providers/wsfex/openapi.yaml), with operational invariants in [`providers/wsfex/README.md`](../providers/wsfex/README.md).
+The signer contract is specified in [`providers/wsfex/openapi.yaml`](../providers/wsfex/openapi.yaml), with operational invariants in [`providers/wsfex/README.md`](../providers/wsfex/README.md) and a deployable implementation in [`apps/wsfex-signer`](../apps/wsfex-signer/README.md).
 
 On network timeout or a 5xx response, the API records `ambiguous` and does not guess a retry. Recovery is allowed only with the same request ID and authority-payload reference. The signer must implement exact WSFEX replay plus `FEXGetCMP`, `FEXGetLast_CMP`, and `FEXGetLast_ID` reconciliation.
 
@@ -210,7 +210,7 @@ The shared workspace harness appends normalized connector evidence through `POST
 The code implements the agent orchestration, proof verification adapter, human gates, immutable audit trail, and signer contract. Live ARCA behavior still requires:
 
 1. reviewed Reclaim provider definitions and credentials;
-2. an authorized WSFEX homologation certificate and signer service for Path A;
+2. an authorized WSFEX homologation certificate, WSAA broker, delegated test identity, and active FEEWS point of sale for the implemented Path A signer;
 3. an approved encrypted proof-vault retention policy when durable proof custody is required;
 4. workspace identity replacing the bootstrap trusted-channel tokens;
 5. authorized end-to-end homologation and production smoke tests.

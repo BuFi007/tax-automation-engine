@@ -26,7 +26,7 @@ const invoiceDocumentSchema = z.object({
   intentHash: z.string().regex(/^[a-f0-9]{64}$/),
   documentType: z.literal(19),
   operationType: z.literal(2),
-  pointOfSale: z.number().int().positive().max(99999),
+  pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
   total: moneySchema,
 }).strict();
@@ -34,19 +34,19 @@ const adjustmentDocumentSchema = z.object({
   intentHash: z.string().regex(/^[a-f0-9]{64}$/),
   documentType: z.union([z.literal(20), z.literal(21)]),
   operationType: z.literal(2),
-  pointOfSale: z.number().int().positive().max(99999),
+  pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
   total: moneySchema,
   associatedDocument: z.object({
     documentType: z.literal(19),
-    pointOfSale: z.number().int().positive().max(99999),
-    invoiceNumber: z.string().regex(/^[1-9]\d*$/),
+    pointOfSale: z.number().int().positive().max(99998),
+    invoiceNumber: z.string().regex(/^[1-9]\d{0,7}$/),
   }).strict(),
 }).strict();
 const responseSchema = z.object({
   requestId: z.string().min(1),
   status: z.enum(['accepted', 'rejected', 'ambiguous']),
-  invoiceNumber: z.string().regex(/^[1-9]\d*$/).nullable(),
+  invoiceNumber: z.string().regex(/^[1-9]\d{0,7}$/).nullable(),
   cae: z.string().regex(/^\d{10,20}$/).nullable(),
   reprocessed: z.boolean().nullable(),
   authorizedDocument: z.union([invoiceDocumentSchema, adjustmentDocumentSchema]).nullable(),
@@ -92,7 +92,7 @@ export class HttpWsfexGateway implements WsfexGateway {
     adjustmentId: string | null = null
   ): Promise<WsfexAuthorityResult> {
     if (!input.run.intentHash || !input.run.intent) throw new Error('FROZEN_INTENT_REQUIRED');
-    if (!/^[1-9]\d{0,18}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
+    if (!/^[1-9]\d{0,14}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
     const adjustment = adjustmentId ? input.run.adjustments.find(candidate => candidate.adjustmentId === adjustmentId) : null;
     if (adjustmentId && !adjustment) throw new Error('ADJUSTMENT_NOT_FOUND');
     const intentHash = adjustment?.intentHash ?? input.run.intentHash;
