@@ -15,4 +15,9 @@ It must:
 9. Store immutable request/response hashes and safe ARCA errors/events.
 10. Run homologation acceptance tests before production credentials are enabled.
 
+The signer must also expose the bearer-protected redacted `/health` contract in
+the OpenAPI file. It may return only environment/version/readiness booleans—no
+certificate subject, serial, key material, WSAA token, CUIT, or authority payload.
+Motora probes it with `bun run homologation:probe-signer`.
+
 The Motora API rejects an accepted response if the request ID, subject ID, intent hash, type, operation, point of sale, issue date, currency, exact total, or associated original document differs. Invoice and adjustment recovery both reuse the exact request ID and opaque payload reference.

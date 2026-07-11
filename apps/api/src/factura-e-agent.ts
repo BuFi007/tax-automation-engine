@@ -33,6 +33,7 @@ import {
 
 import type { ReclaimGateway, ReclaimRequestResult } from './reclaim';
 import type { ReclaimProofVault } from './proof-vault';
+import { buildHomologationPreflight } from './homologation';
 import type { TaxProfileStore } from './store';
 import type { WsfexGateway } from './wsfex';
 
@@ -70,6 +71,10 @@ export class FacturaEAgentService {
         'finance_eligibility_stays_frozen_on_dispute_or_missing_evidence',
       ],
     };
+  }
+
+  homologationPreflight() {
+    return buildHomologationPreflight();
   }
 
   createRun(input: Readonly<{

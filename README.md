@@ -48,6 +48,16 @@ Open `http://localhost:5173`. The API listens on `http://localhost:4100` by defa
 bun run check
 ```
 
+The external ARCA acceptance gate is executable without exposing credentials:
+
+```bash
+bun run homologation:preflight
+bun run homologation:probe-signer
+bun run homologation:validate -- /absolute/path/to/redacted-evidence.json
+```
+
+See [ARCA homologation acceptance](providers/homologation/README.md). These commands keep production disabled and output only safe gate states, versions, and hashes.
+
 ## API surface
 
 - `GET /health`

@@ -37,6 +37,7 @@ Fetch `GET /v1/agent/tools` to receive OpenAI-compatible function definitions an
 
 | Tool | Effect | Gate |
 |---|---|---|
+| `tax_ar_homologation_get_preflight` | Returns redacted missing/unsafe external acceptance gates | Read-only; never exposes values or enables production |
 | `tax_ar_factura_e_create_case` | Creates an append-only case | Agent API key |
 | `tax_ar_factura_e_get_case` | Reads current state and next actions | Read-only |
 | `tax_ar_factura_e_list_cases` | Lists current workspace cases | Read-only |
@@ -215,3 +216,5 @@ The code implements the agent orchestration, proof verification adapter, human g
 5. authorized end-to-end homologation and production smoke tests.
 
 Until those external assets are configured and verified, the health endpoint reports the corresponding provider as `configuration_required`, and no production-compliance claim is made.
+
+Run `bun run homologation:preflight`, `bun run homologation:probe-signer`, and `bun run homologation:validate -- <redacted-evidence.json>` to execute the external acceptance gate. The command contract and safe evidence requirements are documented under [`providers/homologation`](../providers/homologation/README.md).

@@ -25,7 +25,7 @@ describe('Factura E agent HTTP tools', () => {
     const manifest = await route(service, options, 'GET', '/v1/agent/tools');
     expect(manifest.status).toBe(200);
     const manifestJson = await manifest.json() as any;
-    expect(manifestJson.data.tools).toHaveLength(16);
+    expect(manifestJson.data.tools).toHaveLength(17);
     expect(JSON.stringify(manifestJson)).not.toContain('approveIntent');
     const draftTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_factura_e_draft_intent');
     expect(draftTool.function.parameters.properties.intent.properties.documentType.const).toBe(19);
@@ -34,6 +34,9 @@ describe('Factura E agent HTTP tools', () => {
       'arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement',
     ]);
     expect(reclaimTool.function.parameters.properties.subjectId).toBeDefined();
+    const preflight = await invoke(service, options, 'tax_ar_homologation_get_preflight', 'read-homologation-preflight-1', {});
+    expect(preflight.data).toEqual(expect.objectContaining({ state: 'blocked', productionActivationAllowed: false }));
+    expect(JSON.stringify(preflight.data)).not.toContain('user-token-kept-outside-agent');
 
     const created = await invoke(service, options, 'tax_ar_factura_e_create_case', 'create-case-1', {
       runId, workspaceId, issuancePath: 'reclaim_copilot',
