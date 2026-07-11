@@ -1,4 +1,4 @@
-import type { JurisdictionCode } from '@tax-engine/core';
+import type { FounderResidency, JurisdictionCode } from '@tax-engine/core';
 
 const OPTIONS: Record<JurisdictionCode, readonly { value: string; label: string }[]> = {
   AR: [
@@ -14,10 +14,13 @@ const OPTIONS: Record<JurisdictionCode, readonly { value: string; label: string 
   ],
 };
 
-export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionChange }: {
+export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionChange, onRegimeChange, founderResidency = 'foreign', onFounderResidencyChange = () => undefined }: {
   jurisdiction: JurisdictionCode;
   selectedRegime: string;
   onJurisdictionChange: (jurisdiction: JurisdictionCode) => void;
+  onRegimeChange: (regimeId: string) => void;
+  founderResidency?: FounderResidency;
+  onFounderResidencyChange?: (founderResidency: FounderResidency) => void;
 }) {
   return (
     <section className="panel profile-panel" aria-labelledby="profile-heading">
@@ -38,10 +41,17 @@ export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionCh
         </label>
         <label>
           Confirmed regime
-          <select value={selectedRegime} disabled>
+          <select value={selectedRegime} onChange={event => onRegimeChange(event.target.value)}>
             {OPTIONS[jurisdiction].map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
+        {jurisdiction === 'US' && <label>
+          Founder domicile
+          <select value={founderResidency} onChange={event => onFounderResidencyChange(event.target.value as FounderResidency)}>
+            <option value="foreign">Foreign-domiciled founder</option>
+            <option value="local">U.S.-resident founder</option>
+          </select>
+        </label>}
       </div>
       <p className="privacy-note">The demo profile is confirmed locally. Production changes use optimistic versioning and an audit event.</p>
     </section>

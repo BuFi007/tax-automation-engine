@@ -1,10 +1,13 @@
-import { ArrowUpRight, Check, Clock3, LockKeyhole, UserRoundCheck } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowUpRight, Check, Clock3, LockKeyhole, UserRoundCheck, X } from 'lucide-react';
 
-import type { TaxWidgetSnapshotV1 } from '@tax-engine/core';
+import type { TaxObligation, TaxWidgetSnapshotV1 } from '@tax-engine/core';
 
 import { humanize } from './TaxWidget';
 
 export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 }) {
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+
   return (
     <section className="panel" aria-labelledby="journey-heading">
       <div className="section-heading">
@@ -16,8 +19,10 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
       </div>
 
       <div className="journey-list">
-        {snapshot.obligations.map(obligation => (
-          <article className="obligation-card" key={obligation.id}>
+        {snapshot.obligations.map(obligation => {
+          const reviewing = reviewingId === obligation.id;
+          const reviewPanelId = `manual-review-${obligation.id.replaceAll(':', '-')}`;
+          return <article className="obligation-card" key={obligation.id}>
             <div className="obligation-topline">
               <span className="obligation-category">{humanize(obligation.category)}</span>
               <span className={`source-state ${obligation.applicability === 'applicable' ? 'source-connected' : 'source-degraded'}`}>
@@ -32,17 +37,43 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
               <Lifecycle label="Submit" state={obligation.submissionState} icon={LockKeyhole} />
               <Lifecycle label="Satisfy" state={obligation.satisfactionState} icon={Check} />
             </div>
-            <button type="button" className="secondary-button" disabled={!obligation.actionId}>
-              Review manual action <ArrowUpRight aria-hidden="true" />
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!obligation.actionId}
+              aria-expanded={reviewing}
+              aria-controls={reviewPanelId}
+              onClick={() => setReviewingId(reviewing ? null : obligation.id)}
+            >
+              {reviewing ? 'Close review' : 'Review manual action'} {reviewing ? <X aria-hidden="true" /> : <ArrowUpRight aria-hidden="true" />}
             </button>
-          </article>
-        ))}
+            {reviewing && <ManualActionReview obligation={obligation} panelId={reviewPanelId} />}
+          </article>;
+        })}
       </div>
 
       <div className="execution-gate">
         <LockKeyhole aria-hidden="true" />
         <div><strong>Execution gate active</strong><p>No filing, payment, ARCA session, or IRS submission can run from this workspace.</p></div>
       </div>
+    </section>
+  );
+}
+
+export function ManualActionReview({ obligation, panelId }: { obligation: TaxObligation; panelId: string }) {
+  return (
+    <section className="manual-action-review" id={panelId} aria-label={`${obligation.title} manual review`} aria-live="polite">
+      <div>
+        <span>Preparation only</span>
+        <strong>This action cannot file, pay, or open an authority session.</strong>
+      </div>
+      <dl>
+        <div><dt>Current gate</dt><dd>{humanize(obligation.preparationState)}</dd></div>
+        <div><dt>Submission</dt><dd>{humanize(obligation.submissionState)}</dd></div>
+        <div><dt>Evidence needed</dt><dd>{obligation.evidenceRequirementIds.length} requirements</dd></div>
+        <div><dt>Rule versions</dt><dd>{obligation.ruleVersionIds.length} pinned</dd></div>
+      </dl>
+      <p>Next: inspect the mapped evidence, resolve blocking gaps, then request accountant review. Submission remains separately approval-gated.</p>
     </section>
   );
 }

@@ -12,7 +12,7 @@ export function TaxWidget({ snapshot, onOpenWorkspace }: { snapshot: TaxWidgetSn
     <article className="widget-card" aria-labelledby="tax-widget-title">
       <header className="widget-header">
         <div>
-          <p className="eyebrow">Tax position</p>
+          <p className="eyebrow">Evidence position</p>
           <h2 id="tax-widget-title">{snapshot.profile.jurisdiction} · {humanize(snapshot.profile.regimeId)}</h2>
         </div>
         <span className={`status-pill status-${snapshot.estimate.state}`}>
@@ -21,7 +21,7 @@ export function TaxWidget({ snapshot, onOpenWorkspace }: { snapshot: TaxWidgetSn
       </header>
 
       <div className="widget-metric">
-        <span>Planning estimate</span>
+        <span>Supported net activity</span>
         <strong>{snapshot.estimate.amount ? formatMoney(snapshot.estimate.amount.decimal, snapshot.estimate.amount.currency) : 'Unavailable'}</strong>
         <small>{snapshot.estimate.warning}</small>
       </div>
