@@ -1,12 +1,12 @@
 # WSFEX signer boundary
 
-The [OpenAPI contract](openapi.yaml) is the only network contract used by the tax-agent backend. The deployable implementation is [`apps/wsfex-signer`](../../apps/wsfex-signer/README.md), a separate high-trust service.
+The [OpenAPI contract](openapi.yaml) is the only signer network contract used by the tax-agent backend. The deployable implementation is [`apps/wsfex-signer`](../../apps/wsfex-signer/README.md), backed by the encrypted [`apps/arca-boundary`](../../apps/arca-boundary/README.md).
 
 It must:
 
 1. Resolve `authorityPayloadRef` inside a credential/payload vault.
 2. Keep the WSAA certificate and private key out of Motora, the browser, logs, and agent context.
-3. Verify that the resolved payload hashes to `intentHash` and matches the safe expected document.
+3. Recompute the embedded canonical invoice/adjustment hash, require it to equal `intentHash`, and map every approved line/date/amount/quote/association into the authority payload.
 4. Use a delegated `wsfex` certificate and a point of sale enabled for FEEWS.
 5. Allocate/reconcile N15 `Cmp.Id` and N8 `Cbte_nro` as decimal strings without JavaScript number conversion.
 6. On ambiguity, replay the exact request ID/payload and query `FEXGetCMP`, `FEXGetLast_CMP`, and `FEXGetLast_ID`.

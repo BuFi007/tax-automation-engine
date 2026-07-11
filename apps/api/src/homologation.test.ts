@@ -34,11 +34,13 @@ describe('ARCA homologation acceptance harness', () => {
     const rejected = validateHomologationEvidence({
       ...evidence,
       reclaim: [evidence.reclaim[0], evidence.reclaim[0], evidence.reclaim[2]],
-      wsfex: evidence.wsfex.map(item => item.documentType === 21 ? { ...item, mismatchedEchoRejected: false } : item),
+      wsfex: evidence.wsfex.map(item => item.documentType === 21
+        ? { ...item, mismatchedEchoRejected: false }
+        : item.documentType === 20 ? { ...item, canonicalPayloadMismatchRejected: false } : item),
       reviews: { ...evidence.reviews, securityAccepted: false },
     });
     expect(rejected.state).toBe('rejected');
-    expect(rejected.failedGateIds).toEqual(expect.arrayContaining(['reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'human_review_gate']));
+    expect(rejected.failedGateIds).toEqual(expect.arrayContaining(['reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'wsfex_boundary_gate', 'human_review_gate']));
   });
 
   test('probes only a homologation signer that reports delegated certificate and WSAA readiness', async () => {
@@ -76,6 +78,7 @@ function readyEnvironment(): Record<string, string> {
     TAX_ENGINE_USER_APPROVAL_TOKEN: 'user-token',
     TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN: 'accountant-token',
     TAX_ENGINE_EVIDENCE_INGEST_TOKEN: 'ingest-token',
+    TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN: 'authority-payload-token',
     RECLAIM_APP_ID: 'app-id',
     RECLAIM_APP_SECRET: 'app-secret',
     RECLAIM_CALLBACK_BASE_URL: 'https://tax-api.example.test',
@@ -88,6 +91,8 @@ function readyEnvironment(): Record<string, string> {
     RECLAIM_PROOF_RETENTION_POLICY_ID: 'tax-evidence-v1',
     ARCA_SIGNER_URL: 'https://wsfex-signer.example.test',
     ARCA_SIGNER_TOKEN: 'signer-token',
+    ARCA_BOUNDARY_URL: 'https://arca-boundary.example.test',
+    ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN: 'payload-writer-token',
     ARCA_WSFEX_DELEGATION_CONFIRMED: 'true',
     TAX_ENGINE_PRODUCTION_APPROVED: 'false',
   };
@@ -111,6 +116,9 @@ function validEvidence() {
       ambiguousOutcomeObserved: true,
       exactRecoveryReceiptHash: hash(`recovered-${documentType}`),
       mismatchedEchoRejected: true,
+      canonicalPayloadMismatchRejected: true,
+      encryptedPayloadAtRestVerified: true,
+      wsaaKeyIsolationVerified: true,
     })),
     journeys: [
       { path: 'reclaim_copilot' as const, eventSequenceHash: hash('path-b-events'), accountingAttestationPacketHash: hash('path-b-packet'), separateSettlementFxTaxStatesObserved: true },

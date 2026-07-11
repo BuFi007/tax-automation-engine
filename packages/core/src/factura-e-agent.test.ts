@@ -285,6 +285,9 @@ describe('Factura E agent domain', () => {
     }));
     expect(validateFacturaEIntent({ ...intent(), issueDate: '2024-02-29', paymentDate: '2024-02-29', exchangeRate: { ...intent().exchangeRate!, observedForDate: '2024-02-28' } }, '2024-02-29').errors).not.toContain('INVOICE_DATE_INVALID');
     expect(validateFacturaEIntent({ ...intent(), pointOfSale: 99999 }, '2026-07-11').errors).toContain('EXPORT_POINT_OF_SALE_INVALID');
+    expect(validateFacturaEIntent({ ...intent(), destinationCountryArcaCode: 1000 }, '2026-07-11').errors).toContain('DESTINATION_ARCA_CODE_INVALID');
+    expect(validateFacturaEIntent({ ...intent(), paymentTerms: 'x'.repeat(51) }, '2026-07-11').errors).toContain('PAYMENT_TERMS_TOO_LONG');
+    expect(validateFacturaEIntent({ ...intent(), lineItems: [{ ...intent().lineItems[0]!, unitCode: 100 }] }, '2026-07-11').errors).toContain('LINE_1_UNIT_CODE_INVALID');
   });
 });
 

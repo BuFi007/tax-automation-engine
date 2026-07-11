@@ -1,9 +1,45 @@
+import { hashCanonical } from '@tax-engine/core';
 import Decimal from 'decimal.js';
 import { z } from 'zod';
 
 const unsignedDecimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const cuitSchema = z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' });
 const moneySchema = z.object({ decimal: unsignedDecimalSchema, currency: z.string().regex(/^[A-Z]{3,10}$/) }).strict();
+const canonicalLineItemSchema = z.object({
+  description: z.string().min(1).max(4000),
+  quantity: unsignedDecimalSchema,
+  unitPrice: unsignedDecimalSchema,
+  total: unsignedDecimalSchema,
+  unitCode: z.number().int().nonnegative().max(99),
+}).strict();
+const canonicalInvoiceSchema = z.object({
+  version: z.literal('factura-e-intent-v1'),
+  intentId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  taxpayerReferenceHash: sha256Schema,
+  foreignCustomerReferenceHash: sha256Schema,
+  foreignCustomerSafeLabel: z.string().min(1).max(160),
+  destinationCountry: z.string().regex(/^[A-Z]{2}$/),
+  destinationCountryArcaCode: z.number().int().positive().max(999),
+  documentType: z.literal(19),
+  operationType: z.literal(2),
+  pointOfSale: z.number().int().positive().max(99998),
+  issueDate: z.iso.date(),
+  paymentDate: z.iso.date(),
+  sameCurrencyPayment: z.boolean(),
+  exchangeRate: z.object({
+    decimal: unsignedDecimalSchema,
+    sourceReferenceId: z.string().min(1),
+    observedForDate: z.iso.date(),
+    authorityRuleDecisionId: z.string().min(1),
+  }).strict().nullable(),
+  lineItems: z.array(canonicalLineItemSchema).min(1),
+  total: moneySchema,
+  serviceDescription: z.string().min(1).max(4000),
+  paymentTerms: z.string().min(1).max(1000),
+  ruleVersionIds: z.array(z.string().min(1)).min(1),
+}).strict();
 const associationSchema = z.object({
   documentType: z.literal(19),
   pointOfSale: z.number().int().positive().max(99998),
@@ -23,6 +59,18 @@ const adjustmentExpectedSchema = z.object({
   issueDate: z.iso.date(),
   total: moneySchema,
   associatedDocument: associationSchema,
+}).strict();
+const canonicalAdjustmentSchema = z.object({
+  version: z.literal('factura-e-adjustment-v1'),
+  adjustmentId: z.string().min(1),
+  documentType: z.union([z.literal(20), z.literal(21)]),
+  associatedDocument: associationSchema,
+  issueDate: z.iso.date(),
+  amount: moneySchema,
+  reason: z.string().min(1).max(4000),
+  foreignCustomerReferenceHash: sha256Schema,
+  destinationCountryArcaCode: z.number().int().positive().max(999),
+  ruleVersionIds: z.array(z.string().min(1)).min(1),
 }).strict();
 
 export const signerRequestSchema = z.object({
@@ -49,6 +97,7 @@ const lineItemSchema = z.object({
 
 export const authorityPayloadSchema = z.object({
   version: z.literal('wsfex-authority-payload-v1'),
+  canonicalDocument: z.union([canonicalInvoiceSchema, canonicalAdjustmentSchema]),
   issuerProfileRef: z.string().min(1),
   subjectId: z.string().min(1),
   intentHash: sha256Schema,
@@ -60,9 +109,10 @@ export const authorityPayloadSchema = z.object({
   issueDate: z.iso.date(),
   destinationCountryArcaCode: z.number().int().positive().max(999),
   customer: z.object({
+    referenceHash: sha256Schema,
     name: z.string().min(1).max(200),
     address: z.string().min(1).max(300),
-    countryCuit: z.string().regex(/^\d{11}$/),
+    countryCuit: cuitSchema,
     foreignTaxId: z.string().min(1).max(50).nullable(),
   }).strict(),
   currency: z.object({
@@ -121,6 +171,7 @@ export type AuthorityPayload = z.infer<typeof authorityPayloadSchema>;
 export type SignerResponse = z.infer<typeof signerResponseSchema>;
 
 export function assertPayloadMatchesRequest(payload: AuthorityPayload, request: SignerRequest): void {
+  if (hashDocument(payload.canonicalDocument) !== request.intentHash) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_HASH_MISMATCH');
   if (payload.subjectId !== request.subjectId || payload.intentHash !== request.intentHash || payload.requestId !== request.requestId) throw new Error('AUTHORITY_PAYLOAD_BINDING_MISMATCH');
   if (
     payload.documentType !== request.expected.documentType
@@ -132,4 +183,77 @@ export function assertPayloadMatchesRequest(payload: AuthorityPayload, request: 
   ) throw new Error('AUTHORITY_PAYLOAD_DOCUMENT_MISMATCH');
   const expectedAssociation = 'associatedDocument' in request.expected ? request.expected.associatedDocument : null;
   if (JSON.stringify(payload.associatedDocument) !== JSON.stringify(expectedAssociation)) throw new Error('AUTHORITY_PAYLOAD_ASSOCIATION_MISMATCH');
+  assertCanonicalDocumentMatchesPayload(payload);
+}
+
+export function isValidCuit(value: string): boolean {
+  if (!/^\d{11}$/.test(value)) return false;
+  const weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  const sum = weights.reduce((total, weight, index) => total + Number(value[index]) * weight, 0);
+  const remainder = 11 - (sum % 11);
+  const expected = remainder === 11 ? 0 : remainder === 10 ? 9 : remainder;
+  return Number(value[10]) === expected;
+}
+
+function hashDocument(document: AuthorityPayload['canonicalDocument']): string {
+  return hashCanonical(document);
+}
+
+function assertCanonicalDocumentMatchesPayload(payload: AuthorityPayload): void {
+  const document = payload.canonicalDocument;
+  if (document.version === 'factura-e-intent-v1') {
+    if (
+      payload.documentType !== 19
+      || payload.subjectId !== document.intentId
+      || payload.destinationCountryArcaCode !== document.destinationCountryArcaCode
+      || payload.pointOfSale !== document.pointOfSale
+      || payload.issueDate !== document.issueDate
+      || payload.paymentDate !== document.paymentDate
+      || payload.sameCurrencyPayment !== document.sameCurrencyPayment
+      || payload.currency.safeCode !== document.total.currency
+      || !new Decimal(payload.total).eq(document.total.decimal)
+      || payload.paymentTerms !== document.paymentTerms
+      || payload.customer.referenceHash !== document.foreignCustomerReferenceHash
+      || payload.associatedDocument !== null
+    ) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_INVOICE_MISMATCH');
+    if (document.total.currency === 'ARS') {
+      if (document.exchangeRate !== null || payload.currency.arcaId !== 'PES' || !new Decimal(payload.currency.quote).eq(1)) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_FX_MISMATCH');
+    } else if (!document.exchangeRate || !new Decimal(payload.currency.quote).eq(document.exchangeRate.decimal)) {
+      throw new Error('AUTHORITY_PAYLOAD_CANONICAL_FX_MISMATCH');
+    }
+    if (payload.items.length !== document.lineItems.length) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_ITEMS_MISMATCH');
+    for (const [index, item] of payload.items.entries()) {
+      const canonical = document.lineItems[index]!;
+      if (
+        item.description !== canonical.description
+        || !new Decimal(item.quantity).eq(canonical.quantity)
+        || item.unitCode !== canonical.unitCode
+        || !new Decimal(item.unitPrice).eq(canonical.unitPrice)
+        || !new Decimal(item.discount).eq(0)
+        || !new Decimal(item.total).eq(canonical.total)
+      ) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_ITEMS_MISMATCH');
+    }
+    return;
+  }
+  if (
+    payload.documentType !== document.documentType
+    || payload.subjectId !== document.adjustmentId
+    || payload.pointOfSale !== document.associatedDocument.pointOfSale
+    || payload.issueDate !== document.issueDate
+    || payload.destinationCountryArcaCode !== document.destinationCountryArcaCode
+    || payload.customer.referenceHash !== document.foreignCustomerReferenceHash
+    || payload.currency.safeCode !== document.amount.currency
+    || !new Decimal(payload.total).eq(document.amount.decimal)
+    || JSON.stringify(payload.associatedDocument) !== JSON.stringify(document.associatedDocument)
+    || payload.paymentTerms !== null
+    || payload.items.length !== 1
+  ) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_ADJUSTMENT_MISMATCH');
+  const item = payload.items[0]!;
+  if (
+    item.description !== document.reason
+    || !new Decimal(item.quantity).eq(1)
+    || !new Decimal(item.unitPrice).eq(document.amount.decimal)
+    || !new Decimal(item.discount).eq(0)
+    || !new Decimal(item.total).eq(document.amount.decimal)
+  ) throw new Error('AUTHORITY_PAYLOAD_CANONICAL_ADJUSTMENT_MISMATCH');
 }

@@ -15,12 +15,12 @@ This repository intentionally separates tax preparation from accountant review, 
 - A reusable accounting contract, a normalized bridge for the existing QuickBooks/Xero/Conta Azul connectors, and a conformance-first Contabilium adapter for the Argentine ERP wedge.
 - SQLite persistence for confirmed profiles, append-only safe evidence records, audit events, and workflow revisions.
 - A browser-safe API, compact Tax Widget, and full tax cockpit with jurisdiction/persona selection, evidence coverage, obligations, and execution gates.
-- An agent-ready Factura E backend with discoverable tools, append-only case revisions, Reclaim proof sessions, a separate trusted human-approval channel, and a deployable isolated WSFEX signer for documents 19/20/21.
+- An agent-ready Factura E backend with discoverable tools, append-only case revisions, Reclaim proof sessions, a separate trusted human-approval channel, an encrypted WSAA/payload authority boundary, and an isolated WSFEX signer for documents 19/20/21.
 
 ## Safety boundary
 
 - Money is represented as decimal strings and computed with `decimal.js`; binary floating point is not used for tax calculations.
-- OAuth tokens, Clave Fiscal PINs, private keys, raw TIN/CUIT values, and raw source documents do not belong in browser snapshots, API logs, or this database contract.
+- OAuth tokens, Clave Fiscal PINs, private keys, raw TIN/CUIT values, and raw source documents do not belong in browser snapshots, API logs, or the Motora database. The isolated authority boundary encrypts the minimum WSFEX customer and delegated-certificate material with separate domain keys.
 - ARCA/AFIP and IRS credentials stay in their authority/provider boundary. This engine consumes safe, hashed evidence and verified receipt metadata.
 - Reclaim proves a fact displayed by ARCA; it never creates a CAE. `arca_authorized` can only be reached through a cryptographically verified CAE proof or a verified WSFEX signer receipt.
 - The tax agent API key cannot approve an intent, verify FX ingress, or mark tax declared. Those transitions require separate trusted-channel credentials that are never exposed to the agent runtime.
@@ -58,14 +58,17 @@ bun run homologation:validate -- /absolute/path/to/redacted-evidence.json
 
 See [ARCA homologation acceptance](providers/homologation/README.md). These commands keep production disabled and output only safe gate states, versions, and hashes.
 
-The signer is a separate deployment and starts only when its vault, WSAA broker,
-API token, and production gate are configured:
+The authority boundary and signer are separate deployments. Start them only
+with distinct scoped credentials, an HTTPS ingress/service mesh, and production
+gates left closed:
 
 ```bash
+bun run --filter @tax-engine/arca-boundary start
 bun run --filter @tax-engine/wsfex-signer start
 ```
 
-See [isolated signer operations](apps/wsfex-signer/README.md).
+See [authority boundary operations](apps/arca-boundary/README.md) and
+[isolated signer operations](apps/wsfex-signer/README.md).
 
 ## API surface
 
@@ -83,8 +86,10 @@ See [isolated signer operations](apps/wsfex-signer/README.md).
 - `GET /v1/agent/runs/:runId/events`
 - `POST /v1/agent/runs/:runId/user-approval` (trusted user channel)
 - `POST /v1/agent/runs/:runId/accountant-approval` (trusted accountant channel, when required)
+- `POST /v1/agent/runs/:runId/wsfex-payload` (trusted canonical payload vault + immediate Path A submission)
 - `POST /v1/agent/runs/:runId/adjustments/:adjustmentId/user-approval` (trusted user channel)
 - `POST /v1/agent/runs/:runId/adjustments/:adjustmentId/accountant-approval` (trusted accountant channel, when required)
+- `POST /v1/agent/runs/:runId/adjustments/:adjustmentId/wsfex-payload` (trusted canonical note vault + submission)
 - `POST /v1/agent/runs/:runId/reclaim-sessions/:sessionId/cancel` (trusted user channel)
 - `POST /v1/agent/runs/:runId/fx-ingress-verification` (trusted accountant channel)
 - `POST /v1/agent/runs/:runId/tax-declaration` (trusted accountant channel)
@@ -100,6 +105,7 @@ Set `TAX_ENGINE_API_KEY` to require bearer authentication. Production startup re
 ```text
 apps/api       Safe HTTP boundary and append-only SQLite stores
 apps/web       Manual Tax Widget and full cockpit
+apps/arca-boundary  Encrypted WSFEX payload custody and WSAA CMS/ticket broker
 apps/wsfex-signer  Isolated WSFEX SOAP transport, exact replay, and safe receipt store
 packages/core  Money, consent, evidence graph, jurisdiction packs, workflow
 packages/erp   Accounting import contract and provider bridges
@@ -108,4 +114,4 @@ docs           Architecture, delivery traceability, and execution gates
 
 ## Deferred by design
 
-Production activation of Reclaim ARCA providers, WSFEX certificate delegation, IRS e-file integration, tax payment execution, TaxScore, factoring, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The agent orchestration and signer service are implemented but fail closed while those external assets are unconfigured.
+Production activation of Reclaim ARCA providers, real WSFEX certificate delegation, IRS e-file integration, tax payment execution, TaxScore, factoring, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The agent orchestration, encrypted authority boundary, and signer service are implemented but fail closed while those external assets are unconfigured.

@@ -128,6 +128,8 @@ export type FacturaEAdjustmentV1 = Readonly<{
   issueDate: IsoDate;
   amount: FacturaEMoney;
   reason: string;
+  foreignCustomerReferenceHash: string;
+  destinationCountryArcaCode: number;
   ruleVersionIds: readonly string[];
   intentHash: string;
   approvalState: 'pending' | 'user_approved' | 'accountant_approved' | 'rejected';
@@ -278,13 +280,14 @@ export function validateFacturaEIntent(intent: FacturaEIntentV1, asOf: IsoDate):
   if (intent.documentType !== 19) errors.push('FACTURA_E_DOCUMENT_TYPE_REQUIRED');
   if (intent.operationType !== 2) errors.push('SERVICE_EXPORT_OPERATION_TYPE_REQUIRED');
   if (!/^[A-Z]{2}$/.test(intent.destinationCountry)) errors.push('DESTINATION_COUNTRY_INVALID');
-  if (!Number.isInteger(intent.destinationCountryArcaCode) || intent.destinationCountryArcaCode <= 0) errors.push('DESTINATION_ARCA_CODE_INVALID');
+  if (!Number.isInteger(intent.destinationCountryArcaCode) || intent.destinationCountryArcaCode <= 0 || intent.destinationCountryArcaCode > 999) errors.push('DESTINATION_ARCA_CODE_INVALID');
   if (!Number.isInteger(intent.pointOfSale) || intent.pointOfSale <= 0 || intent.pointOfSale > 99998) errors.push('EXPORT_POINT_OF_SALE_INVALID');
   if (!isIsoDate(intent.issueDate) || !isIsoDate(intent.paymentDate) || !isIsoDate(asOf)) errors.push('INVOICE_DATE_INVALID');
   if (isIsoDate(intent.issueDate) && isIsoDate(intent.paymentDate) && intent.paymentDate < intent.issueDate) errors.push('PAYMENT_DATE_BEFORE_ISSUE_DATE');
   if (isIsoDate(intent.issueDate) && isIsoDate(asOf) && Math.abs(daysBetween(intent.issueDate, asOf)) > 5) errors.push('AUTHORIZATION_DATE_OUTSIDE_FIVE_DAY_WINDOW');
   if (!intent.serviceDescription.trim()) errors.push('SERVICE_DESCRIPTION_REQUIRED');
   if (!intent.paymentTerms.trim()) errors.push('PAYMENT_TERMS_REQUIRED');
+  if (intent.paymentTerms.length > 50) errors.push('PAYMENT_TERMS_TOO_LONG');
   if (!intent.taxpayerReferenceHash || !intent.foreignCustomerReferenceHash) errors.push('SAFE_PARTY_REFERENCES_REQUIRED');
   for (const requiredRule of ARGENTINA_FACTURA_E_RULE_IDS) {
     if (!intent.ruleVersionIds.includes(requiredRule)) errors.push(`REQUIRED_RULE_MISSING_${requiredRule.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`);
@@ -296,6 +299,7 @@ export function validateFacturaEIntent(intent: FacturaEIntentV1, asOf: IsoDate):
   let calculatedTotal = new Decimal(0);
   for (const [index, item] of intent.lineItems.entries()) {
     if (!item.description.trim()) errors.push(`LINE_${index + 1}_DESCRIPTION_REQUIRED`);
+    if (!Number.isInteger(item.unitCode) || item.unitCode < 0 || item.unitCode > 99) errors.push(`LINE_${index + 1}_UNIT_CODE_INVALID`);
     const quantity = decimalOrError(item.quantity, `LINE_${index + 1}_QUANTITY_INVALID`, errors);
     const unitPrice = decimalOrError(item.unitPrice, `LINE_${index + 1}_UNIT_PRICE_INVALID`, errors);
     const itemTotal = decimalOrError(item.total, `LINE_${index + 1}_TOTAL_INVALID`, errors);
@@ -665,6 +669,8 @@ export function prepareFacturaEAdjustment(run: FacturaEAgentRunV1, input: Readon
     issueDate: input.issueDate,
     amount: input.amount,
     reason: input.reason,
+    foreignCustomerReferenceHash: run.intent.foreignCustomerReferenceHash,
+    destinationCountryArcaCode: run.intent.destinationCountryArcaCode,
     ruleVersionIds: [...ARGENTINA_FACTURA_E_RULE_IDS],
   };
   const adjustment: FacturaEAdjustmentV1 = {

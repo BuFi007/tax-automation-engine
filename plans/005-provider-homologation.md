@@ -30,9 +30,12 @@ while preserving the no-PIN/no-private-key Motora boundary.
 - Health reports Reclaim and WSFEX as `configuration_required` when absent.
 - `providers/reclaim` defines the proposed safe extracted claims and forbidden
   disclosures but contains no published reviewed provider IDs.
-- `providers/wsfex` defines the contract/recovery invariants and
-  `apps/wsfex-signer` implements the isolated SOAP provider. It is not deployed
-  and has no authorized homologation certificate, payload vault, or WSAA broker.
+- `providers/wsfex` defines the contract/recovery invariants,
+  `apps/wsfex-signer` implements the isolated SOAP provider, and
+  `apps/arca-boundary` implements encrypted payload custody plus WSAA CMS/ticket
+  brokerage, scoped revocation, and offline transactional key rotation. They
+  are not deployed and have no authorized homologation
+  certificate, delegated identity, or active FEEWS point of sale.
 - `bun run homologation:preflight` now reports missing/unsafe external gates
   without exposing values; `homologation:probe-signer` checks redacted signer
   health; and `homologation:validate` validates the final redacted evidence set.

@@ -29,10 +29,11 @@ exit `2` and remain safe for CI logs.
 The signer must implement the redacted `/health` response in
 [`../wsfex/openapi.yaml`](../wsfex/openapi.yaml).
 
-The reference service and container are in
-[`apps/wsfex-signer`](../../apps/wsfex-signer/README.md); they still require an
-approved external payload vault, WSAA broker, delegated certificate, and test
-identity before this gate can pass.
+The reference signer and encrypted authority-boundary containers are in
+[`apps/wsfex-signer`](../../apps/wsfex-signer/README.md) and
+[`apps/arca-boundary`](../../apps/arca-boundary/README.md). They still require
+an approved deployment, delegated homologation certificate/test identity, and
+active FEEWS point of sale before this gate can pass.
 
 Run:
 
@@ -57,7 +58,8 @@ The redacted evidence JSON must satisfy `homologationEvidenceSchema` in
 - all three Reclaim purposes, provider versions, TEE policy, custody receipt,
   and negative binding tests;
 - WSFEX document types 19/20/21, accepted result, deliberate ambiguity, exact
-  recovery, and mismatched-echo rejection;
+  recovery, mismatched-echo/canonical-payload rejection, encrypted payload
+  inspection, and WSAA private-key isolation;
 - complete Path A and Path B event/packet hashes with separate settlement, FX,
   and tax states; and
 - accountant, security, and owner acceptance for production review.

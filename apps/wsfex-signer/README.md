@@ -18,6 +18,10 @@ The signer calls two separately authenticated HTTPS services:
   not this process, owns the certificate and private key. Its protected `/health`
   reports only delegation/readiness booleans.
 
+The reference implementation for both endpoints is the separately deployed
+[`apps/arca-boundary`](../arca-boundary/README.md). Its payload-resolve and WSAA
+tokens are distinct even when both URLs share one HTTPS origin.
+
 The local SQLite store contains request/intent/payload hashes, safe document
 coordinates, normalized status, CAE, and timestamps. It does not contain the
 opaque payload reference, customer identifiers, token/sign, represented CUIT, or

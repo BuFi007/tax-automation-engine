@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { hashCanonical } from '@tax-engine/core';
 
 import type { AuthorityPayload, SignerRequest } from './contracts';
-import { payload, request } from './test-fixtures';
+import { canonicalAdjustment, payload, request } from './test-fixtures';
 import { WsfexSignerService } from './service';
 import { type WsfexAuthorityClient, WsfexAmbiguousTransportError, type WsfexAuthorizationResult, type WsfexRetrievedDocument } from './soap';
 import { SignerAttemptStore } from './store';
@@ -62,9 +62,10 @@ describe('isolated WSFEX signer service', () => {
 
   test('requires an authorized original and the exact original currency quote for note 21', async () => {
     const association = { documentType: 19 as const, pointOfSale: 4, invoiceNumber: '81' };
+    const canonicalDocument = canonicalAdjustment({ adjustmentId: 'credit-1', documentType: 21, amount: '100.00', reason: 'Commercial credit' });
     const notePayload = payload({
-      subjectId: 'credit-1', intentHash: hashCanonical('credit-intent'), requestId: '102', invoiceNumber: '1', documentType: 21,
-      paymentDate: null, sameCurrencyPayment: null, total: '100.00', associatedDocument: association,
+      canonicalDocument, subjectId: 'credit-1', intentHash: hashCanonical(canonicalDocument), requestId: '102', invoiceNumber: '1', documentType: 21,
+      paymentDate: null, sameCurrencyPayment: null, total: '100.00', paymentTerms: null, associatedDocument: association,
       items: [{ code: null, description: 'Commercial credit', quantity: '1', unitCode: 7, unitPrice: '100.00', discount: '0', total: '100.00' }],
     });
     const noteRequest = request({
@@ -78,9 +79,10 @@ describe('isolated WSFEX signer service', () => {
 
   test('authorizes note 20 only after exact original lookup and exact authority echo', async () => {
     const association = { documentType: 19 as const, pointOfSale: 4, invoiceNumber: '81' };
+    const canonicalDocument = canonicalAdjustment({ adjustmentId: 'debit-1', documentType: 20, amount: '50.00', reason: 'Commercial debit' });
     const notePayload = payload({
-      subjectId: 'debit-1', intentHash: hashCanonical('debit-intent'), requestId: '103', invoiceNumber: '1', documentType: 20,
-      paymentDate: null, sameCurrencyPayment: null, total: '50.00', associatedDocument: association,
+      canonicalDocument, subjectId: 'debit-1', intentHash: hashCanonical(canonicalDocument), requestId: '103', invoiceNumber: '1', documentType: 20,
+      paymentDate: null, sameCurrencyPayment: null, total: '50.00', paymentTerms: null, associatedDocument: association,
       items: [{ code: null, description: 'Commercial debit', quantity: '1', unitCode: 7, unitPrice: '50.00', discount: '0', total: '50.00' }],
     });
     const noteRequest = request({
@@ -135,7 +137,7 @@ class FakeVault implements AuthorityPayloadVault {
 }
 
 class FakeWsaa implements WsaaTicketBroker {
-  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456789', expiresAt: '2099-01-01T00:00:00.000Z' }; }
+  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' }; }
   async health() { return { certificateDelegationConfigured: true, wsaaReady: true }; }
 }
 

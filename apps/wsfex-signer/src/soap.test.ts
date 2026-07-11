@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { payload } from './test-fixtures';
 import { SoapWsfexAuthorityClient, WsfexAmbiguousTransportError } from './soap';
 
-const ticket = { token: 'token<&', sign: 'sign>&', representedCuit: '20123456789', expiresAt: '2099-01-01T00:00:00.000Z' };
+const ticket = { token: 'token<&', sign: 'sign>&', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' };
 
 describe('official WSFEX SOAP transport', () => {
   test('uses the homologation endpoint and encodes invoice-only service fields safely', async () => {
@@ -18,7 +18,7 @@ describe('official WSFEX SOAP transport', () => {
         <FEXErr><ErrCode>0</ErrCode><ErrMsg></ErrMsg></FEXErr>`);
     });
 
-    const result = await client.authorize(ticket, payload({ customer: { name: 'A & B <Corp>', address: 'Main > Side', countryCuit: '50000000016', foreignTaxId: 'US<&ID' } }));
+    const result = await client.authorize(ticket, payload({ customer: { referenceHash: payload().customer.referenceHash, name: 'A & B <Corp>', address: 'Main > Side', countryCuit: '50000000016', foreignTaxId: 'US<&ID' } }));
     expect(capturedUrl).toBe('https://wswhomo.afip.gov.ar/wsfexv1/service.asmx');
     expect(capturedBody).toContain('<Fecha_pago>20260711</Fecha_pago>');
     expect(capturedBody).toContain('<CanMisMonExt>S</CanMisMonExt>');
@@ -45,7 +45,7 @@ describe('official WSFEX SOAP transport', () => {
     const result = await client.authorize(ticket, note);
     expect(capturedBody).not.toContain('<Fecha_pago>');
     expect(capturedBody).not.toContain('<CanMisMonExt>');
-    expect(capturedBody).toContain('<Cmps_asoc><Cmp_asoc><Cbte_tipo>19</Cbte_tipo><Cbte_punto_vta>4</Cbte_punto_vta><Cbte_nro>81</Cbte_nro><Cbte_cuit>20123456789</Cbte_cuit></Cmp_asoc></Cmps_asoc>');
+    expect(capturedBody).toContain('<Cmps_asoc><Cmp_asoc><Cbte_tipo>19</Cbte_tipo><Cbte_punto_vta>4</Cbte_punto_vta><Cbte_nro>81</Cbte_nro><Cbte_cuit>20123456786</Cbte_cuit></Cmp_asoc></Cmps_asoc>');
     expect(result.reprocessed).toBe(true);
   });
 

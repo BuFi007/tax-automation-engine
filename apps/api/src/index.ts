@@ -9,6 +9,7 @@ import { HttpReclaimProofVault } from './proof-vault';
 import { ReclaimProtocolGateway } from './reclaim';
 import { TaxProfileStore } from './store';
 import { HttpWsfexGateway } from './wsfex';
+import { HttpAuthorityPayloadWriter } from './authority-payload';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
@@ -18,8 +19,9 @@ if (process.env.NODE_ENV === 'production' && !apiKey) {
 const userApprovalToken = process.env.TAX_ENGINE_USER_APPROVAL_TOKEN ?? null;
 const accountantApprovalToken = process.env.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN ?? null;
 const evidenceIngestToken = process.env.TAX_ENGINE_EVIDENCE_INGEST_TOKEN ?? null;
-if (process.env.NODE_ENV === 'production' && (!userApprovalToken || !accountantApprovalToken || !evidenceIngestToken)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, and TAX_ENGINE_EVIDENCE_INGEST_TOKEN are required in production');
+const authorityPayloadToken = process.env.TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN ?? null;
+if (process.env.NODE_ENV === 'production' && (!userApprovalToken || !accountantApprovalToken || !evidenceIngestToken || !authorityPayloadToken)) {
+  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, and TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN are required in production');
 }
 
 const store = new TaxProfileStore();
@@ -29,7 +31,8 @@ const wsfexGateway = HttpWsfexGateway.fromEnvironment();
 const arcaEnvironment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologacion' as const;
 const proofVault = HttpReclaimProofVault.fromEnvironment();
 const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
-const facturaEAgent = new FacturaEAgentService(store, reclaimGateway, wsfexGateway, proofVault, proofCustodyRequired);
+const authorityPayloadWriter = HttpAuthorityPayloadWriter.fromEnvironment();
+const facturaEAgent = new FacturaEAgentService(store, reclaimGateway, wsfexGateway, proofVault, proofCustodyRequired, authorityPayloadWriter);
 const jurisdictionSchema = z.enum(['AR', 'US']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
@@ -60,11 +63,11 @@ export const server = Bun.serve({
 
     try {
       if (url.pathname === '/v1/reclaim/callback') {
-        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken });
+        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, authorityPayloadToken });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
-      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken });
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, authorityPayloadToken });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
         return applyCors(json({
@@ -145,6 +148,7 @@ function statusForError(code: string): number {
   if (code.endsWith('_CONFIGURATION_REQUIRED')) return 503;
   if (code.endsWith('_EXPIRED')) return 410;
   if (code.includes('CONFLICT') || code.includes('REPLAY') || code.includes('ALREADY_EXISTS')) return 409;
+  if (code.includes('TRANSPORT_FAILED') || code.includes('UPSTREAM_UNAVAILABLE')) return 502;
   return 400;
 }
 

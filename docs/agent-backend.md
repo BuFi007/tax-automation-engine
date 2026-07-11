@@ -171,6 +171,15 @@ The API never stores a private key or raw WSFEX authentication fields. It calls 
 
 The isolated signer resolves the authority payload, obtains an ephemeral `wsfex` access ticket from a separate WSAA/certificate broker, performs the official SOAP calls, validates the CAE echo, and normalizes a safe response. Private keys and certificates never enter Motora or the signer process.
 
+After the frozen intent has independent user and accountant approval, the
+trusted `POST /v1/agent/runs/:runId/wsfex-payload` channel reconstructs the
+authority payload from that canonical document, sends it directly to the
+encrypted authority boundary, and immediately submits only the returned opaque
+reference to the signer. The adjustment endpoint does the same for notes 20/21.
+The signer recomputes the canonical intent/adjustment hash and maps every
+approved line, amount, date, quote, and association before calling ARCA; it does
+not trust an `intentHash` field supplied by the vault.
+
 An accepted signer response must echo an `authorizedDocument` containing the frozen invoice/adjustment hash, document/operation types, point of sale, issue date, currency, and exact total. Notes must echo their original Factura E association. Motora rejects the CAE if any field differs.
 
 The signer contract is specified in [`providers/wsfex/openapi.yaml`](../providers/wsfex/openapi.yaml), with operational invariants in [`providers/wsfex/README.md`](../providers/wsfex/README.md) and a deployable implementation in [`apps/wsfex-signer`](../apps/wsfex-signer/README.md).
@@ -184,6 +193,7 @@ TAX_ENGINE_API_KEY
 TAX_ENGINE_USER_APPROVAL_TOKEN
 TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN
 TAX_ENGINE_EVIDENCE_INGEST_TOKEN
+TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN
 
 RECLAIM_APP_ID
 RECLAIM_APP_SECRET
@@ -198,6 +208,8 @@ RECLAIM_PROOF_RETENTION_POLICY_ID
 
 ARCA_SIGNER_URL
 ARCA_SIGNER_TOKEN
+ARCA_BOUNDARY_URL
+ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN
 ARCA_ENVIRONMENT=homologacion | production
 ```
 
@@ -210,7 +222,7 @@ The shared workspace harness appends normalized connector evidence through `POST
 The code implements the agent orchestration, proof verification adapter, human gates, immutable audit trail, and signer contract. Live ARCA behavior still requires:
 
 1. reviewed Reclaim provider definitions and credentials;
-2. an authorized WSFEX homologation certificate, WSAA broker, delegated test identity, and active FEEWS point of sale for the implemented Path A signer;
+2. an authorized WSFEX homologation certificate, delegated test identity, and active FEEWS point of sale provisioned into the implemented encrypted authority boundary;
 3. an approved encrypted proof-vault retention policy when durable proof custody is required;
 4. workspace identity replacing the bootstrap trusted-channel tokens;
 5. authorized end-to-end homologation and production smoke tests.

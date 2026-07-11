@@ -56,7 +56,7 @@ export interface WsfexAuthorityClient {
 }
 
 export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
-  readonly #parser = new XMLParser({ removeNSPrefix: true, parseTagValue: false, trimValues: true });
+  readonly #parser = new XMLParser({ removeNSPrefix: true, parseTagValue: false, trimValues: true, processEntities: false });
 
   constructor(
     private readonly environment: 'homologation' | 'production',
@@ -161,6 +161,7 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
       throw new WsfexAmbiguousTransportError(hashCanonical({ action, requestHash: hashCanonical(envelope), errorType: error instanceof Error ? error.name : 'unknown' }));
     }
     const raw = await response.text();
+    if (Buffer.byteLength(raw) > 2_097_152) throw new Error('WSFEX_RESPONSE_TOO_LARGE');
     const rawHash = hashCanonical(raw);
     if (response.status >= 500) throw new WsfexAmbiguousTransportError(hashCanonical({ action, status: response.status, rawHash }));
     if (!response.ok) throw new Error(`WSFEX_HTTP_REJECTED_${response.status}`);
