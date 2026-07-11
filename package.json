@@ -12,12 +12,14 @@
     "dev:api": "bun --filter @tax-engine/api dev",
     "dev:signer": "bun --filter @tax-engine/wsfex-signer dev",
     "dev:arca-boundary": "bun --filter @tax-engine/arca-boundary dev",
+    "dev:proof-vault": "bun --filter @tax-engine/reclaim-proof-vault dev",
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "check": "bun run typecheck && bun test && bun run build",
     "homologation:preflight": "bun --filter @tax-engine/api homologation:preflight",
     "homologation:probe-signer": "bun --filter @tax-engine/api homologation:probe-signer",
+    "homologation:probe-proof-vault": "bun --filter @tax-engine/api homologation:probe-proof-vault",
     "homologation:validate": "bun --filter @tax-engine/api homologation:validate"
   },
   "devDependencies": {

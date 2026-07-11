@@ -22,7 +22,7 @@ export function sealJson(masterKey: Buffer, aad: string, value: unknown): string
   return [VERSION, iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.');
 }
 
-export function deriveDomainKey(masterKey: Buffer, domain: 'authority-payloads' | 'issuer-credentials'): Buffer {
+export function deriveDomainKey(masterKey: Buffer, domain: 'authority-payloads' | 'issuer-credentials' | 'reclaim-proofs'): Buffer {
   return Buffer.from(hkdfSync('sha256', masterKey, Buffer.from('motora-arca-boundary-v1'), Buffer.from(domain), 32));
 }
 

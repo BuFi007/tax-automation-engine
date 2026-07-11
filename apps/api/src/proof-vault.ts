@@ -1,4 +1,4 @@
-import { type FacturaEAgentRunV1, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type VerifiedReclaimProofV1 } from '@tax-engine/core';
+import { hashCanonical, type FacturaEAgentRunV1, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type VerifiedReclaimProofV1 } from '@tax-engine/core';
 import { z } from 'zod';
 
 export interface ReclaimProofVault {
@@ -14,9 +14,9 @@ type ProofVaultFetch = (input: string | URL | Request, init?: RequestInit) => Pr
 
 const receiptSchema = z.object({
   version: z.literal('reclaim-proof-custody-receipt-v1'),
-  opaqueReference: z.string().min(1),
+  opaqueReference: z.string().regex(/^vault:\/\/reclaim\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
   artifactHash: z.string().regex(/^[a-f0-9]{64}$/),
-  encryptionVersion: z.string().min(1),
+  encryptionVersion: z.literal('aes-256-gcm+hkdf-sha256+wrapped-dek-v1'),
   retentionPolicyId: z.string().min(1),
   storedAt: z.iso.datetime({ offset: true }),
 }).strict();
@@ -31,7 +31,7 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     }>,
     private readonly fetcher: ProofVaultFetch = (input, init) => fetch(input, init)
   ) {
-    if (config.environment === 'production' && !config.baseUrl.startsWith('https://')) throw new Error('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
+    if (!config.baseUrl.startsWith('https://')) throw new Error('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
   }
 
   static fromEnvironment(): HttpReclaimProofVault | null {
@@ -53,10 +53,16 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     proof: VerifiedReclaimProofV1;
     proofPayload: unknown;
   }>): Promise<ReclaimProofCustodyReceiptV1> {
-    const response = await this.fetcher(`${this.config.baseUrl.replace(/\/$/, '')}/v1/reclaim-proofs`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.config.baseUrl.replace(/\/$/, '')}/v1/reclaim-proofs`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.token}`,
+          'content-type': 'application/json',
+          'idempotency-key': hashCanonical({ workspaceId: input.run.workspaceId, sessionId: input.session.sessionId, purpose: input.session.purpose }),
+        },
+        body: JSON.stringify({
         version: 'reclaim-proof-custody-request-v1',
         runId: input.run.runId,
         workspaceId: input.run.workspaceId,
@@ -68,11 +74,16 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
         retentionPolicyId: this.config.retentionPolicyId,
         verifiedAt: input.proof.verifiedAt,
         proofPayload: input.proofPayload,
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error('RECLAIM_PROOF_VAULT_TRANSPORT_FAILED');
+    }
     if (!response.ok) throw new Error(`RECLAIM_PROOF_VAULT_REJECTED_${response.status}`);
-    const receipt = receiptSchema.parse(await response.json());
+    const raw = await response.text();
+    if (Buffer.byteLength(raw) > 65_536) throw new Error('RECLAIM_PROOF_VAULT_RESPONSE_TOO_LARGE');
+    const receipt = receiptSchema.parse(JSON.parse(raw) as unknown);
     if (receipt.artifactHash !== input.proof.proofHash) throw new Error('RECLAIM_PROOF_VAULT_HASH_MISMATCH');
     if (receipt.retentionPolicyId !== this.config.retentionPolicyId) throw new Error('RECLAIM_PROOF_VAULT_RETENTION_POLICY_MISMATCH');
     return receipt;

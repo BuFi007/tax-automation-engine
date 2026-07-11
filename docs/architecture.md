@@ -31,6 +31,7 @@ flowchart LR
   W --> Q
   W --> ARA["ARCA WSFEX 3.1.1\n19 · 20 · 21"]
   B --> R["Reclaim CAE proof"]
+  R --> Z["Encrypted proof vault\nhash verification · retention · crypto-erasure"]
   W --> V["Verified signer receipt"]
   R --> X["arca_authorized"]
   V --> X

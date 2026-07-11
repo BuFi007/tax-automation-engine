@@ -16,16 +16,16 @@ describe('Reclaim proof vault boundary', () => {
         expect(body.proofHash).toBe(proof.proofHash);
         return Response.json({
           version: 'reclaim-proof-custody-receipt-v1',
-          opaqueReference: 'vault://reclaim/proof-1',
+          opaqueReference: 'vault://reclaim/60000000-0000-4000-8000-000000000001',
           artifactHash: proof.proofHash,
-          encryptionVersion: 'envelope-aes256-v1',
+          encryptionVersion: 'aes-256-gcm+hkdf-sha256+wrapped-dek-v1',
           retentionPolicyId: 'tax-evidence-v1',
           storedAt: proof.verifiedAt,
         });
       }
     );
     const receipt = await gateway.storeVerifiedProof({ run: run(), session: session(), proof, proofPayload: { rawProofMarker: 'external-only' } });
-    expect(receipt).toEqual(expect.objectContaining({ opaqueReference: 'vault://reclaim/proof-1', artifactHash: proof.proofHash }));
+    expect(receipt).toEqual(expect.objectContaining({ opaqueReference: 'vault://reclaim/60000000-0000-4000-8000-000000000001', artifactHash: proof.proofHash }));
   });
 
   test('rejects a custody receipt for a different artifact and requires HTTPS in production', async () => {
@@ -35,8 +35,8 @@ describe('Reclaim proof vault boundary', () => {
     const gateway = new HttpReclaimProofVault(
       { baseUrl: 'https://proof-vault.test', token: 'token', retentionPolicyId: 'policy', environment: 'production' },
       async () => Response.json({
-        version: 'reclaim-proof-custody-receipt-v1', opaqueReference: 'vault://wrong', artifactHash: hashCanonical('different-proof'),
-        encryptionVersion: 'v1', retentionPolicyId: 'policy', storedAt: proof.verifiedAt,
+        version: 'reclaim-proof-custody-receipt-v1', opaqueReference: 'vault://reclaim/60000000-0000-4000-8000-000000000002', artifactHash: hashCanonical('different-proof'),
+        encryptionVersion: 'aes-256-gcm+hkdf-sha256+wrapped-dek-v1', retentionPolicyId: 'policy', storedAt: proof.verifiedAt,
       })
     );
     expect(gateway.storeVerifiedProof({ run: run(), session: session(), proof, proofPayload: {} })).rejects.toThrow('RECLAIM_PROOF_VAULT_HASH_MISMATCH');

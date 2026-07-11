@@ -11,6 +11,7 @@
     "test": "bun test src",
     "homologation:preflight": "bun src/homologation-cli.ts preflight",
     "homologation:probe-signer": "bun src/homologation-cli.ts probe-signer",
+    "homologation:probe-proof-vault": "bun src/homologation-cli.ts probe-proof-vault",
     "homologation:validate": "bun src/homologation-cli.ts validate-report"
   },
   "dependencies": {

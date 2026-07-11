@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { hashCanonical } from '@tax-engine/core';
 
-import { buildHomologationPreflight, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
+import { buildHomologationPreflight, probeReclaimProofVault, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
 
 describe('ARCA homologation acceptance harness', () => {
   test('reports missing authority and provider assets without disclosing configured values', () => {
@@ -67,6 +67,15 @@ describe('ARCA homologation acceptance harness', () => {
         certificateDelegationConfigured: true, wsaaReady: true,
       })
     )).rejects.toThrow();
+  });
+
+  test('probes only an HTTPS encrypted proof vault with an active retention policy', async () => {
+    const report = await probeReclaimProofVault({ baseUrl: 'https://vault.example.test', token: 'writer-token' }, async (_url, init) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer writer-token');
+      return Response.json({ version: 'reclaim-proof-vault-health-v1', encryptionReady: true, activePolicyCount: 1 });
+    });
+    expect(report).toEqual(expect.objectContaining({ state: 'ready', safeHealthReceiptHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+    expect(probeReclaimProofVault({ baseUrl: 'http://vault.example.test', token: 'token' })).rejects.toThrow('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
   });
 });
 
