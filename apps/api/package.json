@@ -11,6 +11,7 @@
     "test": "bun test src"
   },
   "dependencies": {
+    "@reclaimprotocol/js-sdk": "5.8.0",
     "@tax-engine/core": "workspace:*",
     "@tax-engine/erp": "workspace:*",
     "zod": "^4.3.6"

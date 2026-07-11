@@ -3,14 +3,19 @@ import type { TaxObligation, TaxProfile } from '../types';
 
 const RULES = {
   monotributo: 'ar-monotributo-export-v1',
+  facturaE: 'ar-rg-4401-factura-e-v1',
+  wsfex: 'arca-wsfex-3.1.1',
+  bcraServiceExports: 'bcra-a8330-service-exports-v1',
   recategorization: 'ar-monotributo-recat-v1',
   mipyme: 'ar-mipyme-v1',
   knowledgeEconomy: 'ar-economia-conocimiento-v1',
 } as const;
 
+export const ARGENTINA_FACTURA_E_RULE_IDS = [RULES.facturaE, RULES.wsfex, RULES.bcraServiceExports] as const;
+
 export const argentinaCatalogue: JurisdictionCatalogue = {
   jurisdiction: 'AR',
-  version: 'ar-catalogue-2026-07-10',
+  version: 'ar-catalogue-2026-07-11',
   displayName: 'Argentina',
   questions: [
     { id: 'province', label: 'Fiscal province', kind: 'subdivision', required: true },
@@ -27,7 +32,7 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       label: 'Monotributo · service exporter',
       description: 'Manual readiness for Factura E, collections evidence, recategorization, and annual review.',
       requiredQuestions: ['province', 'exports_services', 'export_pos_ready'],
-      ruleVersionIds: [RULES.monotributo, RULES.recategorization],
+      ruleVersionIds: [RULES.monotributo, RULES.recategorization, ...ARGENTINA_FACTURA_E_RULE_IDS],
     },
     {
       id: 'responsable_inscripto',
@@ -35,7 +40,7 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       label: 'Responsable Inscripto',
       description: 'IVA, income-tax, provincial, invoice, and annual evidence workflow.',
       requiredQuestions: ['province', 'exports_services', 'export_pos_ready'],
-      ruleVersionIds: [RULES.monotributo],
+      ruleVersionIds: [RULES.monotributo, ...ARGENTINA_FACTURA_E_RULE_IDS],
     },
     {
       id: 'sociedad_mipyme',
@@ -64,6 +69,36 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       effectiveTo: null,
       sourceUrl: 'https://www.arca.gob.ar/monotributo/ayuda/recategorizacion.asp',
       title: 'ARCA recategorización',
+      reviewedByAccountant: false,
+      version: '1',
+    },
+    {
+      id: RULES.facturaE,
+      jurisdiction: 'AR',
+      effectiveFrom: '2019-01-23',
+      effectiveTo: null,
+      sourceUrl: 'https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t%3ARAG%7Cn%3A4401%7Co%3A3%7Ca%3A2019%7Cf%3A21%2F01%2F2019',
+      title: 'ARCA RG 4401/2019 · Factura E de servicios',
+      reviewedByAccountant: false,
+      version: '1',
+    },
+    {
+      id: RULES.wsfex,
+      jurisdiction: 'AR',
+      effectiveFrom: '2025-08-18',
+      effectiveTo: null,
+      sourceUrl: 'https://www.arca.gob.ar/ws/documentacion/manuales/WSFEX-Manualparaeldesarrollador_V3.1.1_ARCA.pdf',
+      title: 'ARCA WSFEXV1 developer manual 3.1.1',
+      reviewedByAccountant: false,
+      version: '3.1.1',
+    },
+    {
+      id: RULES.bcraServiceExports,
+      jurisdiction: 'AR',
+      effectiveFrom: '2025-09-18',
+      effectiveTo: null,
+      sourceUrl: 'https://www.bcra.gob.ar/archivos/Pdfs/comytexord/A8330.pdf',
+      title: 'BCRA Comunicación A 8330 · exportación de servicios',
       reviewedByAccountant: false,
       version: '1',
     },
@@ -124,7 +159,7 @@ export class ArgentinaJurisdictionProvider implements TaxJurisdictionProvider {
         title: 'Factura E readiness and collection evidence',
         description: 'Prepare invoice intent and collection evidence. User approval and an authority receipt remain separate.',
         evidenceRequirementIds: ['ar:req:invoice', 'ar:req:collection'],
-        ruleVersionIds: [RULES.monotributo],
+        ruleVersionIds: [RULES.monotributo, ...ARGENTINA_FACTURA_E_RULE_IDS],
         actionId: 'action:prepare-factura-e',
       },
       {

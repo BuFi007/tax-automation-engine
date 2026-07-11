@@ -3,16 +3,33 @@ import { ContabiliumSandboxProvider } from '@tax-engine/erp';
 import { z } from 'zod';
 
 import { applyCors } from './cors';
+import { handleAgentRoute } from './agent-routes';
+import { FacturaEAgentService } from './factura-e-agent';
+import { HttpReclaimProofVault } from './proof-vault';
+import { ReclaimProtocolGateway } from './reclaim';
 import { TaxProfileStore } from './store';
+import { HttpWsfexGateway } from './wsfex';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
 if (process.env.NODE_ENV === 'production' && !apiKey) {
   throw new Error('TAX_ENGINE_API_KEY is required in production');
 }
+const userApprovalToken = process.env.TAX_ENGINE_USER_APPROVAL_TOKEN ?? null;
+const accountantApprovalToken = process.env.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN ?? null;
+const evidenceIngestToken = process.env.TAX_ENGINE_EVIDENCE_INGEST_TOKEN ?? null;
+if (process.env.NODE_ENV === 'production' && (!userApprovalToken || !accountantApprovalToken || !evidenceIngestToken)) {
+  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, and TAX_ENGINE_EVIDENCE_INGEST_TOKEN are required in production');
+}
 
 const store = new TaxProfileStore();
 const argentinaErp = new ContabiliumSandboxProvider(null);
+const reclaimGateway = ReclaimProtocolGateway.fromEnvironment();
+const wsfexGateway = HttpWsfexGateway.fromEnvironment();
+const arcaEnvironment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologacion' as const;
+const proofVault = HttpReclaimProofVault.fromEnvironment();
+const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
+const facturaEAgent = new FacturaEAgentService(store, reclaimGateway, wsfexGateway, proofVault, proofCustodyRequired);
 const jurisdictionSchema = z.enum(['AR', 'US']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
@@ -40,11 +57,23 @@ export const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return applyCors(new Response(null, { status: 204 }), request);
-    if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
 
     try {
+      if (url.pathname === '/v1/reclaim/callback') {
+        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken });
+        return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
+      if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken });
+      if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
-        return applyCors(json({ status: 'ok', execution: 'manual_only', filingEnabled: false }), request);
+        return applyCors(json({
+          status: 'ok',
+          execution: wsfexGateway ? 'human_gated_agent' : 'manual_only',
+          authorityEnvironment: arcaEnvironment,
+          filingEnabled: Boolean(wsfexGateway && arcaEnvironment === 'production'),
+          agent: facturaEAgent.capabilities(),
+        }), request);
       }
       if (request.method === 'GET' && url.pathname === '/v1/catalogues') {
         return applyCors(json({ data: listJurisdictionProviders().map(provider => provider.catalogue) }), request);
@@ -95,8 +124,8 @@ export const server = Bun.serve({
       return applyCors(json({ error: 'NOT_FOUND' }, 404), request);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      const status = message === 'PROFILE_VERSION_CONFLICT' ? 409 : 400;
-      return applyCors(json({ error: message }, status), request);
+      const code = /^[A-Z0-9_]+$/.test(message) ? message : 'INVALID_REQUEST';
+      return applyCors(json({ error: code }, statusForError(code)), request);
     }
   },
 });
@@ -110,7 +139,16 @@ function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
+function statusForError(code: string): number {
+  if (code.endsWith('_NOT_FOUND')) return 404;
+  if (code.endsWith('_UNAUTHORIZED')) return 403;
+  if (code.endsWith('_CONFIGURATION_REQUIRED')) return 503;
+  if (code.endsWith('_EXPIRED')) return 410;
+  if (code.includes('CONFLICT') || code.includes('REPLAY') || code.includes('ALREADY_EXISTS')) return 409;
+  return 400;
+}
+
 if (import.meta.main) {
   console.info(`Tax Automation Engine API listening on http://localhost:${server.port}`);
-  console.info('Execution mode: manual_only; filing and payments disabled');
+  console.info(`Execution mode: ${wsfexGateway ? 'human_gated_agent' : 'manual_only'}; tax payments remain disabled`);
 }

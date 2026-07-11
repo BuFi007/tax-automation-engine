@@ -1,0 +1,53 @@
+{
+  "version": "motora-reclaim-arca-contracts-v1",
+  "providers": [
+    {
+      "purpose": "arca_taxpayer_readiness",
+      "environment": "production-user-session",
+      "targetOrigin": "https://auth.afip.gob.ar",
+      "providerIdEnv": "RECLAIM_ARCA_TAXPAYER_PROVIDER_ID",
+      "allowAiProviderTags": false,
+      "requestDiscovery": "capture-after-user-login; do-not-guess-private-ARCA-endpoints",
+      "requiredExtractedParameters": {
+        "taxRegime": ["monotributo", "responsable_inscripto"],
+        "taxCategory": "string-or-empty",
+        "exportActivityEnabled": ["true"],
+        "exportPointOfSaleActive": ["true"],
+        "exportPointOfSale": "positive-integer-string"
+      },
+      "forbiddenDisclosure": [
+        "clave_fiscal",
+        "session_cookie",
+        "raw_cuit",
+        "domicilio_fiscal",
+        "unrelated_taxpayer_data"
+      ]
+    },
+    {
+      "purpose": "arca_cae_constatement",
+      "environment": "public-constatement-or-user-session",
+      "targetOrigin": "https://servicioscf.afip.gob.ar",
+      "providerIdEnv": "RECLAIM_ARCA_CAE_PROVIDER_ID",
+      "allowAiProviderTags": false,
+      "requestDiscovery": "capture-public-CAE-constatement-result; retain-CAPTCHA-and-user-interaction",
+      "requiredExtractedParameters": {
+        "documentType": ["19", "20", "21"],
+        "pointOfSale": "positive-integer-string",
+        "invoiceNumber": "positive-integer-string",
+        "cae": "10-to-20-digit-string",
+        "issuedAt": "YYYY-MM-DD",
+        "total": "unsigned-exact-decimal-string",
+        "currency": "uppercase-ARCA-currency-code",
+        "associatedDocumentType": "empty-for-19; 19-for-20-or-21",
+        "associatedPointOfSale": "empty-for-19; positive-integer-string-for-20-or-21",
+        "associatedInvoiceNumber": "empty-for-19; positive-integer-string-for-20-or-21"
+      },
+      "forbiddenDisclosure": [
+        "captcha_solution",
+        "raw_issuer_cuit",
+        "recipient_document",
+        "unrelated_invoice_data"
+      ]
+    }
+  ]
+}

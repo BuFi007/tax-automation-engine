@@ -1,0 +1,235 @@
+openapi: 3.1.0
+info:
+  title: Motora isolated ARCA WSFEX signer boundary
+  version: 1.0.0
+paths:
+  /v1/wsfex/authorize:
+    post:
+      summary: Authorize one exact approved Factura E intent
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignerRequest'
+      responses:
+        '200':
+          description: Normalized ARCA result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignerResponse'
+  /v1/wsfex/recover:
+    post:
+      summary: Recover an ambiguous result using the exact same request and payload reference
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignerRequest'
+      responses:
+        '200':
+          description: Recovered normalized ARCA result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignerResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: '^[1-9]\d{0,18}$'
+  schemas:
+    Money:
+      type: object
+      additionalProperties: false
+      required: [decimal, currency]
+      properties:
+        decimal:
+          type: string
+          pattern: '^\d+(\.\d+)?$'
+        currency:
+          type: string
+          pattern: '^[A-Z]{3,10}$'
+    AssociatedDocument:
+      type: object
+      additionalProperties: false
+      required: [documentType, pointOfSale, invoiceNumber]
+      properties:
+        documentType:
+          const: 19
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        invoiceNumber:
+          type: string
+          pattern: '^[1-9]\d*$'
+    InvoiceExpectedDocument:
+      type: object
+      additionalProperties: false
+      required: [documentType, operationType, pointOfSale, issueDate, total]
+      properties:
+        documentType:
+          const: 19
+        operationType:
+          const: 2
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        issueDate:
+          type: string
+          format: date
+        total:
+          $ref: '#/components/schemas/Money'
+    AdjustmentExpectedDocument:
+      type: object
+      additionalProperties: false
+      required: [documentType, operationType, pointOfSale, issueDate, total, associatedDocument]
+      properties:
+        documentType:
+          enum: [20, 21]
+        operationType:
+          const: 2
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        issueDate:
+          type: string
+          format: date
+        total:
+          $ref: '#/components/schemas/Money'
+        associatedDocument:
+          $ref: '#/components/schemas/AssociatedDocument'
+    ExpectedDocument:
+      oneOf:
+        - $ref: '#/components/schemas/InvoiceExpectedDocument'
+        - $ref: '#/components/schemas/AdjustmentExpectedDocument'
+    SignerRequest:
+      type: object
+      additionalProperties: false
+      required: [version, environment, workspaceId, runId, requestId, subjectId, intentHash, authorityPayloadRef, expected]
+      properties:
+        version:
+          const: motora-wsfex-boundary-v1
+        environment:
+          enum: [homologation, production]
+        workspaceId:
+          type: string
+        runId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          pattern: '^[1-9]\d{0,18}$'
+        subjectId:
+          type: string
+          description: Frozen invoice intent ID or adjustment ID.
+        intentHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        authorityPayloadRef:
+          type: string
+          description: Opaque reference resolved inside the signer/vault boundary; never a raw credential or key.
+        expected:
+          $ref: '#/components/schemas/ExpectedDocument'
+    AuthorizedInvoiceDocument:
+      type: object
+      additionalProperties: false
+      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total]
+      properties:
+        intentHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        documentType:
+          const: 19
+        operationType:
+          const: 2
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        issueDate:
+          type: string
+          format: date
+        total:
+          $ref: '#/components/schemas/Money'
+    AuthorizedAdjustmentDocument:
+      type: object
+      additionalProperties: false
+      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total, associatedDocument]
+      properties:
+        intentHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        documentType:
+          enum: [20, 21]
+        operationType:
+          const: 2
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        issueDate:
+          type: string
+          format: date
+        total:
+          $ref: '#/components/schemas/Money'
+        associatedDocument:
+          $ref: '#/components/schemas/AssociatedDocument'
+    AuthorizedDocument:
+      oneOf:
+        - $ref: '#/components/schemas/AuthorizedInvoiceDocument'
+        - $ref: '#/components/schemas/AuthorizedAdjustmentDocument'
+    SignerResponse:
+      type: object
+      additionalProperties: false
+      required: [requestId, status, invoiceNumber, cae, reprocessed, authorizedDocument, safeErrors]
+      properties:
+        requestId:
+          type: string
+          pattern: '^[1-9]\d{0,18}$'
+        status:
+          enum: [accepted, rejected, ambiguous]
+        invoiceNumber:
+          type: [string, 'null']
+          pattern: '^[1-9]\d*$'
+        cae:
+          type: [string, 'null']
+          pattern: '^\d{10,20}$'
+        reprocessed:
+          type: [boolean, 'null']
+        authorizedDocument:
+          oneOf:
+            - $ref: '#/components/schemas/AuthorizedDocument'
+            - type: 'null'
+        safeErrors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+              message:
+                type: string

@@ -7,3 +7,4 @@ export * from './evidence';
 export * from './workflow';
 export * from './snapshot';
 export * from './fixtures';
+export * from './factura-e-agent';
