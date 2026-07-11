@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json bun.lock tsconfig.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/arca-boundary/package.json apps/arca-boundary/package.json
+COPY apps/reclaim-proof-vault/package.json apps/reclaim-proof-vault/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/erp/package.json packages/erp/package.json

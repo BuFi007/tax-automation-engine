@@ -215,6 +215,8 @@ ARCA_ENVIRONMENT=homologacion | production
 
 Missing Reclaim or signer configuration is reported as `configuration_required`; the backend fails closed.
 
+The deployable [`apps/reclaim-proof-vault`](../apps/reclaim-proof-vault/README.md) service implements this custody boundary. It independently verifies the callback artifact hash, stores the raw proof under a per-artifact wrapped key, enforces a versioned purpose/retention policy, and supports scoped human review plus cryptographic erasure. Motora receives only the opaque receipt. Run `bun run homologation:probe-proof-vault` to verify HTTPS health and an active policy without disclosing custody contents.
+
 The shared workspace harness appends normalized connector evidence through `POST /v1/evidence/append` using `X-Tax-Evidence-Ingest-Token`. This credential is also excluded from the agent runtime, so an agent cannot manufacture its own “accepted” transaction history.
 
 ## Completion boundary
@@ -229,4 +231,4 @@ The code implements the agent orchestration, proof verification adapter, human g
 
 Until those external assets are configured and verified, the health endpoint reports the corresponding provider as `configuration_required`, and no production-compliance claim is made.
 
-Run `bun run homologation:preflight`, `bun run homologation:probe-signer`, and `bun run homologation:validate -- <redacted-evidence.json>` to execute the external acceptance gate. The command contract and safe evidence requirements are documented under [`providers/homologation`](../providers/homologation/README.md).
+Run `bun run homologation:preflight`, `bun run homologation:probe-proof-vault`, `bun run homologation:probe-signer`, and `bun run homologation:validate -- <redacted-evidence.json>` to execute the external acceptance gate. The command contract and safe evidence requirements are documented under [`providers/homologation`](../providers/homologation/README.md).

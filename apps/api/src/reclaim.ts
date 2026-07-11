@@ -141,7 +141,7 @@ export class ReclaimProtocolGateway implements ReclaimGateway {
 function normalizeProofs(payload: unknown): Proof[] {
   const decoded = typeof payload === 'string' ? JSON.parse(decodeURIComponent(payload)) as unknown : payload;
   const candidates = Array.isArray(decoded) ? decoded : [decoded];
-  if (!candidates.length || candidates.some(candidate => !candidate || typeof candidate !== 'object')) throw new Error('RECLAIM_PROOF_PAYLOAD_INVALID');
+  if (!candidates.length || candidates.some(candidate => !candidate || typeof candidate !== 'object' || Array.isArray(candidate))) throw new Error('RECLAIM_PROOF_PAYLOAD_INVALID');
   return candidates as Proof[];
 }
 

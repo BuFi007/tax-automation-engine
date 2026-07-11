@@ -76,6 +76,11 @@ const signerHealthSchema = z.object({
   certificateDelegationConfigured: z.literal(true),
   wsaaReady: z.literal(true),
 }).strict();
+const proofVaultHealthSchema = z.object({
+  version: z.literal('reclaim-proof-vault-health-v1'),
+  encryptionReady: z.literal(true),
+  activePolicyCount: z.number().int().positive(),
+}).strict();
 
 export function buildHomologationPreflight(environment: EnvironmentSource = process.env): HomologationPreflightV1 {
   const authorityEnvironment = environment.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologacion' as const;
@@ -167,6 +172,21 @@ export async function probeWsfexHomologationSigner(
     wsfexVersion: health.wsfexVersion,
     safeHealthReceiptHash: hashCanonical(health),
   };
+}
+
+export async function probeReclaimProofVault(
+  config: Readonly<{ baseUrl: string; token: string }>,
+  fetcher: HomologationFetch = (input, init) => fetch(input, init)
+): Promise<Readonly<{ version: 'reclaim-proof-vault-probe-v1'; state: 'ready'; safeHealthReceiptHash: string }>> {
+  if (!config.baseUrl.startsWith('https://')) throw new Error('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
+  if (!config.token) throw new Error('RECLAIM_PROOF_VAULT_TOKEN_REQUIRED');
+  let response: Response;
+  try {
+    response = await fetcher(`${config.baseUrl.replace(/\/$/, '')}/health`, { method: 'GET', headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(15_000) });
+  } catch { throw new Error('RECLAIM_PROOF_VAULT_TRANSPORT_FAILED'); }
+  if (!response.ok) throw new Error(`RECLAIM_PROOF_VAULT_HEALTH_REJECTED_${response.status}`);
+  const health = proofVaultHealthSchema.parse(await response.json());
+  return { version: 'reclaim-proof-vault-probe-v1', state: 'ready', safeHealthReceiptHash: hashCanonical(health) };
 }
 
 function booleanGate(id: string, ready: boolean, missingReason: string): HomologationGateV1 {
