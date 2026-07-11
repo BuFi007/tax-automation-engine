@@ -14,10 +14,11 @@ const OPTIONS: Record<JurisdictionCode, readonly { value: string; label: string 
   ],
 };
 
-export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionChange }: {
+export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionChange, onRegimeChange }: {
   jurisdiction: JurisdictionCode;
   selectedRegime: string;
   onJurisdictionChange: (jurisdiction: JurisdictionCode) => void;
+  onRegimeChange: (regimeId: string) => void;
 }) {
   return (
     <section className="panel profile-panel" aria-labelledby="profile-heading">
@@ -38,7 +39,7 @@ export function ProfileSelector({ jurisdiction, selectedRegime, onJurisdictionCh
         </label>
         <label>
           Confirmed regime
-          <select value={selectedRegime} disabled>
+          <select value={selectedRegime} onChange={event => onRegimeChange(event.target.value)}>
             {OPTIONS[jurisdiction].map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>

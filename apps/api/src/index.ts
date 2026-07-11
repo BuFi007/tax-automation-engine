@@ -50,7 +50,8 @@ export const server = Bun.serve({
       }
       if (request.method === 'GET' && url.pathname === '/v1/snapshots/demo') {
         const jurisdiction = jurisdictionSchema.parse(url.searchParams.get('jurisdiction') ?? 'AR');
-        return applyCors(json({ data: await demoSnapshot(jurisdiction) }), request);
+        const regimeId = url.searchParams.get('regime') ?? undefined;
+        return applyCors(json({ data: await demoSnapshot(jurisdiction, regimeId) }), request);
       }
       if (request.method === 'GET' && url.pathname === '/v1/providers/argentina-erp') {
         const tenantId = url.searchParams.get('tenantId') ?? 'unconfigured';
@@ -81,7 +82,7 @@ export const server = Bun.serve({
         const body = z.object({ workspaceId: z.string().min(1), jurisdiction: jurisdictionSchema }).strict().parse(await request.json());
         const persisted = store.get(body.workspaceId);
         const expectedJurisdiction = persisted?.jurisdiction ?? body.jurisdiction;
-        const snapshot = await demoSnapshot(expectedJurisdiction);
+        const snapshot = await demoSnapshot(expectedJurisdiction, persisted?.regimeId);
         return applyCors(json({
           data: persisted ? { ...snapshot, workspaceId: body.workspaceId, profile: persisted } : snapshot,
           limitations: persisted ? ['Demo evidence adapters are active; connect production adapters before relying on calculations.'] : ['No confirmed profile exists; demo profile and evidence are shown.'],

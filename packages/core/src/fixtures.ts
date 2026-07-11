@@ -56,7 +56,7 @@ export function unitedStatesProfile(): TaxProfile {
   };
 }
 
-export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR') {
+export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regimeId?: string) {
   const sourceIds = ['bufi-ledger', 'quickbooks', 'magic-inbox', 'knowledge-graph', 'financial-analytics'];
   const consent: TaxConsentGrant = {
     purpose: 'tax_workspace_processing',
@@ -77,8 +77,38 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR') {
     asOf: AS_OF,
     dataScope: { mode: 'all_connected' },
   });
-  const profile = jurisdiction === 'AR' ? argentinaProfile() : unitedStatesProfile();
+  const profile = demoProfile(jurisdiction, regimeId);
   return buildTaxWidgetSnapshot({ workspaceId: 'workspace:demo', profile, evidence });
+}
+
+function demoProfile(jurisdiction: JurisdictionCode, regimeId?: string): TaxProfile {
+  const base = jurisdiction === 'AR' ? argentinaProfile() : unitedStatesProfile();
+  if (!regimeId || regimeId === base.regimeId) return base;
+
+  if (jurisdiction === 'AR') {
+    if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
+    return {
+      ...base,
+      profileId: `profile:ar-demo:${regimeId}`,
+      regimeId,
+      entityType: regimeId === 'sociedad_mipyme' ? 'company' : 'individual',
+    };
+  }
+
+  if (!['llc_multi_member', 's_corp', 'c_corp'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
+  const isCorporation = regimeId === 's_corp' || regimeId === 'c_corp';
+  return {
+    ...base,
+    profileId: `profile:us-demo:${regimeId}`,
+    regimeId,
+    entityType: isCorporation ? 'corporation' : 'llc',
+    answers: base.answers.map(answer => {
+      if (answer.questionId === 'member_count') return { ...answer, value: regimeId === 'llc_multi_member' ? 2 : 1 };
+      if (answer.questionId === 'tax_classification') return { ...answer, value: regimeId };
+      if (answer.questionId === 'founder_residency' && regimeId === 's_corp') return { ...answer, value: 'local' };
+      return answer;
+    }),
+  };
 }
 
 function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticAdapterInput {
