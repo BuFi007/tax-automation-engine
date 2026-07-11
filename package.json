@@ -1,0 +1,19 @@
+{
+  "name": "tax-automation-engine",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "bun@1.3.10",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun --filter @tax-engine/web dev",
+    "dev:api": "bun --filter @tax-engine/api dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test && bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5",
+    "typescript": "^5.8.3"
+  }
+}
