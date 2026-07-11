@@ -2,6 +2,8 @@ import { Database } from 'bun:sqlite';
 
 import type { ComplianceWorkspaceState, TaxEvidenceRecord, TaxProfile } from '@tax-engine/core';
 
+import { assertCatalogueSafeProfile } from './profile-validation';
+
 export class TaxProfileStore {
   readonly #db: Database;
 
@@ -59,6 +61,7 @@ export class TaxProfileStore {
     actorId: string;
     occurredAt: string;
   }>): TaxProfile {
+    assertCatalogueSafeProfile(input.profile);
     const existing = this.get(input.profile.workspaceId);
     if (existing && input.expectedVersion !== existing.version) throw new Error('PROFILE_VERSION_CONFLICT');
     if (!existing && input.expectedVersion !== null) throw new Error('PROFILE_VERSION_CONFLICT');
