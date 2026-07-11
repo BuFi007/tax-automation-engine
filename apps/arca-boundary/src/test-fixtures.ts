@@ -60,8 +60,8 @@ function canonicalInvoice() {
   };
 }
 
-export function certificateBundle(cuit = CUIT, now = NOW) {
-  const keys = forge.pki.rsa.generateKeyPair({ bits: 1024, e: 0x10001 });
+export function certificateBundle(cuit = CUIT, now = NOW, bits = 2048) {
+  const keys = forge.pki.rsa.generateKeyPair({ bits, e: 0x10001 });
   const certificate = forge.pki.createCertificate();
   certificate.publicKey = keys.publicKey;
   certificate.serialNumber = '01';

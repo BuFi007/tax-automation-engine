@@ -87,6 +87,7 @@ function provisionRequest() {
     workspaceId: 'workspace-1',
     issuerProfileRef: 'issuer://workspace-1/primary',
     environment: 'homologation' as const,
+    certificateHolderCuit: CUIT,
     representedCuit: CUIT,
     ...certificateBundle(),
     delegationConfirmed: true,

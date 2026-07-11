@@ -11,6 +11,7 @@ export type IssuerCredential = Readonly<{
   workspaceId: string;
   issuerProfileRef: string;
   environment: 'homologation' | 'production';
+  certificateHolderCuit: string;
   representedCuit: string;
   certificatePem: string;
   privateKeyPem: string;
@@ -47,6 +48,7 @@ export class ArcaBoundaryStore {
         issuer_profile_ref TEXT PRIMARY KEY,
         workspace_id_hash TEXT NOT NULL,
         environment TEXT NOT NULL,
+        certificate_holder_cuit_hash TEXT NOT NULL,
         represented_cuit_hash TEXT NOT NULL,
         certificate_fingerprint TEXT NOT NULL,
         credential_bundle_hash TEXT NOT NULL,
@@ -64,6 +66,7 @@ export class ArcaBoundaryStore {
         occurred_at TEXT NOT NULL
       );
     `);
+    this.ensureCertificateHolderColumn();
   }
 
   storePayload(input: Readonly<{
@@ -133,12 +136,13 @@ export class ArcaBoundaryStore {
     );
     this.#db.query(`
       INSERT INTO issuer_credentials (
-        issuer_profile_ref, workspace_id_hash, environment, represented_cuit_hash, certificate_fingerprint,
+        issuer_profile_ref, workspace_id_hash, environment, certificate_holder_cuit_hash, represented_cuit_hash, certificate_fingerprint,
         credential_bundle_hash, encrypted_bundle, delegation_confirmed, active, stored_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(issuer_profile_ref) DO UPDATE SET
         workspace_id_hash = excluded.workspace_id_hash,
         environment = excluded.environment,
+        certificate_holder_cuit_hash = excluded.certificate_holder_cuit_hash,
         represented_cuit_hash = excluded.represented_cuit_hash,
         certificate_fingerprint = excluded.certificate_fingerprint,
         credential_bundle_hash = excluded.credential_bundle_hash,
@@ -150,6 +154,7 @@ export class ArcaBoundaryStore {
       input.credential.issuerProfileRef,
       hashCanonical(input.credential.workspaceId),
       input.credential.environment,
+      hashCanonical(input.credential.certificateHolderCuit),
       hashCanonical(input.credential.representedCuit),
       input.credential.certificateFingerprint,
       input.credentialBundleHash,
@@ -197,14 +202,26 @@ export class ArcaBoundaryStore {
   }
 
   private openIssuer(row: IssuerRow): IssuerCredential {
-    const credential = openJson(this.#issuerKey, issuerAad(row.issuer_profile_ref, environment(row.environment), row.certificate_fingerprint), row.encrypted_bundle) as IssuerCredential;
+    const opened = openJson(this.#issuerKey, issuerAad(row.issuer_profile_ref, environment(row.environment), row.certificate_fingerprint), row.encrypted_bundle) as Partial<IssuerCredential>;
+    const credential = {
+      ...opened,
+      certificateHolderCuit: opened.certificateHolderCuit ?? opened.representedCuit,
+    } as IssuerCredential;
     if (
       credential.issuerProfileRef !== row.issuer_profile_ref
       || credential.environment !== row.environment
       || credential.certificateFingerprint !== row.certificate_fingerprint
+      || hashCanonical(credential.certificateHolderCuit) !== row.certificate_holder_cuit_hash
       || hashCanonical(credential.representedCuit) !== row.represented_cuit_hash
     ) throw new Error('WSAA_ISSUER_BINDING_MISMATCH');
     return credential;
+  }
+
+  private ensureCertificateHolderColumn(): void {
+    const columns = this.#db.query<{ name: string }, []>('PRAGMA table_info(issuer_credentials)').all();
+    if (columns.some(column => column.name === 'certificate_holder_cuit_hash')) return;
+    this.#db.exec('ALTER TABLE issuer_credentials ADD COLUMN certificate_holder_cuit_hash TEXT');
+    this.#db.exec('UPDATE issuer_credentials SET certificate_holder_cuit_hash = represented_cuit_hash WHERE certificate_holder_cuit_hash IS NULL');
   }
 
   private appendEvent(action: string, subjectHash: string, artifactHash: string, occurredAt: string): void {
@@ -229,6 +246,7 @@ type IssuerRow = {
   issuer_profile_ref: string;
   workspace_id_hash: string;
   environment: string;
+  certificate_holder_cuit_hash: string;
   represented_cuit_hash: string;
   certificate_fingerprint: string;
   credential_bundle_hash: string;
