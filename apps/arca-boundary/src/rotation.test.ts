@@ -25,7 +25,7 @@ describe('ARCA boundary master-key rotation', () => {
       workspaceId: 'workspace-1', payload: authorityPayload(), expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'rotation-payload-1', occurredAt: NOW.toISOString(),
     });
     const issuer = validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', representedCuit: CUIT,
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: CUIT,
       ...certificateBundle(), delegationConfirmed: true,
     }, NOW);
     oldStore.provisionIssuer({ ...issuer, replaceCertificateFingerprint: null, occurredAt: NOW.toISOString() });

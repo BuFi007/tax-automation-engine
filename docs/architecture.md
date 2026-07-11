@@ -42,6 +42,15 @@ flowchart LR
 
 The agent never receives the user-approval or accountant-channel tokens. Reclaim requests are created server-side with the application secret, proofs are bound to the initiated session and case context, and accepted session IDs are persisted to prevent replay. WSFEX ambiguous recovery is pinned to the original request ID and hashed authority-payload reference.
 
+For delegated WSFEX, the signing identity and taxpayer identity are separate:
+the encrypted boundary validates the certificate against its holder CUIT, while
+the ephemeral ticket returned to the signer is paired with the workspace's
+represented CUIT for `Auth.Cuit`. In third-party production issuance, ARCA's
+two-sided relationship flow (taxpayer delegation, provider acceptance, then
+computer-certificate binding) must be complete before the tenant can be marked
+active. A successful WSAA login alone does not prove representation; the signer
+also checks the tenant's WSFEX point of sale through the business service.
+
 Associated export notes 20/21 retain independent approval, authority, CAE, request-recovery, and original-document association inside the same immutable case. A derived exact-decimal ledger recomputes the authorized net balance without rewriting the invoice or settlement history. Raw verified Reclaim artifacts can cross only into the external encrypted proof-vault boundary; Motora stores normalized claims, attestation policy/results, and the opaque custody receipt.
 
 The UI receives a `TaxWidgetSnapshotV1`, never raw evidence. Each conclusion carries source references, freshness, confidence, consent scope hash, evidence hash, accountant review state, rule versions, and limitations.

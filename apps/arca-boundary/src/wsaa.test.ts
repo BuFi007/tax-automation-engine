@@ -42,20 +42,32 @@ describe('official WSAA LoginCms transport', () => {
     expect(JSON.stringify(result)).not.toContain(validated.credential.privateKeyPem);
   });
 
-  test('rejects a mismatched key, mismatched CUIT, and expired certificate before transport', () => {
+  test('rejects a mismatched key, mismatched certificate-holder CUIT, and expired certificate before transport', () => {
     const bundle = certificateBundle();
     expect(() => validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', representedCuit: CUIT,
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: CUIT,
       certificatePem: bundle.certificatePem, privateKeyPem: certificateBundle().privateKeyPem, delegationConfirmed: true,
     }, NOW)).toThrow('WSAA_CERTIFICATE_PRIVATE_KEY_MISMATCH');
     expect(() => validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', representedCuit: '20999999991',
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', certificateHolderCuit: '20999999999', representedCuit: CUIT,
       ...bundle, delegationConfirmed: true,
-    }, NOW)).toThrow('WSAA_CERTIFICATE_CUIT_MISMATCH');
+    }, NOW)).toThrow('WSAA_CERTIFICATE_HOLDER_CUIT_MISMATCH');
     expect(() => validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', representedCuit: CUIT,
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: CUIT,
       ...bundle, delegationConfirmed: true,
     }, new Date('2028-01-01T00:00:00.000Z'))).toThrow('WSAA_CERTIFICATE_NOT_CURRENT');
+    expect(() => validateIssuerCredential({
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: CUIT,
+      ...certificateBundle(CUIT, NOW, 1024), delegationConfirmed: true,
+    }, NOW)).toThrow('WSAA_CERTIFICATE_RSA_KEY_TOO_SMALL');
+  });
+
+  test('allows one certificate holder to request a ticket used for a different represented taxpayer', () => {
+    const validated = validateIssuerCredential({
+      workspaceId: 'workspace-tenant', issuerProfileRef: 'issuer://workspace-tenant/bufi', environment: 'production',
+      certificateHolderCuit: CUIT, representedCuit: '20999999999', ...certificateBundle(), delegationConfirmed: true,
+    }, NOW);
+    expect(validated.credential).toEqual(expect.objectContaining({ certificateHolderCuit: CUIT, representedCuit: '20999999999' }));
   });
 
   test('turns SOAP faults into safe errors without returning authority detail', async () => {
@@ -86,7 +98,7 @@ describe('official WSAA LoginCms transport', () => {
 
 function credential() {
   return validateIssuerCredential({
-    workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', representedCuit: CUIT,
+    workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: CUIT,
     ...certificateBundle(), delegationConfirmed: true,
   }, NOW);
 }

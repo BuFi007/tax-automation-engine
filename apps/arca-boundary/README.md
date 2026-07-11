@@ -35,6 +35,10 @@ tickets.
   fingerprints, expiry, state, and append-only audit events.
 - The certificate/private-key pair, certificate validity, and subject CUIT are
   checked before provisioning and every WSAA login.
+- The certificate-holder CUIT is modeled separately from the represented
+  taxpayer CUIT. This permits one isolated BUFI computer certificate to obtain
+  WSAA credentials while each WSFEX business call carries the tenant CUIT in
+  `Auth.Cuit`; certificate material is never confused with tenant identity.
 - LoginCms TRA XML is signed as an encapsulated CMS/PKCS#7 document with SHA-256.
   The returned token/sign pair is cached only in memory and single-flighted.
 - `/health` actively obtains or reuses a real `wsfex` ticket; it returns only
@@ -83,6 +87,7 @@ Provisioning `POST /v1/wsaa/issuers` requires:
   "workspaceId": "workspace reference",
   "issuerProfileRef": "opaque issuer reference",
   "environment": "homologation",
+  "certificateHolderCuit": "CUIT from the certificate subject",
   "representedCuit": "11 digits",
   "certificatePem": "secret certificate PEM",
   "privateKeyPem": "secret unencrypted PKCS#8/PKCS#1 PEM",
@@ -94,6 +99,24 @@ Provisioning `POST /v1/wsaa/issuers` requires:
 Send this body only from the restricted administrator channel over HTTPS. The
 response contains the certificate fingerprint and booleans, never the key or
 CUIT.
+
+For WSASS homologation, the certificate holder and represented CUIT may be the
+same identity. For third-party production issuance they are normally different.
+ARCA's published delegation circuit requires all of these steps before
+`delegationConfirmed` may be set:
+
+1. The taxpayer delegates the exact `wsfex` service to BUFI through
+   Administrador de Relaciones.
+2. BUFI accepts that designation.
+3. BUFI binds its approved computer/certificate alias to `wsfex` for that
+   represented taxpayer.
+4. Motora obtains a WSAA ticket and a tenant-scoped WSFEX call does not return
+   error `1001`; `FEXGetPARAM_PtoVenta` must show the selected FEEWS point of
+   sale as active.
+
+The boolean is an operations attestation, not a substitute for those receipts.
+The Clave Fiscal is used only by the human on ARCA's portal and is never an API
+credential.
 
 ## Run and build
 

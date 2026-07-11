@@ -76,6 +76,7 @@ export function validateIssuerCredential(input: Readonly<{
   workspaceId: string;
   issuerProfileRef: string;
   environment: 'homologation' | 'production';
+  certificateHolderCuit: string;
   representedCuit: string;
   certificatePem: string;
   privateKeyPem: string;
@@ -93,17 +94,19 @@ export function validateIssuerCredential(input: Readonly<{
   if (!publicKey.n || !privateKey.n || publicKey.n.compareTo(privateKey.n) !== 0 || publicKey.e.compareTo(privateKey.e) !== 0) {
     throw new Error('WSAA_CERTIFICATE_PRIVATE_KEY_MISMATCH');
   }
+  if (publicKey.n.bitLength() < 2048) throw new Error('WSAA_CERTIFICATE_RSA_KEY_TOO_SMALL');
   if (certificate.validity.notBefore.getTime() > now.getTime() || certificate.validity.notAfter.getTime() <= now.getTime() + 60_000) {
     throw new Error('WSAA_CERTIFICATE_NOT_CURRENT');
   }
   const serialSubject = certificate.subject.attributes.find(attribute => attribute.name === 'serialNumber' || attribute.type === '2.5.4.5')?.value ?? '';
-  if (!String(serialSubject).includes(input.representedCuit)) throw new Error('WSAA_CERTIFICATE_CUIT_MISMATCH');
+  if (String(serialSubject).trim() !== `CUIT ${input.certificateHolderCuit}`) throw new Error('WSAA_CERTIFICATE_HOLDER_CUIT_MISMATCH');
   const certificateDer = forge.asn1.toDer(forge.pki.certificateToAsn1(certificate)).getBytes();
   const certificateFingerprint = fingerprintDer(certificateDer);
   const credential: IssuerCredential = {
     workspaceId: input.workspaceId,
     issuerProfileRef: input.issuerProfileRef,
     environment: input.environment,
+    certificateHolderCuit: input.certificateHolderCuit,
     representedCuit: input.representedCuit,
     certificatePem: input.certificatePem,
     privateKeyPem: input.privateKeyPem,

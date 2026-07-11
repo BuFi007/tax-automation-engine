@@ -48,16 +48,16 @@ describe('encrypted ARCA boundary storage', () => {
     const { store, path } = persistentStore();
     const bundle = certificateBundle();
     const validated = validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', representedCuit: CUIT,
+      workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: '20999999999',
       ...bundle, delegationConfirmed: true,
     }, NOW);
     const receipt = store.provisionIssuer({ ...validated, replaceCertificateFingerprint: null, occurredAt: NOW.toISOString() });
     const credential = store.getIssuer('workspace-1', receipt.issuerProfileRef, 'homologation');
-    expect(credential).toEqual(expect.objectContaining({ representedCuit: CUIT, certificateFingerprint: receipt.certificateFingerprint, delegationConfirmed: true }));
+    expect(credential).toEqual(expect.objectContaining({ certificateHolderCuit: CUIT, representedCuit: '20999999999', certificateFingerprint: receipt.certificateFingerprint, delegationConfirmed: true }));
     expect(() => store.getIssuer('workspace-2', receipt.issuerProfileRef, 'homologation')).toThrow('WSAA_ISSUER_NOT_FOUND');
 
     const rotated = validateIssuerCredential({
-      workspaceId: 'workspace-1', issuerProfileRef: receipt.issuerProfileRef, environment: 'homologation', representedCuit: CUIT,
+      workspaceId: 'workspace-1', issuerProfileRef: receipt.issuerProfileRef, environment: 'homologation', certificateHolderCuit: CUIT, representedCuit: '20999999999',
       ...certificateBundle(), delegationConfirmed: true,
     }, NOW);
     expect(() => store.provisionIssuer({ ...rotated, replaceCertificateFingerprint: null, occurredAt: NOW.toISOString() }))

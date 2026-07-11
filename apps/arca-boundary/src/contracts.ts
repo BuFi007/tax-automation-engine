@@ -36,6 +36,7 @@ export const issuerProvisionRequestSchema = z.object({
   workspaceId: z.string().min(1).max(200),
   issuerProfileRef: z.string().min(1).max(500),
   environment: environmentSchema,
+  certificateHolderCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' }),
   representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' }),
   certificatePem: z.string().min(1).max(32_000),
   privateKeyPem: z.string().min(1).max(32_000),
