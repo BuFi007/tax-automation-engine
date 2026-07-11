@@ -51,11 +51,13 @@ export function buildTaxWidgetSnapshot(input: Readonly<{
   const provider = getJurisdictionProvider(input.profile.jurisdiction);
   const validation = provider.validateProfile(input.profile);
   const obligations = provider.buildObligations({ profile: input.profile, period: input.evidence.period });
-  const partial = input.evidence.sources.some(source => source.connectionState !== 'connected') || input.evidence.evidenceCoverage.gaps.some(gap => gap.severity === 'blocking');
+  const partialSources = input.evidence.sources.some(source => source.connectionState !== 'connected');
+  const hasBlockingGap = input.evidence.evidenceCoverage.gaps.some(gap => gap.severity === 'blocking');
   const grossIncome = input.evidence.evidenceCoverage.revenue.reconciled;
   const supportedExpenses = input.evidence.evidenceCoverage.expenses.supported;
   const net = grossIncome && supportedExpenses ? subtractMoney(grossIncome, supportedExpenses) : null;
-  const estimateState = validation.length > 0 || !net ? 'unavailable' : partial ? 'preliminary' : 'review_ready';
+  const estimateState = validation.length > 0 || !net || hasBlockingGap ? 'unavailable' : partialSources ? 'preliminary' : 'review_ready';
+  const emptyTaxAmount = { decimal: '0', currency: input.evidence.displayCurrency } as const;
   const nextSteps = obligations
     .filter(obligation => obligation.preparationState !== 'accountant_approved' || obligation.submissionState !== 'accepted')
     .slice(0, 3)
@@ -79,9 +81,9 @@ export function buildTaxWidgetSnapshot(input: Readonly<{
     period: input.evidence.period,
     displayCurrency: input.evidence.displayCurrency,
     metrics: {
-      taxCollected: input.evidence.evidenceCoverage.revenue.reconciled ?? { decimal: '0', currency: input.evidence.displayCurrency },
-      taxPaid: input.evidence.evidenceCoverage.expenses.supported ?? { decimal: '0', currency: input.evidence.displayCurrency },
-      netTaxPosition: net ?? { decimal: '0', currency: input.evidence.displayCurrency },
+      taxCollected: emptyTaxAmount,
+      taxPaid: emptyTaxAmount,
+      netTaxPosition: emptyTaxAmount,
       grossIncome,
       supportedExpenses,
     },
@@ -102,5 +104,5 @@ export function buildTaxWidgetSnapshot(input: Readonly<{
 }
 
 function estimateWarning(state: TaxWidgetSnapshotV1['estimate']['state']): string | null {
-  return state === 'verified' ? null : 'Planning estimate only. Accountant review and authority receipt are separate.';
+  return state === 'verified' ? null : 'Planning estimate only: this is evidence-derived net activity, not a tax liability. Accountant review and authority receipt are separate.';
 }
