@@ -284,6 +284,7 @@ describe('Factura E agent domain', () => {
       errors: expect.arrayContaining(['INVOICE_DATE_INVALID']),
     }));
     expect(validateFacturaEIntent({ ...intent(), issueDate: '2024-02-29', paymentDate: '2024-02-29', exchangeRate: { ...intent().exchangeRate!, observedForDate: '2024-02-28' } }, '2024-02-29').errors).not.toContain('INVOICE_DATE_INVALID');
+    expect(validateFacturaEIntent({ ...intent(), pointOfSale: 99999 }, '2026-07-11').errors).toContain('EXPORT_POINT_OF_SALE_INVALID');
   });
 });
 

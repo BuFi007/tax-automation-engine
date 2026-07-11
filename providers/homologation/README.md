@@ -27,7 +27,14 @@ exit `2` and remain safe for CI logs.
 ## 2. Probe the isolated signer
 
 The signer must implement the redacted `/health` response in
-[`../wsfex/openapi.yaml`](../wsfex/openapi.yaml). Run:
+[`../wsfex/openapi.yaml`](../wsfex/openapi.yaml).
+
+The reference service and container are in
+[`apps/wsfex-signer`](../../apps/wsfex-signer/README.md); they still require an
+approved external payload vault, WSAA broker, delegated certificate, and test
+identity before this gate can pass.
+
+Run:
 
 ```bash
 bun run homologation:probe-signer

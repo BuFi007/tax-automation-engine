@@ -2,7 +2,7 @@
 
 Manual-first, evidence-backed tax readiness for Motora/BUFI. Argentina is the launch wedge; the same deterministic core also supports United States LLC, S-Corp, and C-Corp journeys for local and foreign-domiciled founders.
 
-This repository intentionally separates tax preparation from accountant review, user-approved submission, authority receipt, acceptance, and final satisfaction. Filing, payments, autonomous authority actions, and storage of authority credentials are disabled.
+This repository intentionally separates tax preparation from accountant review, user-approved submission, authority receipt, acceptance, and final satisfaction. Payments and unapproved autonomous authority actions are disabled; delegated WSFEX submission is available only for a frozen, human-approved document through the isolated signer.
 
 ## What is implemented
 
@@ -15,7 +15,7 @@ This repository intentionally separates tax preparation from accountant review, 
 - A reusable accounting contract, a normalized bridge for the existing QuickBooks/Xero/Conta Azul connectors, and a conformance-first Contabilium adapter for the Argentine ERP wedge.
 - SQLite persistence for confirmed profiles, append-only safe evidence records, audit events, and workflow revisions.
 - A browser-safe API, compact Tax Widget, and full tax cockpit with jurisdiction/persona selection, evidence coverage, obligations, and execution gates.
-- An agent-ready Factura E backend with discoverable tools, append-only case revisions, Reclaim proof sessions, a separate trusted human-approval channel, and an isolated WSFEX signer boundary.
+- An agent-ready Factura E backend with discoverable tools, append-only case revisions, Reclaim proof sessions, a separate trusted human-approval channel, and a deployable isolated WSFEX signer for documents 19/20/21.
 
 ## Safety boundary
 
@@ -58,6 +58,15 @@ bun run homologation:validate -- /absolute/path/to/redacted-evidence.json
 
 See [ARCA homologation acceptance](providers/homologation/README.md). These commands keep production disabled and output only safe gate states, versions, and hashes.
 
+The signer is a separate deployment and starts only when its vault, WSAA broker,
+API token, and production gate are configured:
+
+```bash
+bun run --filter @tax-engine/wsfex-signer start
+```
+
+See [isolated signer operations](apps/wsfex-signer/README.md).
+
 ## API surface
 
 - `GET /health`
@@ -91,6 +100,7 @@ Set `TAX_ENGINE_API_KEY` to require bearer authentication. Production startup re
 ```text
 apps/api       Safe HTTP boundary and append-only SQLite stores
 apps/web       Manual Tax Widget and full cockpit
+apps/wsfex-signer  Isolated WSFEX SOAP transport, exact replay, and safe receipt store
 packages/core  Money, consent, evidence graph, jurisdiction packs, workflow
 packages/erp   Accounting import contract and provider bridges
 docs           Architecture, delivery traceability, and execution gates
@@ -98,4 +108,4 @@ docs           Architecture, delivery traceability, and execution gates
 
 ## Deferred by design
 
-Production activation of Reclaim ARCA providers, live WSFEX certificates/signing, IRS e-file integration, tax payment execution, TaxScore, factoring, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The agent orchestration and signer boundary are implemented but fail closed while those providers are unconfigured.
+Production activation of Reclaim ARCA providers, WSFEX certificate delegation, IRS e-file integration, tax payment execution, TaxScore, factoring, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The agent orchestration and signer service are implemented but fail closed while those external assets are unconfigured.
