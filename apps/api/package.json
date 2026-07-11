@@ -8,7 +8,10 @@
     "start": "bun src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test src"
+    "test": "bun test src",
+    "homologation:preflight": "bun src/homologation-cli.ts preflight",
+    "homologation:probe-signer": "bun src/homologation-cli.ts probe-signer",
+    "homologation:validate": "bun src/homologation-cli.ts validate-report"
   },
   "dependencies": {
     "@reclaimprotocol/js-sdk": "5.8.0",

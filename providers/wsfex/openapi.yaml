@@ -3,6 +3,18 @@ info:
   title: Motora isolated ARCA WSFEX signer boundary
   version: 1.0.0
 paths:
+  /health:
+    get:
+      summary: Return redacted homologation signer readiness without certificate material
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Safe signer readiness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignerHealth'
   /v1/wsfex/authorize:
     post:
       summary: Authorize one exact approved Factura E intent
@@ -57,6 +69,23 @@ components:
         type: string
         pattern: '^[1-9]\d{0,18}$'
   schemas:
+    SignerHealth:
+      type: object
+      additionalProperties: false
+      required: [version, environment, signerVersion, wsfexVersion, certificateDelegationConfigured, wsaaReady]
+      properties:
+        version:
+          const: motora-wsfex-signer-health-v1
+        environment:
+          const: homologation
+        signerVersion:
+          type: string
+        wsfexVersion:
+          type: string
+        certificateDelegationConfigured:
+          const: true
+        wsaaReady:
+          const: true
     Money:
       type: object
       additionalProperties: false

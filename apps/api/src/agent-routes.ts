@@ -117,6 +117,9 @@ const evidenceRecordSchema = z.object({
 }).strict();
 
 export const FACTURA_E_AGENT_TOOLS = [
+  tool('tax_ar_homologation_get_preflight', 'Read the redacted external-asset gates for authorized ARCA homologation. This never exposes configured values and never enables production.', {
+    type: 'object', required: [], additionalProperties: false, properties: {},
+  }, 'read_only'),
   tool('tax_ar_factura_e_create_case', 'Create an auditable Argentina Factura E agent case. This never issues an invoice.', {
     type: 'object', required: ['runId', 'workspaceId', 'issuancePath'], additionalProperties: false,
     properties: { runId: { type: 'string', format: 'uuid' }, workspaceId: { type: 'string' }, issuancePath: { enum: ['reclaim_copilot', 'wsfex_delegated'] } },
@@ -312,6 +315,10 @@ async function invokeTool(
 ): Promise<unknown> {
   const occurredAt = new Date().toISOString();
   switch (toolId) {
+    case 'tax_ar_homologation_get_preflight': {
+      z.object({}).strict().parse(body.input);
+      return service.homologationPreflight();
+    }
     case 'tax_ar_factura_e_create_case': {
       const input = z.object({ runId: z.uuid(), workspaceId: z.string().min(1), issuancePath: z.enum(['reclaim_copilot', 'wsfex_delegated']) }).strict().parse(body.input);
       return service.createRun({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });

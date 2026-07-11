@@ -32,6 +32,9 @@ while preserving the no-PIN/no-private-key Motora boundary.
   disclosures but contains no published reviewed provider IDs.
 - `providers/wsfex` defines a signer contract and recovery invariants but contains
   no authorized homologation certificate or deployed signer.
+- `bun run homologation:preflight` now reports missing/unsafe external gates
+  without exposing values; `homologation:probe-signer` checks redacted signer
+  health; and `homologation:validate` validates the final redacted evidence set.
 - `docs/agent-backend.md` correctly lists these as completion boundaries.
 
 ## Commands
@@ -40,6 +43,9 @@ while preserving the no-PIN/no-private-key Motora boundary.
 |---|---|---|
 | Local gate | `bun run check` | exit 0 before external testing |
 | Contract parse | `jq empty providers/reclaim/arca-provider-contracts.json && ruby -e "require 'yaml'; YAML.load_file('providers/wsfex/openapi.yaml')"` | exit 0 |
+| Safe preflight | `bun run homologation:preflight` | exit 0 only after explicit external authority/assets; exit 2 while blocked |
+| Signer probe | `bun run homologation:probe-signer` | exit 0 with homologation versions and safe receipt hash |
+| Evidence validation | `bun run homologation:validate -- /absolute/path/to/redacted-evidence.json` | exit 0 only for complete redacted acceptance evidence |
 | Secret scan | `git diff --cached --check && git status --short` | no credential-bearing file staged |
 
 ## Scope
