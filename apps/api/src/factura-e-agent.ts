@@ -36,6 +36,8 @@ import type { ReclaimProofVault } from './proof-vault';
 import { buildHomologationPreflight } from './homologation';
 import type { TaxProfileStore } from './store';
 import type { WsfexGateway } from './wsfex';
+import type { AuthorityPayloadWriter } from './authority-payload';
+import type { AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 
 export type AgentMutationResult<T = undefined> = Readonly<{
   run: FacturaEAgentRunV1;
@@ -50,7 +52,8 @@ export class FacturaEAgentService {
     private readonly reclaim: ReclaimGateway | null,
     private readonly wsfex: WsfexGateway | null,
     private readonly proofVault: ReclaimProofVault | null = null,
-    private readonly proofCustodyRequired = false
+    private readonly proofCustodyRequired = false,
+    private readonly authorityPayloadWriter: AuthorityPayloadWriter | null = null
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -59,6 +62,7 @@ export class FacturaEAgentService {
       execution: {
         reclaimCopilot: this.reclaim ? 'available' : 'configuration_required',
         wsfexDelegated: this.wsfex ? 'available' : 'configuration_required',
+        wsfexAuthorityPayloadVault: this.authorityPayloadWriter ? 'available' : 'configuration_required',
         reclaimProofCustody: this.proofVault ? 'available' : this.proofCustodyRequired ? 'configuration_required' : 'not_required',
       },
       financialContext: buildCapabilityManifest(),
@@ -518,6 +522,91 @@ export class FacturaEAgentService {
       const applied = approveFacturaEIntentByAccountant(current, input);
       return { ...applied, output: undefined };
     }, input.occurredAt);
+  }
+
+  async prepareAndSubmitWsfex(input: Readonly<{
+    runId: string;
+    adjustmentId: string | null;
+    requestId: string;
+    invoiceNumber: string;
+    issuerProfileRef: string;
+    customer: Omit<AuthorityPayload['customer'], 'referenceHash'>;
+    currencyArcaId: string;
+    language: 1 | 2 | 3;
+    commercialObservation: string | null;
+    generalObservation: string | null;
+    expiresAt: string;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>) {
+    if (!this.authorityPayloadWriter) throw new Error('ARCA_BOUNDARY_CONFIGURATION_REQUIRED');
+    if (!this.wsfex) throw new Error('WSFEX_CONFIGURATION_REQUIRED');
+    const run = this.getRun(input.runId);
+    if (!run.intent || !run.intentHash) throw new Error('FROZEN_INTENT_REQUIRED');
+    const quote = run.intent.exchangeRate?.decimal ?? '1';
+    let payload: AuthorityPayload;
+    if (input.adjustmentId) {
+      const adjustment = run.adjustments.find(candidate => candidate.adjustmentId === input.adjustmentId);
+      if (!adjustment || adjustment.issuanceState !== 'ready_for_wsfex') throw new Error('ADJUSTMENT_WSFEX_SUBMISSION_NOT_READY');
+      const canonicalDocument = {
+        version: 'factura-e-adjustment-v1' as const,
+        adjustmentId: adjustment.adjustmentId,
+        documentType: adjustment.documentType,
+        associatedDocument: adjustment.associatedDocument,
+        issueDate: adjustment.issueDate,
+        amount: adjustment.amount,
+        reason: adjustment.reason,
+        foreignCustomerReferenceHash: adjustment.foreignCustomerReferenceHash,
+        destinationCountryArcaCode: adjustment.destinationCountryArcaCode,
+        ruleVersionIds: [...adjustment.ruleVersionIds],
+      };
+      if (hashCanonical(canonicalDocument) !== adjustment.intentHash) throw new Error('ADJUSTMENT_CANONICAL_HASH_MISMATCH');
+      payload = {
+        version: 'wsfex-authority-payload-v1', canonicalDocument, issuerProfileRef: input.issuerProfileRef,
+        subjectId: adjustment.adjustmentId, intentHash: adjustment.intentHash, requestId: input.requestId, invoiceNumber: input.invoiceNumber,
+        documentType: adjustment.documentType, operationType: 2, pointOfSale: adjustment.associatedDocument.pointOfSale, issueDate: adjustment.issueDate,
+        destinationCountryArcaCode: run.intent.destinationCountryArcaCode,
+        customer: { referenceHash: run.intent.foreignCustomerReferenceHash, ...input.customer },
+        currency: { safeCode: adjustment.amount.currency, arcaId: input.currencyArcaId, quote },
+        sameCurrencyPayment: null, paymentDate: null, total: adjustment.amount.decimal, paymentTerms: null,
+        commercialObservation: input.commercialObservation, generalObservation: input.generalObservation, language: input.language,
+        associatedDocument: adjustment.associatedDocument,
+        items: [{ code: null, description: adjustment.reason, quantity: '1', unitCode: 7, unitPrice: adjustment.amount.decimal, discount: '0', total: adjustment.amount.decimal }],
+      };
+    } else {
+      if (run.issuanceState !== 'ready_for_wsfex' || run.intentState !== 'frozen') throw new Error('WSFEX_SUBMISSION_NOT_READY');
+      if (hashCanonical(run.intent) !== run.intentHash) throw new Error('FACTURA_E_CANONICAL_HASH_MISMATCH');
+      const canonicalDocument = {
+        ...run.intent,
+        lineItems: run.intent.lineItems.map(item => ({ ...item })),
+        ruleVersionIds: [...run.intent.ruleVersionIds],
+      };
+      payload = {
+        version: 'wsfex-authority-payload-v1', canonicalDocument, issuerProfileRef: input.issuerProfileRef,
+        subjectId: run.intent.intentId, intentHash: run.intentHash, requestId: input.requestId, invoiceNumber: input.invoiceNumber,
+        documentType: 19, operationType: 2, pointOfSale: run.intent.pointOfSale, issueDate: run.intent.issueDate,
+        destinationCountryArcaCode: run.intent.destinationCountryArcaCode,
+        customer: { referenceHash: run.intent.foreignCustomerReferenceHash, ...input.customer },
+        currency: { safeCode: run.intent.total.currency, arcaId: input.currencyArcaId, quote },
+        sameCurrencyPayment: run.intent.total.currency === 'ARS' ? null : run.intent.sameCurrencyPayment,
+        paymentDate: run.intent.paymentDate, total: run.intent.total.decimal, paymentTerms: run.intent.paymentTerms,
+        commercialObservation: input.commercialObservation, generalObservation: input.generalObservation, language: input.language,
+        associatedDocument: null,
+        items: run.intent.lineItems.map(item => ({ code: null, description: item.description, quantity: item.quantity, unitCode: item.unitCode, unitPrice: item.unitPrice, discount: '0', total: item.total })),
+      };
+    }
+    const payloadReceipt = await this.authorityPayloadWriter.store({
+      workspaceId: run.workspaceId, payload, expiresAt: input.expiresAt, idempotencyKey: `${input.idempotencyKey}:vault`,
+    });
+    const command = {
+      runId: input.runId, requestId: input.requestId, authorityPayloadRef: payloadReceipt.reference, actorId: input.actorId,
+      idempotencyKey: `${input.idempotencyKey}:submit`, occurredAt: input.occurredAt,
+    };
+    const submission = input.adjustmentId
+      ? await this.submitWsfexAdjustment({ ...command, adjustmentId: input.adjustmentId })
+      : await this.submitWsfex(command);
+    return { payloadReceipt, submission };
   }
 
   async submitWsfex(input: Readonly<{

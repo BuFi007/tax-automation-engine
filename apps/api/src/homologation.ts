@@ -35,6 +35,9 @@ const wsfexResultSchema = z.object({
   ambiguousOutcomeObserved: z.boolean(),
   exactRecoveryReceiptHash: hashSchema,
   mismatchedEchoRejected: z.boolean(),
+  canonicalPayloadMismatchRejected: z.boolean(),
+  encryptedPayloadAtRestVerified: z.boolean(),
+  wsaaKeyIsolationVerified: z.boolean(),
 }).strict();
 const journeySchema = z.object({
   path: z.enum(['reclaim_copilot', 'wsfex_delegated']),
@@ -79,17 +82,19 @@ export function buildHomologationPreflight(environment: EnvironmentSource = proc
   const gates: HomologationGateV1[] = [
     booleanGate('explicit_homologation_authority', environment.ARCA_HOMOLOGATION_AUTHORIZED === 'true', 'Explicit homologation authority has not been recorded.'),
     booleanGate('approved_test_identity', environment.ARCA_HOMOLOGATION_TEST_IDENTITY_APPROVED === 'true', 'No approved homologation test identity is recorded.'),
-    configuredGate('trusted_human_channels', [environment.TAX_ENGINE_USER_APPROVAL_TOKEN, environment.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, environment.TAX_ENGINE_EVIDENCE_INGEST_TOKEN], 'Trusted user, accountant, and evidence-ingest channels must all be configured.'),
+    configuredGate('trusted_human_channels', [environment.TAX_ENGINE_USER_APPROVAL_TOKEN, environment.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, environment.TAX_ENGINE_EVIDENCE_INGEST_TOKEN, environment.TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN], 'Trusted user, accountant, evidence-ingest, and authority-payload channels must all be configured.'),
     configuredGate('reclaim_application', [environment.RECLAIM_APP_ID, environment.RECLAIM_APP_SECRET, environment.RECLAIM_CALLBACK_BASE_URL], 'Reclaim application and callback configuration is incomplete.'),
     booleanAndConfiguredGate('reviewed_reclaim_readiness_provider', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_ID, 'The readiness provider is missing or has not been explicitly reviewed.'),
     booleanAndConfiguredGate('reviewed_reclaim_cae_provider', environment.RECLAIM_ARCA_CAE_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_CAE_PROVIDER_ID, 'The CAE provider is missing or has not been explicitly reviewed.'),
     configuredGate('encrypted_proof_custody', [environment.RECLAIM_PROOF_VAULT_URL, environment.RECLAIM_PROOF_VAULT_TOKEN, environment.RECLAIM_PROOF_RETENTION_POLICY_ID], 'Encrypted proof-vault custody and retention policy must be configured for acceptance.'),
     configuredGate('isolated_wsfex_signer', [environment.ARCA_SIGNER_URL, environment.ARCA_SIGNER_TOKEN], 'The isolated WSFEX signer is not configured.'),
+    configuredGate('encrypted_arca_boundary', [environment.ARCA_BOUNDARY_URL, environment.ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN], 'The encrypted ARCA payload boundary is not configured.'),
     booleanGate('wsfex_certificate_delegation', environment.ARCA_WSFEX_DELEGATION_CONFIRMED === 'true', 'Authorized WSFEX certificate delegation has not been confirmed.'),
     safeEnvironmentGate(authorityEnvironment, environment.TAX_ENGINE_PRODUCTION_APPROVED === 'true'),
     httpsGate('reclaim_callback_https', environment.RECLAIM_CALLBACK_BASE_URL, 'Reclaim callback must use HTTPS for homologation.'),
     httpsGate('proof_vault_https', environment.RECLAIM_PROOF_VAULT_URL, 'Proof vault must use HTTPS for homologation.'),
     httpsGate('wsfex_signer_https', environment.ARCA_SIGNER_URL, 'WSFEX signer must use HTTPS for homologation.'),
+    httpsGate('arca_boundary_https', environment.ARCA_BOUNDARY_URL, 'ARCA authority boundary must use HTTPS for homologation.'),
   ];
   return {
     version: 'arca-homologation-preflight-v1',
@@ -119,6 +124,7 @@ export function validateHomologationEvidence(input: unknown): Readonly<{
   requireUniqueCoverage('journey_coverage', evidence.journeys.map(item => item.path), ['reclaim_copilot', 'wsfex_delegated'], failed);
   if (evidence.reclaim.some(item => !item.negativeBindingCasesRejected || (item.teeRequired && !item.teeVerified))) failed.push('reclaim_negative_or_tee_gate');
   if (evidence.wsfex.some(item => !item.ambiguousOutcomeObserved || !item.mismatchedEchoRejected)) failed.push('wsfex_recovery_or_echo_gate');
+  if (evidence.wsfex.some(item => !item.canonicalPayloadMismatchRejected || !item.encryptedPayloadAtRestVerified || !item.wsaaKeyIsolationVerified)) failed.push('wsfex_boundary_gate');
   if (evidence.journeys.some(item => !item.separateSettlementFxTaxStatesObserved)) failed.push('state_separation_gate');
   if (!evidence.reviews.accountantAccepted || !evidence.reviews.securityAccepted || !evidence.reviews.ownerAcceptedForProductionReview) failed.push('human_review_gate');
   return {

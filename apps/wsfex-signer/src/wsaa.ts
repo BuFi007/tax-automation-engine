@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { isValidCuit } from './contracts';
+
 export type WsfexAccessTicket = Readonly<{
   token: string;
   sign: string;
@@ -17,7 +19,7 @@ type BrokerFetch = (input: string | URL | Request, init?: RequestInit) => Promis
 const ticketSchema = z.object({
   token: z.string().min(1),
   sign: z.string().min(1),
-  representedCuit: z.string().regex(/^\d{11}$/),
+  representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
   expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 const healthSchema = z.object({

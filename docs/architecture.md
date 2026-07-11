@@ -25,8 +25,10 @@ flowchart LR
   D --> H["Trusted user approval\nseparate credential"]
   H --> B["Path B\nARCA copilot"]
   H --> W["Path A\nWSFEX signer boundary"]
-  W --> Q["Opaque payload vault\nno agent access"]
-  W --> Y["WSAA ticket broker\nkey stays outside signer"]
+  H --> P["Trusted payload channel\ncanonical hash rechecked"]
+  P --> Q["Encrypted ARCA boundary\nraw payload + delegated key"]
+  Q --> W
+  W --> Q
   W --> ARA["ARCA WSFEX 3.1.1\n19 · 20 · 21"]
   B --> R["Reclaim CAE proof"]
   W --> V["Verified signer receipt"]

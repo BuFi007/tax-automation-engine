@@ -22,7 +22,7 @@ const intentSchema = z.object({
   foreignCustomerReferenceHash: sha256Schema,
   foreignCustomerSafeLabel: z.string().min(1).max(160),
   destinationCountry: z.string().regex(/^[A-Z]{2}$/),
-  destinationCountryArcaCode: z.number().int().positive(),
+  destinationCountryArcaCode: z.number().int().positive().max(999),
   documentType: z.literal(19),
   operationType: z.literal(2),
   pointOfSale: z.number().int().positive().max(99998),
@@ -35,7 +35,7 @@ const intentSchema = z.object({
     quantity: decimalSchema,
     unitPrice: decimalSchema,
     total: decimalSchema,
-    unitCode: z.number().int().nonnegative(),
+    unitCode: z.number().int().nonnegative().max(99),
   }).strict()).min(1),
   total: moneySchema,
   serviceDescription: z.string().min(1).max(4_000),
@@ -48,7 +48,7 @@ const evidenceProposalSchema = z.object({
   intentId: z.string().min(1),
   foreignCustomerSafeLabel: z.string().min(1).max(160),
   destinationCountry: z.string().regex(/^[A-Z]{2}$/),
-  destinationCountryArcaCode: z.number().int().positive(),
+  destinationCountryArcaCode: z.number().int().positive().max(999),
   pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
   paymentDate: z.iso.date(),
@@ -56,7 +56,7 @@ const evidenceProposalSchema = z.object({
   exchangeRate: exchangeRateSchema,
   serviceDescription: z.string().min(1).max(4_000),
   paymentTerms: z.string().min(1).max(1_000),
-  unitCode: z.number().int().nonnegative(),
+  unitCode: z.number().int().nonnegative().max(99),
 }).strict();
 const adjustmentSchema = z.object({
   runId: z.uuid(),
@@ -65,6 +65,24 @@ const adjustmentSchema = z.object({
   issueDate: z.iso.date(),
   amount: moneySchema,
   reason: z.string().min(1).max(4_000),
+}).strict();
+const authorityPayloadInputSchema = z.object({
+  actorId: z.string().min(1),
+  idempotencyKey: z.string().min(8),
+  requestId: wsfexRequestIdSchema,
+  invoiceNumber: z.string().regex(/^[1-9]\d{0,7}$/),
+  issuerProfileRef: z.string().min(1).max(500),
+  customer: z.object({
+    name: z.string().min(1).max(200),
+    address: z.string().min(1).max(300),
+    countryCuit: z.string().regex(/^\d{11}$/),
+    foreignTaxId: z.string().min(1).max(50).nullable(),
+  }).strict(),
+  currencyArcaId: z.string().min(1).max(3),
+  language: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  commercialObservation: z.string().max(4000).nullable(),
+  generalObservation: z.string().max(1000).nullable(),
+  expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 
 const settlementSchema = z.object({
@@ -189,7 +207,7 @@ export async function handleAgentRoute(
   request: Request,
   url: URL,
   service: FacturaEAgentService,
-  options: Readonly<{ userApprovalToken: string | null; accountantApprovalToken: string | null; evidenceIngestToken: string | null }>
+  options: Readonly<{ userApprovalToken: string | null; accountantApprovalToken: string | null; evidenceIngestToken: string | null; authorityPayloadToken?: string | null }>
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/callback') {
     const sessionId = request.headers.get('x-reclaim-session-id');
@@ -275,6 +293,27 @@ export async function handleAgentRoute(
       ...body,
       runId: decodeURIComponent(adjustmentAccountantApprovalMatch[1]!),
       adjustmentId: decodeURIComponent(adjustmentAccountantApprovalMatch[2]!),
+      occurredAt: new Date().toISOString(),
+    }) });
+  }
+
+  const authorityPayloadMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/wsfex-payload$/);
+  if (request.method === 'POST' && authorityPayloadMatch) {
+    requireTrustedToken(request, 'x-tax-authority-payload-token', options.authorityPayloadToken ?? null, 'AUTHORITY_PAYLOAD');
+    const body = authorityPayloadInputSchema.parse(await boundedJson(request, 65_536, 'AUTHORITY_PAYLOAD_REQUEST_TOO_LARGE'));
+    return json({ data: await service.prepareAndSubmitWsfex({
+      ...body, runId: decodeURIComponent(authorityPayloadMatch[1]!), adjustmentId: null, occurredAt: new Date().toISOString(),
+    }) });
+  }
+
+  const adjustmentAuthorityPayloadMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/wsfex-payload$/);
+  if (request.method === 'POST' && adjustmentAuthorityPayloadMatch) {
+    requireTrustedToken(request, 'x-tax-authority-payload-token', options.authorityPayloadToken ?? null, 'AUTHORITY_PAYLOAD');
+    const body = authorityPayloadInputSchema.parse(await boundedJson(request, 65_536, 'AUTHORITY_PAYLOAD_REQUEST_TOO_LARGE'));
+    return json({ data: await service.prepareAndSubmitWsfex({
+      ...body,
+      runId: decodeURIComponent(adjustmentAuthorityPayloadMatch[1]!),
+      adjustmentId: decodeURIComponent(adjustmentAuthorityPayloadMatch[2]!),
       occurredAt: new Date().toISOString(),
     }) });
   }
@@ -405,6 +444,14 @@ function constantTimeEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+async function boundedJson(request: Request, maximumBytes: number, errorCode: string): Promise<unknown> {
+  const declaredBytes = Number(request.headers.get('content-length') ?? 0);
+  if (declaredBytes > maximumBytes) throw new Error(errorCode);
+  const raw = await request.text();
+  if (Buffer.byteLength(raw) > maximumBytes) throw new Error(errorCode);
+  return JSON.parse(raw) as unknown;
 }
 
 function json(value: unknown, status = 200): Response {

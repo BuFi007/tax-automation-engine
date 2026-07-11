@@ -3,7 +3,9 @@ import { describe, expect, test } from 'bun:test';
 import { hashCanonical, type FacturaEAgentRunV1, type FacturaEIntentV1, type FacturaEProofPurpose, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type TaxEvidenceRecord, type VerifiedReclaimProofV1 } from '@tax-engine/core';
 
 import { handleAgentRoute } from './agent-routes';
+import type { AuthorityPayloadReceipt, AuthorityPayloadWriter } from './authority-payload';
 import { FacturaEAgentService } from './factura-e-agent';
+import type { AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 import type { ReclaimProofVault } from './proof-vault';
 import type { ReclaimGateway, ReclaimRequestResult } from './reclaim';
 import { TaxProfileStore } from './store';
@@ -172,8 +174,9 @@ describe('Factura E agent HTTP tools', () => {
   test('runs Path A through the signer and recovers ambiguity with the exact request and payload', async () => {
     const store = new TaxProfileStore(':memory:');
     confirmArgentinaProfile(store);
-    const service = new FacturaEAgentService(store, new FakeReclaimGateway(), new FakeWsfexGateway());
-    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token' };
+    const payloadWriter = new FakeAuthorityPayloadWriter();
+    const service = new FacturaEAgentService(store, new FakeReclaimGateway(), new FakeWsfexGateway(), null, false, payloadWriter);
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', authorityPayloadToken: 'authority-payload-token' };
     const pathARunId = '30000000-0000-4000-8000-000000000001';
     const base = { actorId: 'agent:tax', occurredAt: new Date().toISOString() };
     service.createRun({ ...base, runId: pathARunId, workspaceId, issuancePath: 'wsfex_delegated', idempotencyKey: 'path-a-create-1' });
@@ -186,15 +189,34 @@ describe('Factura E agent HTTP tools', () => {
     expect(service.getRun(pathARunId).issuanceState).toBe('not_ready');
     service.approveIntentByAccountant({ ...base, actorId: 'accountant:1', runId: pathARunId, intentHash: pending.intentHash!, idempotencyKey: 'path-a-approve-accountant-1' });
 
-    const submitted = await service.submitWsfex({
-      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: 'vault://authority/payload-9001', idempotencyKey: 'path-a-submit-1',
+    const authorityInput = {
+      actorId: 'agent:tax', idempotencyKey: 'path-a-trusted-payload-1', requestId: '9001', invoiceNumber: '51',
+      issuerProfileRef: 'issuer://workspace-agent-api/primary',
+      customer: { name: 'Foreign legal customer', address: '123 Foreign St', countryCuit: '50000000016', foreignTaxId: 'US-TAX-ID' },
+      currencyArcaId: 'DOL', language: 2, commercialObservation: null, generalObservation: null,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    };
+    expect(route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/wsfex-payload`, authorityInput))
+      .rejects.toThrow('AUTHORITY_PAYLOAD_UNAUTHORIZED');
+    const trustedSubmission = await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/wsfex-payload`, authorityInput, {
+      'x-tax-authority-payload-token': 'authority-payload-token',
     });
-    expect(submitted.run.issuanceState).toBe('ambiguous');
+    const trustedData = (await trustedSubmission.json() as any).data;
+    expect(trustedData.submission.run.issuanceState).toBe('ambiguous');
+    const invoicePayloadRef = trustedData.payloadReceipt.reference;
+    expect(payloadWriter.payloads[0]).toEqual(expect.objectContaining({
+      canonicalDocument: expect.objectContaining({ intentId: 'intent-path-a', paymentTerms: 'Due on receipt' }),
+      intentHash: pending.intentHash,
+      customer: expect.objectContaining({ foreignTaxId: 'US-TAX-ID' }),
+      items: [{ code: null, description: 'Software services', quantity: '1', unitCode: 7, unitPrice: '1000.00', discount: '0', total: '1000.00' }],
+    }));
+    expect(JSON.stringify(service.getRun(pathARunId))).not.toContain('US-TAX-ID');
+    expect(JSON.stringify(service.getRun(pathARunId))).not.toContain('Foreign legal customer');
     expect(service.recoverWsfex({
-      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: 'vault://authority/wrong', idempotencyKey: 'path-a-recover-wrong',
+      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: 'vault://wsfex/00000000-0000-4000-8000-000000000000', idempotencyKey: 'path-a-recover-wrong',
     })).rejects.toThrow('WSFEX_RECOVERY_PAYLOAD_MISMATCH');
     const recovered = await service.recoverWsfex({
-      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: 'vault://authority/payload-9001', idempotencyKey: 'path-a-recover-1',
+      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: invoicePayloadRef, idempotencyKey: 'path-a-recover-1',
     });
     expect(recovered.run).toEqual(expect.objectContaining({
       issuanceState: 'arca_authorized',
@@ -216,15 +238,22 @@ describe('Factura E agent HTTP tools', () => {
     await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/adjustments/path-a-debit-1/accountant-approval`, {
       actorId: 'accountant:1', intentHash: adjustmentHash, idempotencyKey: 'path-a-adjustment-accountant-approval-1',
     }, { 'x-tax-accountant-approval-token': 'accountant-token' });
-    const adjustmentSubmitted = await invoke(service, options, 'tax_ar_factura_e_submit_adjustment_wsfex', 'path-a-submit-adjustment-1', {
-      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: 'vault://authority/payload-9002',
-    });
-    expect(adjustmentSubmitted.data.run.adjustments[0].issuanceState).toBe('ambiguous');
+    const adjustmentPayloadResponse = await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/adjustments/path-a-debit-1/wsfex-payload`, {
+      ...authorityInput, idempotencyKey: 'path-a-trusted-adjustment-payload-1', requestId: '9002', invoiceNumber: '52',
+    }, { 'x-tax-authority-payload-token': 'authority-payload-token' });
+    const adjustmentPayloadData = (await adjustmentPayloadResponse.json() as any).data;
+    expect(adjustmentPayloadData.submission.run.adjustments[0].issuanceState).toBe('ambiguous');
+    const adjustmentPayloadRef = adjustmentPayloadData.payloadReceipt.reference;
+    expect(payloadWriter.payloads[1]).toEqual(expect.objectContaining({
+      canonicalDocument: expect.objectContaining({ adjustmentId: 'path-a-debit-1', reason: 'Additional approved service scope' }),
+      paymentDate: null, sameCurrencyPayment: null, paymentTerms: null,
+      items: [expect.objectContaining({ description: 'Additional approved service scope', total: '25.00' })],
+    }));
     expect(invoke(service, options, 'tax_ar_factura_e_recover_adjustment_wsfex', 'path-a-recover-adjustment-wrong', {
-      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: 'vault://authority/wrong',
+      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: 'vault://wsfex/00000000-0000-4000-8000-000000000000',
     })).rejects.toThrow('ADJUSTMENT_WSFEX_RECOVERY_PAYLOAD_MISMATCH');
     const adjustmentRecovered = await invoke(service, options, 'tax_ar_factura_e_recover_adjustment_wsfex', 'path-a-recover-adjustment-1', {
-      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: 'vault://authority/payload-9002',
+      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: adjustmentPayloadRef,
     });
     expect(adjustmentRecovered.data.run).toEqual(expect.objectContaining({
       authority: expect.objectContaining({ invoiceNumber: '51', cae: '98765432109876' }),
@@ -380,6 +409,21 @@ class FakeProofVault implements ReclaimProofVault {
   }
 }
 
+class FakeAuthorityPayloadWriter implements AuthorityPayloadWriter {
+  readonly payloads: AuthorityPayload[] = [];
+
+  async store(input: { payload: AuthorityPayload; expiresAt: string }): Promise<AuthorityPayloadReceipt> {
+    this.payloads.push(input.payload);
+    return {
+      version: 'authority-payload-store-receipt-v1',
+      reference: `vault://wsfex/00000000-0000-4000-8000-${input.payload.requestId.padStart(12, '0')}`,
+      payloadHash: hashCanonical(input.payload),
+      storedAt: new Date().toISOString(),
+      expiresAt: input.expiresAt,
+    };
+  }
+}
+
 class FakeWsfexGateway implements WsfexGateway {
   readonly providerId = 'fake-wsfex';
 
@@ -402,7 +446,7 @@ class FakeWsfexGateway implements WsfexGateway {
 
 async function invoke(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; authorityPayloadToken?: string },
   toolId: string,
   idempotencyKey: string,
   input: Record<string, unknown>
@@ -414,7 +458,7 @@ async function invoke(
 
 async function route(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; authorityPayloadToken?: string },
   method: string,
   path: string,
   body?: unknown,
