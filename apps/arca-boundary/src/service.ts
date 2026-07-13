@@ -21,7 +21,10 @@ export class ArcaBoundaryService {
     const expiresAt = Date.parse(input.expiresAt);
     if (!Number.isFinite(expiresAt) || expiresAt <= now) throw new Error('AUTHORITY_PAYLOAD_EXPIRATION_INVALID');
     if (expiresAt - now > MAX_PAYLOAD_RETENTION_MS) throw new Error('AUTHORITY_PAYLOAD_RETENTION_TOO_LONG');
-    if (input.payload.canonicalDocument.version === 'factura-e-intent-v1' && input.payload.canonicalDocument.workspaceId !== input.workspaceId) {
+    // Bind the payload to its workspace on every canonical that carries one
+    // (WSFEX Factura E intents and both WSFE Factura C canonicals).
+    const canonicalDocument = input.payload.canonicalDocument;
+    if ('workspaceId' in canonicalDocument && canonicalDocument.workspaceId !== input.workspaceId) {
       throw new Error('AUTHORITY_PAYLOAD_WORKSPACE_MISMATCH');
     }
     return this.store.storePayload({ ...input, idempotencyKey, occurredAt });
