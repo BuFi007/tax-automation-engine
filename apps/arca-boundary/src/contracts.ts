@@ -14,8 +14,11 @@ const referenceSchema = z.string().regex(/^vault:\/\/(?:wsfex|wsfe)\/[0-9a-f-]{3
 const environmentSchema = z.enum(['homologation', 'production']);
 // One WSAA credential can obtain tickets for several ARCA services. The ticket
 // service literal is the only field ARCA scopes per web service, so it stays a
-// closed enum: 'wsfex' (Factura E) and 'wsfe' (Factura C / WSFEV1).
-export const wsaaServiceSchema = z.enum(['wsfex', 'wsfe']);
+// closed enum: 'wsfex' (Factura E), 'wsfe' (Factura C / WSFEV1), and 'wsfecred'
+// (Factura de Crédito Electrónica MiPyMEs read-only lifecycle). Ticket issuance
+// only — the read-only wsfecred client stores no authority payload, so the
+// vault referenceSchema above stays scoped to the two issuing services.
+export const wsaaServiceSchema = z.enum(['wsfex', 'wsfe', 'wsfecred']);
 export type WsaaService = z.infer<typeof wsaaServiceSchema>;
 
 export const payloadStoreRequestSchema = z.object({

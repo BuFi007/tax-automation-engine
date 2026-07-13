@@ -12,6 +12,7 @@
     "dev:api": "bun --filter @tax-engine/api dev",
     "dev:signer": "bun --filter @tax-engine/wsfex-signer dev",
     "dev:wsfe-signer": "bun --filter @tax-engine/wsfe-signer dev",
+    "dev:wsfecred": "bun --filter @tax-engine/wsfecred dev",
     "dev:arca-boundary": "bun --filter @tax-engine/arca-boundary dev",
     "dev:proof-vault": "bun --filter @tax-engine/reclaim-proof-vault dev",
     "build": "bun run --filter '*' build",
