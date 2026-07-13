@@ -3,10 +3,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { AnyAuthorityPayload } from './contracts';
 import { rotateBoundaryMasterKey } from './rotation';
 import { ArcaBoundaryStore } from './store';
 import { authorityPayload, certificateBundle, CUIT, NOW } from './test-fixtures';
 import { validateIssuerCredential } from './wsaa';
+
+function wsfexForeignTaxId(payload: AnyAuthorityPayload): string | null {
+  if (payload.version !== 'wsfex-authority-payload-v1') throw new Error('EXPECTED_WSFEX_PAYLOAD');
+  return payload.customer.foreignTaxId;
+}
 
 const directories: string[] = [];
 afterEach(() => {
@@ -34,13 +40,13 @@ describe('ARCA boundary master-key rotation', () => {
     expect(rotateBoundaryMasterKey({ databasePath, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW.toISOString(), dryRun: true }))
       .toEqual({ payloadsValidated: 1, issuersValidated: 1, rotated: false });
     const afterDryRun = new ArcaBoundaryStore(oldKey, databasePath);
-    expect(afterDryRun.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload.customer.foreignTaxId).toBe('FOREIGN-TAX-SECRET');
+    expect(wsfexForeignTaxId(afterDryRun.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload)).toBe('FOREIGN-TAX-SECRET');
     afterDryRun.close();
 
     expect(rotateBoundaryMasterKey({ databasePath, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW.toISOString(), dryRun: false }))
       .toEqual({ payloadsValidated: 1, issuersValidated: 1, rotated: true });
     const rotatedStore = new ArcaBoundaryStore(newKey, databasePath);
-    expect(rotatedStore.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload.customer.foreignTaxId).toBe('FOREIGN-TAX-SECRET');
+    expect(wsfexForeignTaxId(rotatedStore.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload)).toBe('FOREIGN-TAX-SECRET');
     expect(rotatedStore.getIssuer('workspace-1', 'issuer://workspace-1/primary', 'homologation').representedCuit).toBe(CUIT);
     rotatedStore.close();
 

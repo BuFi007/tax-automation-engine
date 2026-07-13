@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
 
 import { hashCanonical } from '@tax-engine/core';
-import { authorityPayloadSchema, type AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 import { Database } from 'bun:sqlite';
 
-import type { IssuerProvisionReceipt, PayloadStoreReceipt } from './contracts';
+import { anyAuthorityPayloadSchema, type AnyAuthorityPayload, type IssuerProvisionReceipt, type PayloadStoreReceipt } from './contracts';
 import { deriveDomainKey, openJson, sealJson } from './crypto';
+
+// WSFEX (Factura E) and WSFE (Factura C) payloads are cryptographically domain
+// separated: each family seals under its own HKDF domain key and carries its own
+// `vault://<family>/` reference prefix, so a ciphertext from one family can never
+// be opened — nor a reference resolved — under the other.
+export type PayloadFamily = 'wsfex' | 'wsfe';
+export const PAYLOAD_DOMAIN: Record<PayloadFamily, 'authority-payloads' | 'authority-payloads-wsfe'> = {
+  wsfex: 'authority-payloads',
+  wsfe: 'authority-payloads-wsfe',
+};
 
 export type IssuerCredential = Readonly<{
   workspaceId: string;
@@ -22,11 +31,14 @@ export type IssuerCredential = Readonly<{
 
 export class ArcaBoundaryStore {
   readonly #db: Database;
-  readonly #payloadKey: Buffer;
+  readonly #payloadKeys: Record<PayloadFamily, Buffer>;
   readonly #issuerKey: Buffer;
 
   constructor(masterKey: Buffer, path = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:') {
-    this.#payloadKey = deriveDomainKey(masterKey, 'authority-payloads');
+    this.#payloadKeys = {
+      wsfex: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfex),
+      wsfe: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfe),
+    };
     this.#issuerKey = deriveDomainKey(masterKey, 'issuer-credentials');
     this.#db = new Database(path, { create: true });
     this.#db.exec(`
@@ -71,12 +83,13 @@ export class ArcaBoundaryStore {
 
   storePayload(input: Readonly<{
     workspaceId: string;
-    payload: AuthorityPayload;
+    payload: AnyAuthorityPayload;
     expiresAt: string;
     idempotencyKey: string;
     occurredAt: string;
   }>): PayloadStoreReceipt {
-    const payload = authorityPayloadSchema.parse(input.payload);
+    const payload = anyAuthorityPayloadSchema.parse(input.payload);
+    const family = payloadFamily(payload);
     const payloadHash = hashCanonical(payload);
     const inputHash = hashCanonical({ workspaceId: input.workspaceId, payloadHash, expiresAt: input.expiresAt });
     const idempotencyKeyHash = hashCanonical({ workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey });
@@ -85,8 +98,8 @@ export class ArcaBoundaryStore {
       if (existing.input_hash !== inputHash) throw new Error('AUTHORITY_PAYLOAD_IDEMPOTENCY_CONFLICT');
       return payloadReceipt(existing);
     }
-    const reference = `vault://wsfex/${randomUUID()}`;
-    const encryptedPayload = sealJson(this.#payloadKey, payloadAad(reference, payloadHash), payload);
+    const reference = `vault://${family}/${randomUUID()}`;
+    const encryptedPayload = sealJson(this.#payloadKeys[family], payloadAad(reference, payloadHash), payload);
     this.#db.query(`
       INSERT INTO authority_payloads (
         reference, workspace_id_hash, payload_hash, input_hash, idempotency_key_hash, encrypted_payload, stored_at, expires_at, revoked_at
@@ -96,11 +109,15 @@ export class ArcaBoundaryStore {
     return { version: 'authority-payload-store-receipt-v1', reference, payloadHash, storedAt: input.occurredAt, expiresAt: input.expiresAt };
   }
 
-  resolvePayload(reference: string, occurredAt: string): Readonly<{ payload: AuthorityPayload; payloadHash: string }> {
+  resolvePayload(reference: string, occurredAt: string): Readonly<{ payload: AnyAuthorityPayload; payloadHash: string }> {
+    const family = referenceFamily(reference);
     const row = this.#db.query<PayloadRow, [string]>('SELECT * FROM authority_payloads WHERE reference = ?').get(reference);
     if (!row || row.revoked_at) throw new Error('AUTHORITY_PAYLOAD_NOT_FOUND');
     if (Date.parse(row.expires_at) <= Date.parse(occurredAt)) throw new Error('AUTHORITY_PAYLOAD_EXPIRED');
-    const payload = authorityPayloadSchema.parse(openJson(this.#payloadKey, payloadAad(row.reference, row.payload_hash), row.encrypted_payload));
+    // The family key + AAD already bind the ciphertext to its reference family;
+    // re-parsing and re-checking the family is defence in depth against confusion.
+    const payload = anyAuthorityPayloadSchema.parse(openJson(this.#payloadKeys[family], payloadAad(row.reference, row.payload_hash), row.encrypted_payload));
+    if (payloadFamily(payload) !== family) throw new Error('AUTHORITY_PAYLOAD_FAMILY_MISMATCH');
     if (hashCanonical(payload) !== row.payload_hash) throw new Error('AUTHORITY_PAYLOAD_HASH_MISMATCH');
     this.appendEvent('authority_payload_resolved', hashCanonical(reference), row.payload_hash, occurredAt);
     return { payload, payloadHash: row.payload_hash };
@@ -256,6 +273,18 @@ type IssuerRow = {
   stored_at: string;
   updated_at: string;
 };
+
+function payloadFamily(payload: AnyAuthorityPayload): PayloadFamily {
+  if (payload.version === 'wsfex-authority-payload-v1') return 'wsfex';
+  if (payload.version === 'wsfe-authority-payload-v1') return 'wsfe';
+  throw new Error('AUTHORITY_PAYLOAD_SCHEMA_UNKNOWN');
+}
+
+export function referenceFamily(reference: string): PayloadFamily {
+  if (reference.startsWith('vault://wsfex/')) return 'wsfex';
+  if (reference.startsWith('vault://wsfe/')) return 'wsfe';
+  throw new Error('AUTHORITY_PAYLOAD_REFERENCE_INVALID');
+}
 
 export function payloadAad(reference: string, payloadHash: string): string {
   return `authority-payload:${reference}:${payloadHash}`;
