@@ -1,6 +1,6 @@
 import { hashCanonical } from '@tax-engine/core';
 
-import type { IssuerProvisionRequest, PayloadStoreRequest, TicketRequest, TicketResponse } from './contracts';
+import type { IssuerProvisionRequest, PayloadStoreRequest, TicketRequest, TicketResponse, WsaaService } from './contracts';
 import { ArcaBoundaryStore } from './store';
 import { SoapWsaaLoginClient, type WsaaLoginClient, validateIssuerCredential } from './wsaa';
 
@@ -66,20 +66,20 @@ export class ArcaBoundaryService {
     return request;
   }
 
-  async health(environment: 'homologation' | 'production', occurredAt: string) {
+  async health(environment: 'homologation' | 'production', occurredAt: string, service: WsaaService = 'wsfex') {
     const credential = this.store.firstDelegatedIssuer(environment);
-    if (!credential) return health(environment, false, false);
+    if (!credential) return health(environment, service, false, false);
     try {
       await this.getTicket({
         version: 'wsaa-ticket-request-v1',
-        service: 'wsfex',
+        service,
         environment,
         workspaceId: credential.workspaceId,
         issuerProfileRef: credential.issuerProfileRef,
       }, occurredAt);
-      return health(environment, true, true);
+      return health(environment, service, true, true);
     } catch {
-      return health(environment, true, false);
+      return health(environment, service, true, false);
     }
   }
 
@@ -101,6 +101,6 @@ function ticketKey(environment: string, workspaceId: string, issuerProfileRef: s
   return hashCanonical({ environment, workspaceId, issuerProfileRef, service, certificateFingerprint });
 }
 
-function health(environment: 'homologation' | 'production', certificateDelegationConfigured: boolean, wsaaReady: boolean) {
-  return { version: 'wsaa-broker-health-v1' as const, service: 'wsfex' as const, environment, certificateDelegationConfigured, wsaaReady };
+function health(environment: 'homologation' | 'production', service: WsaaService, certificateDelegationConfigured: boolean, wsaaReady: boolean) {
+  return { version: 'wsaa-broker-health-v1' as const, service, environment, certificateDelegationConfigured, wsaaReady };
 }

@@ -5,6 +5,7 @@ import {
   payloadRevokeRequestSchema,
   payloadStoreRequestSchema,
   ticketRequestSchema,
+  wsaaServiceSchema,
 } from './contracts';
 import { safeTokenEqual } from './crypto';
 import type { ArcaBoundaryService } from './service';
@@ -29,8 +30,9 @@ export function createBoundaryHandler(
       if (request.method === 'GET' && url.pathname === '/health') {
         if (!authorized(request, tokens.wsaa)) return json({ error: 'UNAUTHORIZED' }, 401);
         const requestedEnvironment = url.searchParams.get('environment');
-        if (url.searchParams.get('service') !== 'wsfex' || requestedEnvironment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
-        return json(await service.health(environment, occurredAt));
+        const requestedService = wsaaServiceSchema.safeParse(url.searchParams.get('service'));
+        if (!requestedService.success || requestedEnvironment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
+        return json(await service.health(environment, occurredAt, requestedService.data));
       }
       if (request.method !== 'POST') return json({ error: 'NOT_FOUND' }, 404);
       const requiredToken = tokenForPath(url.pathname, tokens);
