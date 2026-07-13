@@ -4,6 +4,8 @@ import Decimal from 'decimal.js';
 import {
   assertIssueDateWithinWindow,
   assertPayloadMatchesRequest,
+  deriveVatTotal,
+  isInvoiceLeg,
   signerRequestSchema,
   type AuthorityPayload,
   type FeCompConsultarEcho,
@@ -149,10 +151,13 @@ export class WsfeSignerService {
     // Freeze-time sequence guard. If someone else emitted on this PoS meanwhile,
     // fail loudly — never silently renumber the frozen document.
     if (BigInt(payload.invoiceNumber) !== BigInt(lastInvoiceNumber) + 1n) throw new Error('WSFE_ARCA_SEQUENCE_CONFLICT');
-    if (payload.documentType !== 11) {
-      const association = payload.associatedDocument!;
+    // A NC/ND must reference an already-authorized original of the same class
+    // family (the schema pins the type; here we confirm ARCA authorized it).
+    if (payload.associatedDocument) {
+      const association = payload.associatedDocument;
       const original = await this.authority.getDocument(ticket, association.documentType, association.pointOfSale, association.invoiceNumber);
       if (!original || original.result !== 'A') throw new Error('WSFE_ASSOCIATED_DOCUMENT_NOT_AUTHORIZED');
+      if (original.documentType !== association.documentType) throw new Error('WSFE_ASSOCIATED_DOCUMENT_TYPE_MISMATCH');
       if (original.currencyId !== 'PES') throw new Error('WSFE_ASSOCIATED_DOCUMENT_CURRENCY_MISMATCH');
     }
   }
@@ -192,16 +197,42 @@ export class WsfeSignerService {
       || retrieved.receptorDocNumber !== payload.receptor.docNumber
       || retrieved.currencyId !== 'PES'
       || !new Decimal(retrieved.currencyQuote).eq(1)
-      || !new Decimal(retrieved.total).eq(payload.total.decimal)
-      || !new Decimal(retrieved.netAmount).eq(payload.total.decimal)
-      || !new Decimal(retrieved.vatAmount).eq(0)
       || !retrieved.cae
     ) throw new Error('WSFE_RECOVERED_DOCUMENT_MISMATCH');
+    assertRecoveredMoney(retrieved, payload);
     // ARCA echoes a service period only for concepto 2/3; bind it when the
     // frozen document carries one (productos echo defaults we must not compare).
     if (payload.servicePeriod && JSON.stringify(retrieved.servicePeriod) !== JSON.stringify(payload.servicePeriod)) throw new Error('WSFE_RECOVERED_PERIOD_MISMATCH');
+    // FCE facturas echo their payment-due date in FchVtoPago; bind it exactly.
+    if (payload.fceEmission && retrieved.paymentDueDate !== payload.fceEmission.paymentDueDate) throw new Error('WSFE_RECOVERED_FCE_MISMATCH');
     if (JSON.stringify(retrieved.associatedDocument) !== JSON.stringify(payload.associatedDocument)) throw new Error('WSFE_RECOVERED_ASSOCIATION_MISMATCH');
     if (request.intentHash !== payload.intentHash) throw new Error('WSFE_RECOVERED_INTENT_MISMATCH');
+  }
+}
+
+// Recovery money binding, class-driven. Class C: ImpNeto == ImpTotal, no IVA.
+// Class A/B: ImpNeto == the frozen net, ImpIVA == Σ importe, and the echoed
+// alícuota lines match the frozen breakdown one-for-one (order-independent).
+function assertRecoveredMoney(retrieved: WsfeRetrievedDocument, payload: AuthorityPayload): void {
+  if (!new Decimal(retrieved.total).eq(payload.total.decimal)) throw new Error('WSFE_RECOVERED_DOCUMENT_MISMATCH');
+  const breakdown = payload.taxBreakdown;
+  if (!breakdown) {
+    if (!new Decimal(retrieved.netAmount).eq(payload.total.decimal) || !new Decimal(retrieved.vatAmount).eq(0) || retrieved.ivaLineItems.length !== 0) {
+      throw new Error('WSFE_RECOVERED_DOCUMENT_MISMATCH');
+    }
+    return;
+  }
+  if (!new Decimal(retrieved.netAmount).eq(breakdown.netAmount) || !new Decimal(retrieved.vatAmount).eq(deriveVatTotal(breakdown))) {
+    throw new Error('WSFE_RECOVERED_DOCUMENT_MISMATCH');
+  }
+  if (retrieved.ivaLineItems.length !== breakdown.ivaLineItems.length) throw new Error('WSFE_RECOVERED_IVA_MISMATCH');
+  const echoed = [...retrieved.ivaLineItems].sort((a, b) => a.alicIvaId - b.alicIvaId);
+  const frozen = [...breakdown.ivaLineItems].sort((a, b) => a.alicIvaId - b.alicIvaId);
+  for (const [index, line] of frozen.entries()) {
+    const other = echoed[index]!;
+    if (line.alicIvaId !== other.alicIvaId || !new Decimal(line.baseImp).eq(other.baseImp) || !new Decimal(line.importe).eq(other.importe)) {
+      throw new Error('WSFE_RECOVERED_IVA_MISMATCH');
+    }
   }
 }
 

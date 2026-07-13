@@ -1,13 +1,13 @@
 import { Database } from 'bun:sqlite';
 
-import { signerResponseSchema, type SignerRequest, type SignerResponse } from './contracts';
+import { type DocumentType, isWsfeDocumentType, signerResponseSchema, type SignerRequest, type SignerResponse } from './contracts';
 
 export type SignerAttempt = Readonly<{
   requestId: string;
   intentHash: string;
   payloadReferenceHash: string;
   payloadHash: string;
-  documentType: 11 | 12 | 13;
+  documentType: DocumentType;
   pointOfSale: number;
   invoiceNumber: string;
   state: 'pending' | 'ambiguous' | 'accepted' | 'rejected';
@@ -99,8 +99,8 @@ export class SignerAttemptStore {
   }
 }
 
-function documentType(value: number): 11 | 12 | 13 {
-  if (value !== 11 && value !== 12 && value !== 13) throw new Error('WSFE_STORED_DOCUMENT_TYPE_INVALID');
+function documentType(value: number): DocumentType {
+  if (!isWsfeDocumentType(value)) throw new Error('WSFE_STORED_DOCUMENT_TYPE_INVALID');
   return value;
 }
 

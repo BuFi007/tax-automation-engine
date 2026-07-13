@@ -1,7 +1,8 @@
 import { hashCanonical } from '@tax-engine/core';
+import Decimal from 'decimal.js';
 import { XMLParser } from 'fast-xml-parser';
 
-import type { AuthorityPayload } from './contracts';
+import { type AssociationDocumentType, type AuthorityPayload, type DocumentType, isAssociationDocumentType, isWsfeDocumentType } from './contracts';
 import type { WsfeAccessTicket } from './wsaa';
 
 const NAMESPACE = 'http://ar.gov.afip.dif.FEV1/';
@@ -18,9 +19,10 @@ type SoapFetch = (input: string | URL | Request, init?: RequestInit) => Promise<
 type XmlValue = string | number | boolean | null | XmlNode | XmlValue[];
 type XmlNode = { [key: string]: XmlValue };
 
-export type DocumentType = 11 | 12 | 13;
+export type { DocumentType };
 export type Concept = 1 | 2 | 3;
 export type ReceptorDocType = 80 | 86 | 96 | 99;
+export type RetrievedIvaLine = Readonly<{ alicIvaId: number; baseImp: string; importe: string }>;
 
 export class WsfeAmbiguousTransportError extends Error {
   constructor(readonly receiptHash: string) {
@@ -57,8 +59,12 @@ export type WsfeRetrievedDocument = Readonly<{
   total: string;
   netAmount: string;
   vatAmount: string;
+  ivaLineItems: readonly RetrievedIvaLine[];
   servicePeriod: Readonly<{ from: string; to: string; paymentDueDate: string }> | null;
-  associatedDocument: Readonly<{ documentType: 11; pointOfSale: number; invoiceNumber: string }> | null;
+  // FchVtoPago read independently of the service period: FCE productos carry it
+  // without FchServDesde, so the recovery path can bind it for any FCE leg.
+  paymentDueDate: string | null;
+  associatedDocument: Readonly<{ documentType: AssociationDocumentType; pointOfSale: number; invoiceNumber: string }> | null;
   result: string;
   cae: string;
   caeExpiry: string;
@@ -157,11 +163,17 @@ export class SoapWsfeAuthorityClient implements WsfeAuthorityClient {
       total: requiredText(got.ImpTotal, 'WSFE_RETRIEVED_TOTAL_REQUIRED'),
       netAmount: requiredText(got.ImpNeto, 'WSFE_RETRIEVED_NET_REQUIRED'),
       vatAmount: text(got.ImpIVA) || '0',
+      ivaLineItems: asArray(node(got.Iva).AlicIva).map(node).map(entry => ({
+        alicIvaId: positiveNumber(entry.Id, 'WSFE_RETRIEVED_IVA_ID_INVALID'),
+        baseImp: requiredText(entry.BaseImp, 'WSFE_RETRIEVED_IVA_BASE_REQUIRED'),
+        importe: requiredText(entry.Importe, 'WSFE_RETRIEVED_IVA_IMPORTE_REQUIRED'),
+      })),
       servicePeriod: nullableText(got.FchServDesde)
         ? { from: arcaDateToIso(text(got.FchServDesde)), to: arcaDateToIso(requiredText(got.FchServHasta, 'WSFE_RETRIEVED_SERVICE_TO_REQUIRED')), paymentDueDate: arcaDateToIso(requiredText(got.FchVtoPago, 'WSFE_RETRIEVED_PAYMENT_DUE_REQUIRED')) }
         : null,
+      paymentDueDate: nullableText(got.FchVtoPago) ? arcaDateToIso(text(got.FchVtoPago)) : null,
       associatedDocument: associated
-        ? { documentType: 11, pointOfSale: positiveNumber(associated.PtoVta, 'WSFE_RETRIEVED_ASSOCIATION_POS_INVALID'), invoiceNumber: requiredText(associated.Nro, 'WSFE_RETRIEVED_ASSOCIATION_NUMBER_REQUIRED') }
+        ? { documentType: associationTypeInSet(associated.Tipo, 'WSFE_RETRIEVED_ASSOCIATION_TYPE_INVALID'), pointOfSale: positiveNumber(associated.PtoVta, 'WSFE_RETRIEVED_ASSOCIATION_POS_INVALID'), invoiceNumber: requiredText(associated.Nro, 'WSFE_RETRIEVED_ASSOCIATION_NUMBER_REQUIRED') }
         : null,
       result: requiredText(got.Resultado, 'WSFE_RETRIEVED_RESULT_REQUIRED'),
       // WSFEV1 returns the CAE in CodAutorizacion (EmisionTipo distinguishes CAE from CAEA).
@@ -212,17 +224,38 @@ export class SoapWsfeAuthorityClient implements WsfeAuthorityClient {
   }
 }
 
-// WSFEV1 orders FECAEDetRequest per the WSDL sequence; ARCA validates presence
-// (FchServ* for concepto 2/3, CbtesAsoc for 12/13) so the order below matches
-// the published FEV1 schema.
+// FECAEDetRequest, ordered per the published FEV1 XSD sequence:
+// Concepto, Doc*, Cbte*, Imp* (with ImpTrib before ImpIVA), FchServ*/FchVtoPago,
+// MonId/MonCotiz, CondicionIVAReceptorId, CbtesAsoc, Iva, Opcionales.
+//
+// Money block is class-driven:
+//   • class A/B (payload.taxBreakdown present): ImpNeto = net, ImpIVA = Σ importe,
+//     ImpTrib/ImpOpEx from the breakdown, and an <Iva> array of alícuota lines.
+//   • class C / FCE-C (no breakdown): ImpNeto = ImpTotal, ImpIVA = 0, no <Iva> —
+//     the exact legacy bytes are preserved for plain C (11/12/13).
+// FCE legs add FchVtoPago (facturas) and the <Opcionales> CBU/transmisión (2101/27)
+// or anulación (22) block.
 function caeRequestXml(payload: AuthorityPayload, representedCuit: string): string {
   const total = escapeXml(payload.total.decimal);
-  const period = payload.servicePeriod
-    ? `<FchServDesde>${isoDateToArca(payload.servicePeriod.from)}</FchServDesde><FchServHasta>${isoDateToArca(payload.servicePeriod.to)}</FchServHasta><FchVtoPago>${isoDateToArca(payload.servicePeriod.paymentDueDate)}</FchVtoPago>`
-    : '';
+  const breakdown = payload.taxBreakdown;
+  const moneyXml = breakdown
+    ? `<ImpTotal>${total}</ImpTotal><ImpTotConc>0</ImpTotConc><ImpNeto>${escapeXml(breakdown.netAmount)}</ImpNeto><ImpOpEx>${escapeXml(breakdown.impOpEx)}</ImpOpEx><ImpTrib>${escapeXml(breakdown.impTrib)}</ImpTrib><ImpIVA>${escapeXml(sumIva(breakdown.ivaLineItems))}</ImpIVA>`
+    : `<ImpTotal>${total}</ImpTotal><ImpTotConc>0</ImpTotConc><ImpNeto>${total}</ImpNeto><ImpOpEx>0</ImpOpEx><ImpIVA>0</ImpIVA><ImpTrib>0</ImpTrib>`;
+  // FchVtoPago is a single shared element: the service payment-due date (concepto
+  // 2/3) or the FCE payment-due date (any concepto). The schema forbids the two
+  // disagreeing, so either source is authoritative.
+  const paymentDue = payload.servicePeriod?.paymentDueDate ?? payload.fceEmission?.paymentDueDate ?? null;
+  const periodXml = [
+    payload.servicePeriod ? `<FchServDesde>${isoDateToArca(payload.servicePeriod.from)}</FchServDesde><FchServHasta>${isoDateToArca(payload.servicePeriod.to)}</FchServHasta>` : '',
+    paymentDue ? `<FchVtoPago>${isoDateToArca(paymentDue)}</FchVtoPago>` : '',
+  ].join('');
   const association = payload.associatedDocument
     ? `<CbtesAsoc><CbteAsoc><Tipo>${payload.associatedDocument.documentType}</Tipo><PtoVta>${payload.associatedDocument.pointOfSale}</PtoVta><Nro>${escapeXml(payload.associatedDocument.invoiceNumber)}</Nro><Cuit>${escapeXml(representedCuit)}</Cuit></CbteAsoc></CbtesAsoc>`
     : '';
+  const ivaXml = breakdown
+    ? `<Iva>${breakdown.ivaLineItems.map(line => `<AlicIva><Id>${line.alicIvaId}</Id><BaseImp>${escapeXml(line.baseImp)}</BaseImp><Importe>${escapeXml(line.importe)}</Importe></AlicIva>`).join('')}</Iva>`
+    : '';
+  const opcionalesXml = fceOpcionalesXml(payload);
   const detail = [
     `<Concepto>${payload.concept}</Concepto>`,
     `<DocTipo>${payload.receptor.docType}</DocTipo>`,
@@ -230,19 +263,33 @@ function caeRequestXml(payload: AuthorityPayload, representedCuit: string): stri
     `<CbteDesde>${escapeXml(payload.invoiceNumber)}</CbteDesde>`,
     `<CbteHasta>${escapeXml(payload.invoiceNumber)}</CbteHasta>`,
     `<CbteFch>${isoDateToArca(payload.issueDate)}</CbteFch>`,
-    `<ImpTotal>${total}</ImpTotal>`,
-    '<ImpTotConc>0</ImpTotConc>',
-    `<ImpNeto>${total}</ImpNeto>`,
-    '<ImpOpEx>0</ImpOpEx>',
-    '<ImpIVA>0</ImpIVA>',
-    '<ImpTrib>0</ImpTrib>',
-    period,
+    moneyXml,
+    periodXml,
     '<MonId>PES</MonId>',
     '<MonCotiz>1</MonCotiz>',
     `<CondicionIVAReceptorId>${payload.receptor.condicionIvaId}</CondicionIVAReceptorId>`,
     association,
+    ivaXml,
+    opcionalesXml,
   ].join('');
   return `<FeCAEReq><FeCabReq><CantReg>1</CantReg><PtoVta>${payload.pointOfSale}</PtoVta><CbteTipo>${payload.documentType}</CbteTipo></FeCabReq><FeDetReq><FECAEDetRequest>${detail}</FECAEDetRequest></FeDetReq></FeCAEReq>`;
+}
+
+function fceOpcionalesXml(payload: AuthorityPayload): string {
+  if (payload.fceEmission) {
+    const alias = payload.fceEmission.emitterAlias
+      ? `<Opcional><Id>2102</Id><Valor>${escapeXml(payload.fceEmission.emitterAlias)}</Valor></Opcional>`
+      : '';
+    return `<Opcionales><Opcional><Id>2101</Id><Valor>${escapeXml(payload.fceEmission.emitterCbu)}</Valor></Opcional>${alias}<Opcional><Id>27</Id><Valor>${payload.fceEmission.transmissionMode}</Valor></Opcional></Opcionales>`;
+  }
+  if (payload.fceAdjustment) {
+    return `<Opcionales><Opcional><Id>22</Id><Valor>${payload.fceAdjustment.anulacion}</Valor></Opcional></Opcionales>`;
+  }
+  return '';
+}
+
+function sumIva(lines: readonly Readonly<{ importe: string }>[]): string {
+  return lines.reduce((sum, line) => sum.add(line.importe), new Decimal(0)).toFixed(2);
 }
 
 function authXml(ticket: WsfeAccessTicket): string {
@@ -323,7 +370,13 @@ function receptorDocTypeInSet(value: XmlValue | undefined, code: string): Recept
 
 function documentTypeInSet(value: XmlValue | undefined, code: string): DocumentType {
   const parsed = Number(text(value));
-  if (parsed !== 11 && parsed !== 12 && parsed !== 13) throw new Error(code);
+  if (!Number.isInteger(parsed) || !isWsfeDocumentType(parsed)) throw new Error(code);
+  return parsed;
+}
+
+function associationTypeInSet(value: XmlValue | undefined, code: string): AssociationDocumentType {
+  const parsed = Number(text(value));
+  if (!Number.isInteger(parsed) || !isAssociationDocumentType(parsed)) throw new Error(code);
   return parsed;
 }
 

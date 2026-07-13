@@ -218,8 +218,8 @@ function retrieved(overrides: Partial<WsfeRetrievedDocument> = {}): WsfeRetrieve
   return {
     documentType: 11, pointOfSale: 4, invoiceNumber: '6', issueDate: '2026-07-11', concept: 2,
     receptorDocType: 80, receptorDocNumber: RECEPTOR_CUIT, currencyId: 'PES', currencyQuote: '1',
-    total: '15000.00', netAmount: '15000.00', vatAmount: '0',
-    servicePeriod: { from: '2026-07-01', to: '2026-07-11', paymentDueDate: '2026-07-11' },
+    total: '15000.00', netAmount: '15000.00', vatAmount: '0', ivaLineItems: [],
+    servicePeriod: { from: '2026-07-01', to: '2026-07-11', paymentDueDate: '2026-07-11' }, paymentDueDate: '2026-07-11',
     associatedDocument: null, result: 'A', cae: '71234567890123', caeExpiry: '2026-07-21', rawResponseHash: hashCanonical('retrieved'), ...overrides,
   };
 }
