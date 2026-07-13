@@ -7,12 +7,15 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/arca-boundary/package.json apps/arca-boundary/package.json
 COPY apps/reclaim-proof-vault/package.json apps/reclaim-proof-vault/package.json
 COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
+COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/erp/package.json packages/erp/package.json
 RUN bun install --frozen-lockfile
 
 COPY packages/core packages/core
 COPY apps/wsfex-signer/src/contracts.ts apps/wsfex-signer/src/contracts.ts
+COPY apps/wsfex-signer apps/wsfex-signer
+COPY apps/wsfe-signer apps/wsfe-signer
 COPY apps/arca-boundary apps/arca-boundary
 RUN mkdir -p /data && chown -R bun:bun /data
 
