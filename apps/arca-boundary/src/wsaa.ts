@@ -2,6 +2,7 @@ import { hashCanonical } from '@tax-engine/core';
 import { XMLParser } from 'fast-xml-parser';
 import * as forge from 'node-forge';
 
+import type { WsaaService } from './contracts';
 import { fingerprintDer } from './crypto';
 import type { IssuerCredential } from './store';
 
@@ -19,7 +20,7 @@ export type WsaaLoginTicket = Readonly<{
 }>;
 
 export interface WsaaLoginClient {
-  login(input: Readonly<{ credential: IssuerCredential; service: 'wsfex'; now: Date }>): Promise<WsaaLoginTicket>;
+  login(input: Readonly<{ credential: IssuerCredential; service: WsaaService; now: Date }>): Promise<WsaaLoginTicket>;
 }
 
 type WsaaFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -29,7 +30,7 @@ export class SoapWsaaLoginClient implements WsaaLoginClient {
 
   constructor(private readonly fetcher: WsaaFetch = (input, init) => fetch(input, init)) {}
 
-  async login(input: Readonly<{ credential: IssuerCredential; service: 'wsfex'; now: Date }>): Promise<WsaaLoginTicket> {
+  async login(input: Readonly<{ credential: IssuerCredential; service: WsaaService; now: Date }>): Promise<WsaaLoginTicket> {
     assertCredentialMaterial(input.credential, input.now);
     const tra = loginTicketRequest(input.service, input.now);
     const cms = signCms(tra, input.credential.certificatePem, input.credential.privateKeyPem);
@@ -123,7 +124,7 @@ function assertCredentialMaterial(credential: IssuerCredential, now: Date): void
   if (!credential.delegationConfirmed) throw new Error('WSAA_DELEGATION_NOT_CONFIRMED');
 }
 
-function loginTicketRequest(service: 'wsfex', now: Date): string {
+function loginTicketRequest(service: WsaaService, now: Date): string {
   const uniqueId = Math.floor(now.getTime() / 1000);
   const generationTime = new Date(now.getTime() - 5 * 60_000).toISOString();
   const expirationTime = new Date(now.getTime() + 10 * 60_000).toISOString();
