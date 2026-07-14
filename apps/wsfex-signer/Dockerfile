@@ -9,6 +9,8 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/erp/package.json packages/erp/package.json
 COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
+COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
+COPY apps/wsfecred/package.json apps/wsfecred/package.json
 RUN bun install --frozen-lockfile
 
 COPY packages/core packages/core
