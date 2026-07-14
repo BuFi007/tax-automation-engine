@@ -8,6 +8,7 @@ import { HttpAuthorityPayloadVault } from './vault';
 import { HttpWsaaTicketBroker } from './wsaa';
 
 const port = Number(process.env.PORT ?? 4300);
+const hostname = process.env.WSFE_SIGNER_HOST ?? '127.0.0.1';
 const apiToken = requiredEnvironment('WSFE_SIGNER_API_TOKEN');
 // Fail closed: the domestic authority is production only when ARCA_ENVIRONMENT
 // is exactly 'production'. Anything else stays on homologation.
@@ -30,6 +31,7 @@ const service = new WsfeSignerService(
 );
 
 export const server = Bun.serve({
+  hostname,
   port,
   async fetch(request) {
     try {
@@ -80,5 +82,5 @@ function json(value: unknown, status = 200): Response {
 }
 
 if (import.meta.main) {
-  console.info(`WSFE signer listening on port ${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
+  console.info(`WSFE signer listening on ${hostname}:${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
 }

@@ -21,6 +21,7 @@ COPY apps/wsfe-signer apps/wsfe-signer
 RUN mkdir -p /data && chown -R bun:bun /data
 
 ENV PORT=4300
+ENV WSFE_SIGNER_HOST=0.0.0.0
 ENV WSFE_SIGNER_DB_PATH=/data/wsfe-signer.sqlite
 EXPOSE 4300
 USER bun

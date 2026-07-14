@@ -21,6 +21,7 @@ COPY apps/arca-boundary apps/arca-boundary
 RUN mkdir -p /data && chown -R bun:bun /data
 
 ENV PORT=4300
+ENV ARCA_BOUNDARY_HOST=0.0.0.0
 ENV ARCA_BOUNDARY_DB_PATH=/data/arca-boundary.sqlite
 EXPOSE 4300
 USER bun
