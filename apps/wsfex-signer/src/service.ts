@@ -2,6 +2,16 @@ import { hashCanonical } from '@tax-engine/core';
 import Decimal from 'decimal.js';
 
 import { assertPayloadMatchesRequest, signerRequestSchema, type AuthorityPayload, type SignerRequest, type SignerResponse } from './contracts';
+import {
+  buenosAiresToday,
+  cotizacionResponseSchema,
+  type CotizacionResponse,
+  CTZ_SOURCE_ARCA,
+  isArgentineBusinessDay,
+  isWithinCtzBand,
+  monIdSchema,
+  previousBusinessDay,
+} from './cotizacion';
 import type { AuthorityPayloadVault } from './vault';
 import { type WsfexAuthorityClient, WsfexAmbiguousTransportError, type WsfexAuthorizationResult, type WsfexRetrievedDocument } from './soap';
 import { SignerAttemptStore, type SignerAttempt } from './store';
@@ -50,6 +60,20 @@ export class WsfexSignerService {
     return this.issue(request, resolved.payload, attempt, ticket, occurredAt, false);
   }
 
+  // GET /v1/wsfexv1/params/ctz surface. Returns the cotización fail-closed: ARCA's
+  // FEXGetPARAM_Ctz ORIENTATIVO value, explicitly labeled `arca_orientativo` (never a
+  // fabricated legal rate) until a verified machine-readable BNA "divisa vendedor"
+  // feed is wired. `referenceDate` names the día hábil anterior whose BNA rate is legal.
+  async getCotizacion(monId: string, context: Readonly<{ workspaceId: string; issuerProfileRef: string }>, occurredAt: string): Promise<CotizacionResponse> {
+    if (!monIdSchema.safeParse(monId).success) throw new Error('WSFEX_CTZ_MON_ID_INVALID');
+    const ticket = await this.wsaa.getTicket({ environment: this.config.environment, workspaceId: context.workspaceId, issuerProfileRef: context.issuerProfileRef });
+    const arca = await this.authority.getCotizacion(ticket, monId);
+    const today = buenosAiresToday(occurredAt);
+    if (arca.date > today) throw new Error('WSFEX_CTZ_DATE_IN_FUTURE');
+    if (!isArgentineBusinessDay(arca.date)) throw new Error('WSFEX_CTZ_DATE_NOT_BUSINESS_DAY');
+    return cotizacionResponseSchema.parse({ monId, ctz: arca.ctz, date: arca.date, referenceDate: previousBusinessDay(today), source: CTZ_SOURCE_ARCA });
+  }
+
   async recover(rawRequest: unknown, idempotencyKey: string, occurredAt: string): Promise<SignerResponse> {
     const request = this.parseRequest(rawRequest, idempotencyKey);
     const existing = this.store.get(request.requestId);
@@ -85,7 +109,7 @@ export class WsfexSignerService {
     try {
       const authority = await this.authority.authorize(ticket, payload);
       this.assertAuthorizationEcho(authority, request, payload);
-      const response = responseFromAuthority(request, authority);
+      const response = responseFromAuthority(request, authority, payload);
       this.store.complete(request.requestId, response, occurredAt);
       return response;
     } catch (error) {
@@ -95,7 +119,7 @@ export class WsfexSignerService {
           const retrieved = await this.authority.getDocument(ticket, payload.documentType, payload.pointOfSale, payload.invoiceNumber);
           if (retrieved) {
             this.assertRetrievedDocument(retrieved, request, payload);
-            const recovered = acceptedResponseFromRetrieved(request, retrieved);
+            const recovered = acceptedResponseFromRetrieved(request, retrieved, payload);
             this.store.complete(request.requestId, recovered, occurredAt);
             return recovered;
           }
@@ -125,7 +149,16 @@ export class WsfexSignerService {
     ]);
     if (BigInt(request.requestId) <= BigInt(lastRequestId)) throw new Error('WSFEX_REQUEST_ID_NOT_MONOTONIC');
     if (BigInt(payload.invoiceNumber) !== BigInt(lastInvoiceNumber) + 1n) throw new Error('WSFEX_INVOICE_NUMBER_NOT_SEQUENTIAL');
-    if (payload.documentType !== 19) {
+    if (payload.documentType === 19) {
+      // Error-1667 band guard on the invoice's Moneda_ctz. Only invoices are
+      // checked: an NC/ND (20/21) must carry the SAME quote as its original (below),
+      // which is legitimately "stale" relative to today's orientativo. Pesos (PES,
+      // quote 1) need no cotización.
+      if (payload.currency.arcaId !== 'PES') {
+        const orientativo = await this.authority.getCotizacion(ticket, payload.currency.arcaId);
+        if (!isWithinCtzBand(payload.currency.quote, orientativo.ctz)) throw new Error('WSFEX_MONEDA_CTZ_OUT_OF_BAND');
+      }
+    } else {
       const association = payload.associatedDocument!;
       const original = await this.authority.getDocument(ticket, association.documentType, association.pointOfSale, association.invoiceNumber);
       if (!original || original.result !== 'A') throw new Error('WSFEX_ASSOCIATED_DOCUMENT_NOT_AUTHORIZED');
@@ -173,30 +206,32 @@ export class WsfexSignerService {
   }
 }
 
-function responseFromAuthority(request: SignerRequest, authority: WsfexAuthorizationResult): SignerResponse {
+function responseFromAuthority(request: SignerRequest, authority: WsfexAuthorizationResult, payload: AuthorityPayload): SignerResponse {
   return {
     requestId: request.requestId,
     status: authority.status,
     invoiceNumber: authority.invoiceNumber,
     cae: authority.cae,
     reprocessed: authority.reprocessed,
-    authorizedDocument: authority.status === 'accepted' ? authorizedDocument(request) : null,
+    authorizedDocument: authority.status === 'accepted' ? authorizedDocument(request, payload) : null,
     safeErrors: [...authority.safeErrors],
   };
 }
 
-function acceptedResponseFromRetrieved(request: SignerRequest, retrieved: WsfexRetrievedDocument): SignerResponse {
+function acceptedResponseFromRetrieved(request: SignerRequest, retrieved: WsfexRetrievedDocument, payload: AuthorityPayload): SignerResponse {
   return {
     requestId: request.requestId,
     status: 'accepted',
     invoiceNumber: retrieved.invoiceNumber,
     cae: retrieved.cae,
     reprocessed: true,
-    authorizedDocument: authorizedDocument(request),
+    authorizedDocument: authorizedDocument(request, payload),
     safeErrors: [],
   };
 }
 
-function authorizedDocument(request: SignerRequest): NonNullable<SignerResponse['authorizedDocument']> {
-  return { intentHash: request.intentHash, ...request.expected };
+// The applied Moneda_ctz echoed for the desk: the frozen payload quote (which the
+// recovery path already bound equal to ARCA's FEXGetCMP Moneda_ctz).
+function authorizedDocument(request: SignerRequest, payload: AuthorityPayload): NonNullable<SignerResponse['authorizedDocument']> {
+  return { intentHash: request.intentHash, ...request.expected, currencyId: payload.currency.arcaId, currencyQuote: payload.currency.quote };
 }
