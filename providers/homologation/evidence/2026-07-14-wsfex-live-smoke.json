@@ -1,0 +1,59 @@
+{
+  "version": "arca-wsfex-live-smoke-v1",
+  "executedAt": "2026-07-14T22:50:31.776Z",
+  "authorityEnvironment": "homologacion",
+  "certificate": {
+    "alias": "motorawsfexhomologation",
+    "fingerprintSha256": "d74558872ed4e95bff2f90bdd7111c917098432182e89174d6ebc96a621d25a7",
+    "expiresAt": "2028-07-13T22:21:04.000Z",
+    "privateKeyMatchedLocally": true,
+    "privateKeyStoredOutsideRepository": true
+  },
+  "wsass": {
+    "wsfexAuthorizationCreated": true,
+    "wsfeAuthorizationCreated": false
+  },
+  "wsaa": {
+    "certificateDelegationConfigured": true,
+    "ticketReady": true,
+    "claveFiscalUsedByRuntime": false
+  },
+  "wsfex": {
+    "version": "3.1.1",
+    "authenticatedLastRequestId": "0",
+    "authorizationError1001Observed": false,
+    "cotizacion": {
+      "monId": "DOL",
+      "ctz": "1147.6590",
+      "date": "2026-07-13",
+      "referenceDate": "2026-07-13",
+      "source": "arca_orientativo"
+    },
+    "signerProbeState": "ready",
+    "safeSignerHealthReceiptHash": "d3f03f449cb9096dd2e09d821c8ba8f08182cf31d73d7af247f6072424f6c0ce"
+  },
+  "feeWsPointOfSale": {
+    "activePoints": [],
+    "responseErrorCode": "0",
+    "responseSha256": "34690504ce0fb543f0f82fd9578b4ffc394690886219834f5403fdddb533bb13",
+    "gateState": "missing"
+  },
+  "compatibilityFinding": {
+    "method": "FEXGetPARAM_Ctz",
+    "officialResponseDateField": "Mon_fecha",
+    "legacyFallbackField": "Fch_cotiz",
+    "liveParserFixed": true
+  },
+  "productionEnabled": false,
+  "secretsDetected": false,
+  "limitations": [
+    "No FEEWS point of sale is currently registered, so invoice issuance was not attempted.",
+    "WSFE authorization still requires the separate browser permission confirmation.",
+    "This smoke record is not the complete arca-homologation-evidence-v1 production-review report."
+  ],
+  "officialReferences": [
+    "https://www.arca.gob.ar/ws/documentacion/wsaa.asp",
+    "https://www.arca.gob.ar/ws/documentacion/certificados.asp",
+    "https://arca.gob.ar/ws/documentacion/manuales/WSFEX-Manualparaeldesarrollador_V3.1.1_ARCA.pdf"
+  ]
+}

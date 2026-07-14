@@ -109,10 +109,17 @@ describe('official WSFEX SOAP transport', () => {
     const client = new SoapWsfexAuthorityClient('homologation', async (_input, init) => {
       capturedBody = String(init?.body);
       expect(new Headers(init?.headers).get('soapaction')).toBe('"http://ar.gov.afip.dif.fexv1/FEXGetPARAM_Ctz"');
-      return xmlResponse('FEXGetPARAM_Ctz', '<FEXResultGet><Mon_Id>DOL</Mon_Id><Mon_ctz>1200.250000</Mon_ctz><Fch_cotiz>20260710</Fch_cotiz></FEXResultGet><FEXErr><ErrCode>0</ErrCode></FEXErr>');
+      return xmlResponse('FEXGetPARAM_Ctz', '<FEXResultGet><Mon_ctz>1200.250000</Mon_ctz><Mon_fecha>20260710</Mon_fecha></FEXResultGet><FEXErr><ErrCode>0</ErrCode></FEXErr>');
     });
     await expect(client.getCotizacion(ticket, 'DOL')).resolves.toEqual({ monId: 'DOL', ctz: '1200.250000', date: '2026-07-10' });
     expect(capturedBody).toContain('<Mon_id>DOL</Mon_id>');
+  });
+
+  test('accepts the legacy Fch_cotiz response spelling as a compatibility fallback', async () => {
+    const client = new SoapWsfexAuthorityClient('homologation', async () =>
+      xmlResponse('FEXGetPARAM_Ctz', '<FEXResultGet><Mon_ctz>1200.250000</Mon_ctz><Fch_cotiz>20260710</Fch_cotiz></FEXResultGet><FEXErr><ErrCode>0</ErrCode></FEXErr>')
+    );
+    await expect(client.getCotizacion(ticket, 'DOL')).resolves.toEqual({ monId: 'DOL', ctz: '1200.250000', date: '2026-07-10' });
   });
 
   test('surfaces an ARCA error from FEXGetPARAM_Ctz without leaking the raw message', async () => {
