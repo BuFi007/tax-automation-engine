@@ -152,7 +152,13 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
     return {
       monId: nullableText(result.Mon_Id) ?? monId,
       ctz: requiredText(result.Mon_ctz, 'WSFEX_CTZ_QUOTE_REQUIRED'),
-      date: arcaDateToIso(requiredText(result.Fch_cotiz, 'WSFEX_CTZ_DATE_REQUIRED')),
+      // WSFEXV1 v3.1.1 §2.13.3 names the response field `Mon_fecha`.
+      // Keep the older `Fch_cotiz` spelling as a defensive compatibility
+      // fallback for fixtures/proxies that still expose the legacy shape.
+      date: arcaDateToIso(requiredText(
+        nullableText(result.Mon_fecha) ?? nullableText(result.Fch_cotiz),
+        'WSFEX_CTZ_DATE_REQUIRED'
+      )),
     };
   }
 
