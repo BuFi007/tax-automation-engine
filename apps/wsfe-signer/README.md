@@ -111,6 +111,10 @@ bun run --filter @tax-engine/wsfe-signer start
 
 Required environment:
 
+- `WSFE_SIGNER_HOST` defaults to `127.0.0.1`; the supplied container image sets
+  it to `0.0.0.0` so the authenticated service can be published by the
+  container runtime.
+
 ```text
 PORT=4300
 ARCA_ENVIRONMENT=homologacion | production

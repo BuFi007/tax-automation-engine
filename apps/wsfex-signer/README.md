@@ -27,6 +27,10 @@ coordinates, normalized status, CAE, and timestamps. It does not contain the
 opaque payload reference, customer identifiers, token/sign, represented CUIT, or
 raw SOAP XML.
 
+The process binds to `127.0.0.1` by default. Set
+`WSFEX_SIGNER_HOST=0.0.0.0` only inside an authenticated container/network
+boundary; the supplied container image does this explicitly.
+
 ## Authority behavior
 
 - Homologation: `https://wswhomo.afip.gov.ar/wsfexv1/service.asmx`

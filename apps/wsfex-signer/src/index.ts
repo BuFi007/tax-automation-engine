@@ -8,6 +8,7 @@ import { HttpAuthorityPayloadVault } from './vault';
 import { HttpWsaaTicketBroker } from './wsaa';
 
 const port = Number(process.env.PORT ?? 4200);
+const hostname = process.env.WSFEX_SIGNER_HOST ?? '127.0.0.1';
 const apiToken = requiredEnvironment('WSFEX_SIGNER_API_TOKEN');
 const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
@@ -28,6 +29,7 @@ const service = new WsfexSignerService(
 );
 
 export const server = Bun.serve({
+  hostname,
   port,
   async fetch(request) {
     try {
@@ -95,5 +97,5 @@ function json(value: unknown, status = 200): Response {
 }
 
 if (import.meta.main) {
-  console.info(`WSFEX signer listening on port ${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
+  console.info(`WSFEX signer listening on ${hostname}:${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
 }
