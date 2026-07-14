@@ -34,6 +34,15 @@ export const server = Bun.serve({
       if (!authorized(request, apiToken)) return json({ error: 'UNAUTHORIZED' }, 401);
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/health') return json(await service.health());
+      if (request.method === 'GET' && url.pathname === '/v1/wsfexv1/params/ctz') {
+        const monId = url.searchParams.get('monId') ?? '';
+        // FEXGetPARAM_Ctz is a param lookup (same value for any represented CUIT), so
+        // the endpoint uses a service-level issuer profile — overridable per call.
+        const workspaceId = url.searchParams.get('workspaceId') ?? process.env.WSFEX_CTZ_WORKSPACE_ID ?? '';
+        const issuerProfileRef = url.searchParams.get('issuerProfileRef') ?? process.env.WSFEX_CTZ_ISSUER_PROFILE_REF ?? '';
+        if (!workspaceId || !issuerProfileRef) return json({ error: 'WSFEX_CTZ_ISSUER_PROFILE_REQUIRED' }, 400);
+        return json(await service.getCotizacion(monId, { workspaceId, issuerProfileRef }, new Date().toISOString()));
+      }
       const action = url.pathname === '/v1/wsfex/authorize'
         ? 'authorize'
         : url.pathname === '/v1/wsfex/recover'
