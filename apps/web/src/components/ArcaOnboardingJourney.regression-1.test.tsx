@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { arcaScopeDescriptions } from './ArcaOnboardingJourney';
+import { arcaScopeDescriptions } from './ArcaOnboardingJourney.model';
 
 // Regression: ISSUE-001 — export-only UI retained WSFE verification requirements
 // Found by /qa on 2026-07-14

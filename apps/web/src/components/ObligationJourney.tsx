@@ -4,6 +4,7 @@ import { ArrowUpRight, Check, Clock3, LockKeyhole, UserRoundCheck, X } from 'luc
 import type { TaxObligation, TaxWidgetSnapshotV1 } from '@tax-engine/core';
 
 import { humanize } from './TaxWidget';
+import { executionGateCopy } from './ObligationJourney.model';
 
 export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 }) {
   const [reviewingId, setReviewingId] = useState<string | null>(null);
@@ -58,12 +59,6 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
       </div>
     </section>
   );
-}
-
-export function executionGateCopy(jurisdiction: 'AR' | 'US'): string {
-  return jurisdiction === 'AR'
-    ? 'No filing, payment, or authority submission can run from this workspace. ARCA onboarding remains a separate user-controlled handoff.'
-    : 'No filing, payment, or IRS submission can run from this workspace. U.S. filing remains separately provider- or accountant-gated.';
 }
 
 export function ManualActionReview({ obligation, panelId }: { obligation: TaxObligation; panelId: string }) {
