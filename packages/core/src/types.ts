@@ -18,6 +18,7 @@ export type TaxConsentPurpose =
   | 'tax_workspace_processing'
   | 'provider_submission'
   | 'tax_evidence_quality'
+  | 'factura_e_factoring'
   | 'cre_attestation'
   | 'fantasmita_disclosure';
 
