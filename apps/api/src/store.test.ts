@@ -3,7 +3,28 @@ import { describe, expect, test } from 'bun:test';
 import { argentinaProfile } from '@tax-engine/core';
 import type { ComplianceWorkspaceState, TaxEvidenceRecord } from '@tax-engine/core';
 
-import { TaxProfileStore } from './store';
+import { resolveTaxEngineDatabasePath, TaxProfileStore } from './store';
+
+describe('tax storage durability configuration', () => {
+  test('keeps the in-memory default for local development and tests', () => {
+    expect(resolveTaxEngineDatabasePath(null, 'development')).toBe(':memory:');
+    expect(resolveTaxEngineDatabasePath('', 'test')).toBe(':memory:');
+  });
+
+  test('refuses missing or in-memory SQLite storage in production', () => {
+    for (const path of [null, '', ':memory:', 'file::memory:?cache=shared', 'file:tax?mode=memory&cache=shared']) {
+      expect(() => resolveTaxEngineDatabasePath(path, 'production')).toThrow(
+        'TAX_ENGINE_DB_PATH_REQUIRED_IN_PRODUCTION',
+      );
+    }
+  });
+
+  test('accepts an explicit durable SQLite path in production', () => {
+    expect(resolveTaxEngineDatabasePath('/data/tax-engine.sqlite', 'production')).toBe(
+      '/data/tax-engine.sqlite',
+    );
+  });
+});
 
 describe('append-only tax storage', () => {
   test('uses optimistic profile versions and records immutable evidence', () => {
