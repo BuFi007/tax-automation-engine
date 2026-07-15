@@ -1,6 +1,9 @@
 import { Database } from 'bun:sqlite';
 
 import type {
+  ArcaOnboardingEventV1,
+  ArcaOnboardingReclaimSessionV1,
+  ArcaOnboardingRunV1,
   ComplianceWorkspaceState,
   FacturaEAgentEventV1,
   FacturaEAgentRunV1,
@@ -66,6 +69,20 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS factura_e_agent_workspace
         ON factura_e_agent_revisions (workspace_id, run_id, revision);
+      CREATE TABLE IF NOT EXISTS arca_onboarding_revisions (
+        onboarding_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        state_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (onboarding_id, revision),
+        UNIQUE (onboarding_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS arca_onboarding_workspace
+        ON arca_onboarding_revisions (workspace_id, onboarding_id, revision);
       CREATE TABLE IF NOT EXISTS reclaim_session_bindings (
         session_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -81,6 +98,14 @@ export class TaxProfileStore {
         request_config TEXT NOT NULL,
         status_url TEXT NOT NULL,
         stored_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS arca_onboarding_reclaim_bindings (
+        session_id TEXT PRIMARY KEY,
+        onboarding_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        provider_version TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        bound_at TEXT NOT NULL
       );
     `);
   }
@@ -254,6 +279,109 @@ export class TaxProfileStore {
       'SELECT event_json FROM factura_e_agent_revisions WHERE run_id = ? AND idempotency_key = ?'
     ).get(runId, idempotencyKey);
     return row ? JSON.parse(row.event_json) as FacturaEAgentEventV1 : null;
+  }
+
+  appendArcaOnboardingRevision(input: Readonly<{
+    run: ArcaOnboardingRunV1;
+    event: ArcaOnboardingEventV1;
+    stateHash: string;
+    appendedAt: string;
+  }>): ArcaOnboardingRunV1 {
+    if (input.event.onboardingId !== input.run.onboardingId || input.event.workspaceId !== input.run.workspaceId) {
+      throw new Error('ARCA_ONBOARDING_EVENT_RUN_MISMATCH');
+    }
+    const transaction = this.#db.transaction(() => {
+      const existing = this.#db.query<{ state_json: string }, [string, string]>(
+        'SELECT state_json FROM arca_onboarding_revisions WHERE onboarding_id = ? AND idempotency_key = ?'
+      ).get(input.run.onboardingId, input.event.idempotencyKey);
+      if (existing) return JSON.parse(existing.state_json) as ArcaOnboardingRunV1;
+
+      const latest = this.#db.query<{ revision: number }, [string]>(
+        'SELECT COALESCE(MAX(revision), 0) AS revision FROM arca_onboarding_revisions WHERE onboarding_id = ?'
+      ).get(input.run.onboardingId);
+      if ((latest?.revision ?? 0) !== input.run.revision - 1) throw new Error('ARCA_ONBOARDING_REVISION_CONFLICT');
+      this.#db.query(`
+        INSERT INTO arca_onboarding_revisions (
+          onboarding_id, workspace_id, revision, idempotency_key, state_json, state_hash, event_json, appended_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.run.onboardingId,
+        input.run.workspaceId,
+        input.run.revision,
+        input.event.idempotencyKey,
+        JSON.stringify(input.run),
+        input.stateHash,
+        JSON.stringify(input.event),
+        input.appendedAt,
+      );
+      return input.run;
+    });
+    return transaction();
+  }
+
+  getArcaOnboardingRun(onboardingId: string): ArcaOnboardingRunV1 | null {
+    const row = this.#db.query<{ state_json: string }, [string]>(
+      'SELECT state_json FROM arca_onboarding_revisions WHERE onboarding_id = ? ORDER BY revision DESC LIMIT 1'
+    ).get(onboardingId);
+    return row ? JSON.parse(row.state_json) as ArcaOnboardingRunV1 : null;
+  }
+
+  getArcaOnboardingRunByIdempotency(onboardingId: string, idempotencyKey: string): ArcaOnboardingRunV1 | null {
+    const row = this.#db.query<{ state_json: string }, [string, string]>(
+      'SELECT state_json FROM arca_onboarding_revisions WHERE onboarding_id = ? AND idempotency_key = ?'
+    ).get(onboardingId, idempotencyKey);
+    return row ? JSON.parse(row.state_json) as ArcaOnboardingRunV1 : null;
+  }
+
+  listArcaOnboardingRuns(workspaceId: string): readonly ArcaOnboardingRunV1[] {
+    const rows = this.#db.query<{ state_json: string }, [string]>(`
+      SELECT revisions.state_json
+      FROM arca_onboarding_revisions AS revisions
+      INNER JOIN (
+        SELECT onboarding_id, MAX(revision) AS revision
+        FROM arca_onboarding_revisions
+        WHERE workspace_id = ?
+        GROUP BY onboarding_id
+      ) AS latest
+        ON latest.onboarding_id = revisions.onboarding_id AND latest.revision = revisions.revision
+      ORDER BY revisions.appended_at DESC
+    `).all(workspaceId);
+    return rows.map(row => JSON.parse(row.state_json) as ArcaOnboardingRunV1);
+  }
+
+  listArcaOnboardingEvents(onboardingId: string): readonly ArcaOnboardingEventV1[] {
+    const rows = this.#db.query<{ event_json: string }, [string]>(
+      'SELECT event_json FROM arca_onboarding_revisions WHERE onboarding_id = ? ORDER BY revision ASC'
+    ).all(onboardingId);
+    return rows.map(row => JSON.parse(row.event_json) as ArcaOnboardingEventV1);
+  }
+
+  getArcaOnboardingEventByIdempotency(onboardingId: string, idempotencyKey: string): ArcaOnboardingEventV1 | null {
+    const row = this.#db.query<{ event_json: string }, [string, string]>(
+      'SELECT event_json FROM arca_onboarding_revisions WHERE onboarding_id = ? AND idempotency_key = ?'
+    ).get(onboardingId, idempotencyKey);
+    return row ? JSON.parse(row.event_json) as ArcaOnboardingEventV1 : null;
+  }
+
+  bindArcaOnboardingReclaimSession(onboardingId: string, session: ArcaOnboardingReclaimSessionV1, boundAt: string): void {
+    const existing = this.#db.query<{ onboarding_id: string }, [string]>(
+      'SELECT onboarding_id FROM arca_onboarding_reclaim_bindings WHERE session_id = ?'
+    ).get(session.sessionId);
+    if (existing && existing.onboarding_id !== onboardingId) throw new Error('RECLAIM_SESSION_BINDING_CONFLICT');
+    if (!existing) {
+      this.#db.query(`
+        INSERT INTO arca_onboarding_reclaim_bindings (
+          session_id, onboarding_id, provider_id, provider_version, expires_at, bound_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(session.sessionId, onboardingId, session.providerId, session.providerVersion, session.expiresAt, boundAt);
+    }
+  }
+
+  getArcaOnboardingIdForReclaimSession(sessionId: string): string | null {
+    const row = this.#db.query<{ onboarding_id: string }, [string]>(
+      'SELECT onboarding_id FROM arca_onboarding_reclaim_bindings WHERE session_id = ?'
+    ).get(sessionId);
+    return row?.onboarding_id ?? null;
   }
 
   bindReclaimSession(runId: string, session: ReclaimSessionReferenceV1, boundAt: string): void {

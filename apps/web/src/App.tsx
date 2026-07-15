@@ -8,6 +8,7 @@ import { EvidenceCoverage } from './components/EvidenceCoverage';
 import { ObligationJourney } from './components/ObligationJourney';
 import { ProfileSelector } from './components/ProfileSelector';
 import { TaxWidget } from './components/TaxWidget';
+import { ArcaOnboardingJourney } from './components/ArcaOnboardingJourney';
 
 export function App() {
   const [jurisdiction, setJurisdiction] = useState<JurisdictionCode>('AR');
@@ -63,6 +64,7 @@ export function App() {
               onFounderResidencyChange={setFounderResidency}
             />
             <EvidenceCoverage snapshot={snapshot} />
+            {jurisdiction === 'AR' && <ArcaOnboardingJourney />}
             <ObligationJourney snapshot={snapshot} />
           </div>
         </>

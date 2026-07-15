@@ -29,6 +29,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@tax-engine/core": "workspace:*",
+        "@tax-engine/wsfe-signer": "workspace:*",
         "@tax-engine/wsfex-signer": "workspace:*",
         "fast-xml-parser": "^5.2.5",
         "node-forge": "^1.3.1",
@@ -68,6 +69,34 @@
         "@vitejs/plugin-react": "^5.1.3",
         "typescript": "^5.8.3",
         "vite": "^7.2.2",
+      },
+    },
+    "apps/wsfe-signer": {
+      "name": "@tax-engine/wsfe-signer",
+      "version": "0.1.0",
+      "dependencies": {
+        "@tax-engine/core": "workspace:*",
+        "@tax-engine/wsfex-signer": "workspace:*",
+        "decimal.js": "^10.6.0",
+        "fast-xml-parser": "^5.2.5",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.5",
+        "typescript": "^5.8.3",
+      },
+    },
+    "apps/wsfecred": {
+      "name": "@tax-engine/wsfecred",
+      "version": "0.1.0",
+      "dependencies": {
+        "@tax-engine/wsfex-signer": "workspace:*",
+        "fast-xml-parser": "^5.2.5",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.5",
+        "typescript": "^5.8.3",
       },
     },
     "apps/wsfex-signer": {
@@ -285,6 +314,10 @@
     "@tax-engine/reclaim-proof-vault": ["@tax-engine/reclaim-proof-vault@workspace:apps/reclaim-proof-vault"],
 
     "@tax-engine/web": ["@tax-engine/web@workspace:apps/web"],
+
+    "@tax-engine/wsfe-signer": ["@tax-engine/wsfe-signer@workspace:apps/wsfe-signer"],
+
+    "@tax-engine/wsfecred": ["@tax-engine/wsfecred@workspace:apps/wsfecred"],
 
     "@tax-engine/wsfex-signer": ["@tax-engine/wsfex-signer@workspace:apps/wsfex-signer"],
 

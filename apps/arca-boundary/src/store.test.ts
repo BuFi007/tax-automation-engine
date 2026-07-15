@@ -5,8 +5,9 @@ import { join } from 'node:path';
 
 import { hashCanonical } from '@tax-engine/core';
 
-import { ArcaBoundaryStore } from './store';
-import { authorityPayload, certificateBundle, CUIT, NOW } from './test-fixtures';
+import { deriveDomainKey, openJson, sealJson } from './crypto';
+import { ArcaBoundaryStore, PAYLOAD_DOMAIN, payloadAad } from './store';
+import { authorityPayload, certificateBundle, CUIT, NOW, wsfeAuthorityPayload, WSFE_RECEPTOR_CUIT } from './test-fixtures';
 import { validateIssuerCredential } from './wsaa';
 
 const temporaryDirectories: string[] = [];
@@ -31,6 +32,45 @@ describe('encrypted ARCA boundary storage', () => {
     expect(databaseBytes).not.toContain('FOREIGN-TAX-SECRET');
     expect(databaseBytes).not.toContain('Sensitive Foreign Customer');
     expect(databaseBytes).not.toContain('Secret address 123');
+  });
+
+  test('round-trips a domestic WSFE payload under a domain-separated reference without leaking receptor PII', () => {
+    const { store, path } = persistentStore();
+    const payload = wsfeAuthorityPayload();
+    const receipt = store.storePayload({ workspaceId: 'workspace-1', payload, expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'wsfe-payload-1', occurredAt: NOW.toISOString() });
+    expect(receipt.reference).toMatch(/^vault:\/\/wsfe\//);
+    expect(store.resolvePayload(receipt.reference, NOW.toISOString())).toEqual({ payload, payloadHash: hashCanonical(payload) });
+
+    const databaseBytes = databaseFiles(path);
+    expect(databaseBytes).not.toContain(WSFE_RECEPTOR_CUIT);
+    expect(databaseBytes).not.toContain('Sensitive Domestic Client');
+  });
+
+  test('keeps WSFEX and WSFE payloads in separate reference namespaces and crypto domains', () => {
+    const { store } = persistentStore();
+    const wsfexReceipt = store.storePayload({ workspaceId: 'workspace-1', payload: authorityPayload(), expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'coexist-wsfex', occurredAt: NOW.toISOString() });
+    const wsfeReceipt = store.storePayload({ workspaceId: 'workspace-1', payload: wsfeAuthorityPayload(), expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'coexist-wsfe', occurredAt: NOW.toISOString() });
+    expect(wsfexReceipt.reference).toMatch(/^vault:\/\/wsfex\//);
+    expect(wsfeReceipt.reference).toMatch(/^vault:\/\/wsfe\//);
+    expect(store.resolvePayload(wsfexReceipt.reference, NOW.toISOString()).payload.version).toBe('wsfex-authority-payload-v1');
+    expect(store.resolvePayload(wsfeReceipt.reference, NOW.toISOString()).payload.version).toBe('wsfe-authority-payload-v1');
+
+    // A ciphertext sealed under one family's key cannot be opened under the other's.
+    const masterKey = Buffer.alloc(32, 7);
+    const wsfeKey = deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfe);
+    const wsfexKey = deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfex);
+    expect(wsfeKey.equals(wsfexKey)).toBe(false);
+    const aad = payloadAad('vault://wsfe/00000000-0000-4000-8000-000000000001', hashCanonical('domestic'));
+    const sealed = sealJson(wsfeKey, aad, { secret: 'domestic' });
+    expect(openJson(wsfeKey, aad, sealed)).toEqual({ secret: 'domestic' });
+    expect(() => openJson(wsfexKey, aad, sealed)).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
+  });
+
+  test('fails closed on an unknown payload schema version', () => {
+    const { store } = persistentStore();
+    const unknown = { ...wsfeAuthorityPayload(), version: 'wsfe-authority-payload-v99' };
+    expect(() => store.storePayload({ workspaceId: 'workspace-1', payload: unknown as never, expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'unknown-schema', occurredAt: NOW.toISOString() }))
+      .toThrow();
   });
 
   test('enforces payload expiry, workspace-bound revocation, and authenticated encryption', () => {

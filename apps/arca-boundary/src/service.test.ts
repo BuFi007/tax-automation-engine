@@ -4,7 +4,7 @@ import { hashCanonical } from '@tax-engine/core';
 
 import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
-import { authorityPayload, certificateBundle, CUIT, NOW } from './test-fixtures';
+import { authorityPayload, certificateBundle, CUIT, NOW, wsfeAuthorityPayload } from './test-fixtures';
 import type { WsaaLoginClient } from './wsaa';
 
 describe('ARCA authority boundary service', () => {
@@ -20,6 +20,21 @@ describe('ARCA authority boundary service', () => {
     const receipt = service.storePayload({ ...request, expiresAt: '2026-07-18T12:00:00.000Z' }, 'payload-2', NOW.toISOString());
     expect(service.resolvePayload(receipt.reference, NOW.toISOString()).payloadHash).toBe(hashCanonical(request.payload));
     expect(() => service.storePayload({ ...request, workspaceId: 'workspace-other', expiresAt: '2026-07-12T12:00:00.000Z' }, 'payload-3', NOW.toISOString()))
+      .toThrow('AUTHORITY_PAYLOAD_WORKSPACE_MISMATCH');
+  });
+
+  test('stores and resolves a domestic WSFE payload and binds it to its workspace', () => {
+    const service = boundary().service;
+    const request = {
+      version: 'authority-payload-store-v1' as const,
+      workspaceId: 'workspace-1',
+      payload: wsfeAuthorityPayload(),
+      expiresAt: '2026-07-12T12:00:00.000Z',
+    };
+    const receipt = service.storePayload(request, 'wsfe-store-1', NOW.toISOString());
+    expect(receipt.reference).toMatch(/^vault:\/\/wsfe\//);
+    expect(service.resolvePayload(receipt.reference, NOW.toISOString())).toEqual({ payload: request.payload, payloadHash: hashCanonical(request.payload) });
+    expect(() => service.storePayload({ ...request, workspaceId: 'workspace-other' }, 'wsfe-store-2', NOW.toISOString()))
       .toThrow('AUTHORITY_PAYLOAD_WORKSPACE_MISMATCH');
   });
 

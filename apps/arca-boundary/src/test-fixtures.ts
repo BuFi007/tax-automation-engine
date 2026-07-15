@@ -1,9 +1,12 @@
 import { hashCanonical } from '@tax-engine/core';
+import type { AuthorityPayload as WsfeAuthorityPayload } from '@tax-engine/wsfe-signer/contracts';
 import type { AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 import * as forge from 'node-forge';
 
 export const NOW = new Date('2026-07-11T12:00:00.000Z');
 export const CUIT = '20123456786';
+// Distinct, greppable receptor identity so "no domestic PII in the DB" is provable.
+export const WSFE_RECEPTOR_CUIT = '27300000008';
 
 export function authorityPayload(overrides: Partial<AuthorityPayload> = {}): AuthorityPayload {
   const canonicalDocument = canonicalInvoice();
@@ -58,6 +61,45 @@ function canonicalInvoice() {
     paymentTerms: 'Due on receipt',
     ruleVersionIds: ['ar-rg-4401-factura-e-v1', 'arca-wsfex-3.1.1', 'bcra-a8330-service-exports-v1'],
   };
+}
+
+export function wsfeAuthorityPayload(overrides: Partial<WsfeAuthorityPayload> = {}): WsfeAuthorityPayload {
+  const receptor = { docType: 80 as const, docNumber: WSFE_RECEPTOR_CUIT, condicionIvaId: 6 as const };
+  const servicePeriod = { from: '2026-07-01', to: '2026-07-11', paymentDueDate: '2026-07-11' };
+  const canonicalDocument = {
+    version: 'factura-c-intent-v1' as const,
+    intentId: 'intent-c-1',
+    workspaceId: 'workspace-1',
+    taxpayerReferenceHash: hashCanonical('taxpayer-c-1'),
+    receptorReferenceHash: hashCanonical(receptor),
+    receptor: { docType: receptor.docType, condicionIvaId: receptor.condicionIvaId },
+    documentType: 11 as const,
+    concept: 2 as const,
+    pointOfSale: 4,
+    issueDate: '2026-07-11',
+    servicePeriod,
+    total: { decimal: '15000.00', currency: 'ARS' as const },
+    description: 'Servicios de software — Sensitive Domestic Client',
+    ruleVersionIds: ['ar-rg-5616-condicion-iva-v1', 'arca-wsfev1-domestic-v1'],
+  };
+  return {
+    version: 'wsfe-authority-payload-v1',
+    canonicalDocument,
+    issuerProfileRef: 'issuer://workspace-1/primary',
+    subjectId: 'intent-c-1',
+    intentHash: hashCanonical(canonicalDocument),
+    requestId: '201',
+    invoiceNumber: '6',
+    documentType: 11,
+    concept: 2,
+    pointOfSale: 4,
+    issueDate: '2026-07-11',
+    receptor,
+    servicePeriod,
+    total: { decimal: '15000.00', currency: 'ARS' },
+    associatedDocument: null,
+    ...overrides,
+  } as WsfeAuthorityPayload;
 }
 
 export function certificateBundle(cuit = CUIT, now = NOW, bits = 2048) {

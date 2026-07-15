@@ -5,7 +5,7 @@ import { hashCanonical } from '@tax-engine/core';
 import type { AuthorityPayload, SignerRequest } from './contracts';
 import { canonicalAdjustment, payload, request } from './test-fixtures';
 import { WsfexSignerService } from './service';
-import { type WsfexAuthorityClient, WsfexAmbiguousTransportError, type WsfexAuthorizationResult, type WsfexRetrievedDocument } from './soap';
+import { type WsfexAuthorityClient, WsfexAmbiguousTransportError, type WsfexAuthorizationResult, type WsfexCotizacion, type WsfexRetrievedDocument } from './soap';
 import { SignerAttemptStore } from './store';
 import type { AuthorityPayloadVault } from './vault';
 import type { WsaaTicketBroker } from './wsaa';
@@ -104,6 +104,60 @@ describe('isolated WSFEX signer service', () => {
     expect(result).toEqual(expect.objectContaining({ status: 'rejected', cae: null, authorizedDocument: null }));
     expect(fixture.store.get(fixture.request.requestId)?.state).toBe('rejected');
   });
+
+  test('echoes the applied Moneda_ctz in the authorized document for the desk to persist', async () => {
+    const fixture = setup();
+    const result = await fixture.service.authorize(fixture.request, fixture.request.requestId, occurredAt);
+    expect(result.authorizedDocument).toEqual(expect.objectContaining({ currencyId: 'DOL', currencyQuote: '1200.25' }));
+  });
+});
+
+describe('WSFEX cotización endpoint + error-1667 band', () => {
+  const ctzContext = { workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1' };
+
+  test('returns the ARCA orientativo fail-closed, labeled and with the prior business day', async () => {
+    const fixture = setup();
+    const result = await fixture.service.getCotizacion('DOL', ctzContext, occurredAt);
+    expect(result).toEqual({ monId: 'DOL', ctz: '1200.25', date: '2026-07-10', referenceDate: '2026-07-10', source: 'arca_orientativo' });
+  });
+
+  test('rejects an invalid monId and a non-business / future cotización date', async () => {
+    const fixture = setup();
+    await expect(fixture.service.getCotizacion('DOLLAR', ctzContext, occurredAt)).rejects.toThrow('WSFEX_CTZ_MON_ID_INVALID');
+    fixture.authority.cotizacion = { monId: 'DOL', ctz: '1200.25', date: '2026-07-11' }; // Saturday
+    await expect(fixture.service.getCotizacion('DOL', ctzContext, occurredAt)).rejects.toThrow('WSFEX_CTZ_DATE_NOT_BUSINESS_DAY');
+    fixture.authority.cotizacion = { monId: 'DOL', ctz: '1200.25', date: '2026-07-20' }; // future
+    await expect(fixture.service.getCotizacion('DOL', ctzContext, occurredAt)).rejects.toThrow('WSFEX_CTZ_DATE_IN_FUTURE');
+  });
+
+  test('accepts an invoice quote within the band and rejects one outside it before submit', async () => {
+    const inBand = setup();
+    inBand.authority.cotizacion = { monId: 'DOL', ctz: '1150.00', date: '2026-07-10' }; // ~4.4% from 1200.25
+    await expect(inBand.service.authorize(inBand.request, inBand.request.requestId, occurredAt)).resolves.toEqual(expect.objectContaining({ status: 'accepted' }));
+
+    const outOfBand = setup();
+    outOfBand.authority.cotizacion = { monId: 'DOL', ctz: '2000.00', date: '2026-07-10' }; // ~40% from 1200.25
+    await expect(outOfBand.service.authorize(outOfBand.request, outOfBand.request.requestId, occurredAt)).rejects.toThrow('WSFEX_MONEDA_CTZ_OUT_OF_BAND');
+    expect(outOfBand.authority.authorizeCalls).toBe(0); // rejected in preflight, no wasted FEXAuthorize
+  });
+
+  test('does not apply the invoice band to an NC/ND — it inherits the original quote', async () => {
+    const association = { documentType: 19 as const, pointOfSale: 4, invoiceNumber: '81' };
+    const canonicalDocument = canonicalAdjustment({ adjustmentId: 'credit-2', documentType: 21, amount: '100.00', reason: 'Commercial credit' });
+    const notePayload = payload({
+      canonicalDocument, subjectId: 'credit-2', intentHash: hashCanonical(canonicalDocument), requestId: '104', invoiceNumber: '1', documentType: 21,
+      paymentDate: null, sameCurrencyPayment: null, total: '100.00', paymentTerms: null, associatedDocument: association,
+      items: [{ code: null, description: 'Commercial credit', quantity: '1', unitCode: 7, unitPrice: '100.00', discount: '0', total: '100.00' }],
+    });
+    const noteRequest = request({
+      subjectId: 'credit-2', intentHash: notePayload.intentHash, requestId: '104', authorityPayloadRef: 'vault://wsfex/note-2',
+      expected: { documentType: 21, operationType: 2, pointOfSale: 4, issueDate: '2026-07-11', total: { decimal: '100.00', currency: 'USD' }, associatedDocument: association },
+    });
+    const fixture = setup({ request: noteRequest, payload: notePayload, authorizeResults: [accepted({ requestId: '104', documentType: 21, invoiceNumber: '1', cae: '42345678901234' })] });
+    // Wildly out of today's band — must NOT block the note, whose quote matches its authorized original.
+    fixture.authority.cotizacion = { monId: 'DOL', ctz: '9999.00', date: '2026-07-10' };
+    await expect(fixture.service.authorize(noteRequest, noteRequest.requestId, occurredAt)).resolves.toEqual(expect.objectContaining({ status: 'accepted', invoiceNumber: '1' }));
+  });
 });
 
 type AuthorizeStep = WsfexAuthorizationResult | 'ambiguous';
@@ -144,6 +198,9 @@ class FakeWsaa implements WsaaTicketBroker {
 class FakeAuthority implements WsfexAuthorityClient {
   authorizeCalls = 0;
   originalDocument: WsfexRetrievedDocument = retrieved({ invoiceNumber: '81' });
+  // In band with the fixture invoice quote (1200.25) so invoice preflight passes;
+  // tests override to force an error-1667 out-of-band rejection.
+  cotizacion: WsfexCotizacion = { monId: 'DOL', ctz: '1200.25', date: '2026-07-10' };
   readonly #authorizeResults: AuthorizeStep[];
   readonly #recoveredDocuments: RetrieveStep[];
 
@@ -165,6 +222,9 @@ class FakeAuthority implements WsfexAuthorityClient {
     const result = this.#recoveredDocuments.shift() ?? null;
     if (result === 'ambiguous') throw new WsfexAmbiguousTransportError(hashCanonical('retrieve-ambiguous'));
     return result;
+  }
+  async getCotizacion(_ticket: unknown, monId: string): Promise<WsfexCotizacion> {
+    return { ...this.cotizacion, monId };
   }
   async assertPointOfSaleActive() {}
 }

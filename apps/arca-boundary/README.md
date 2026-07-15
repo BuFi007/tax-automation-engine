@@ -48,6 +48,7 @@ tickets.
 
 ```text
 PORT=4300
+ARCA_BOUNDARY_HOST=127.0.0.1
 ARCA_ENVIRONMENT=homologacion | production
 ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN
 ARCA_BOUNDARY_PAYLOAD_RESOLVE_TOKEN
@@ -57,6 +58,10 @@ ARCA_BOUNDARY_MASTER_KEY_FILE=/run/secrets/arca_boundary_master_key
 ARCA_BOUNDARY_DB_PATH=/data/arca-boundary.sqlite
 ARCA_BOUNDARY_PRODUCTION_APPROVED=false
 ```
+
+The process binds to loopback by default. Container images set
+`ARCA_BOUNDARY_HOST=0.0.0.0` explicitly so the container runtime can publish the
+authenticated service.
 
 Generate the root secret out of band with a cryptographically secure 32-byte
 generator and mount its base64 representation as a secret file. Do not commit

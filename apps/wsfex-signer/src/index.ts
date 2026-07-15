@@ -8,6 +8,7 @@ import { HttpAuthorityPayloadVault } from './vault';
 import { HttpWsaaTicketBroker } from './wsaa';
 
 const port = Number(process.env.PORT ?? 4200);
+const hostname = process.env.WSFEX_SIGNER_HOST ?? '127.0.0.1';
 const apiToken = requiredEnvironment('WSFEX_SIGNER_API_TOKEN');
 const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
@@ -28,12 +29,22 @@ const service = new WsfexSignerService(
 );
 
 export const server = Bun.serve({
+  hostname,
   port,
   async fetch(request) {
     try {
       if (!authorized(request, apiToken)) return json({ error: 'UNAUTHORIZED' }, 401);
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/health') return json(await service.health());
+      if (request.method === 'GET' && url.pathname === '/v1/wsfexv1/params/ctz') {
+        const monId = url.searchParams.get('monId') ?? '';
+        // FEXGetPARAM_Ctz is a param lookup (same value for any represented CUIT), so
+        // the endpoint uses a service-level issuer profile — overridable per call.
+        const workspaceId = url.searchParams.get('workspaceId') ?? process.env.WSFEX_CTZ_WORKSPACE_ID ?? '';
+        const issuerProfileRef = url.searchParams.get('issuerProfileRef') ?? process.env.WSFEX_CTZ_ISSUER_PROFILE_REF ?? '';
+        if (!workspaceId || !issuerProfileRef) return json({ error: 'WSFEX_CTZ_ISSUER_PROFILE_REQUIRED' }, 400);
+        return json(await service.getCotizacion(monId, { workspaceId, issuerProfileRef }, new Date().toISOString()));
+      }
       const action = url.pathname === '/v1/wsfex/authorize'
         ? 'authorize'
         : url.pathname === '/v1/wsfex/recover'
@@ -86,5 +97,5 @@ function json(value: unknown, status = 200): Response {
 }
 
 if (import.meta.main) {
-  console.info(`WSFEX signer listening on port ${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
+  console.info(`WSFEX signer listening on ${hostname}:${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);
 }

@@ -32,11 +32,11 @@ export function TaxWidget({ snapshot, onOpenWorkspace }: { snapshot: TaxWidgetSn
         <div><CheckCircle2 aria-hidden="true" /><span>Mapped duties</span><strong>{snapshot.evidenceCoverage.obligations.mapped}/{snapshot.evidenceCoverage.obligations.applicable}</strong></div>
       </div>
 
-      {nextStep && (
+      {(snapshot.profile.jurisdiction === 'AR' || nextStep) && (
         <div className="next-action">
           <div>
-            <span>Next manual action</span>
-            <strong>{nextStep.title}</strong>
+            <span>{snapshot.profile.jurisdiction === 'AR' ? 'Authority setup' : 'Next manual action'}</span>
+            <strong>{snapshot.profile.jurisdiction === 'AR' ? 'Connect ARCA without sharing credentials' : nextStep?.title}</strong>
           </div>
           <ArrowRight aria-hidden="true" />
         </div>

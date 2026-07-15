@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { hashCanonical } from '@tax-engine/core';
 
-import { buildHomologationPreflight, probeReclaimProofVault, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
+import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
 
 describe('ARCA homologation acceptance harness', () => {
   test('reports missing authority and provider assets without disclosing configured values', () => {
@@ -15,6 +15,9 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.productionActivationAllowed).toBe(false);
     expect(JSON.stringify(preflight)).not.toContain('must-not-leak');
     expect(preflight.gates.find(gate => gate.id === 'explicit_homologation_authority')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'wsfe_certificate_delegation')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'feews_point_of_sale')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'reviewed_reclaim_onboarding_provider')?.state).toBe('missing');
   });
 
   test('becomes ready only with reviewed HTTPS homologation boundaries and explicit authority', () => {
@@ -28,6 +31,7 @@ describe('ARCA homologation acceptance harness', () => {
     const accepted = validateHomologationEvidence(validEvidence());
     expect(accepted).toEqual(expect.objectContaining({ state: 'structurally_complete_for_human_production_review', failedGateIds: [] }));
     expect(accepted.safeSummary.productionEnabled).toBe(false);
+    expect(accepted.safeSummary.wsfeDocumentTypes).toEqual([11, 12, 13]);
     expect(accepted.safeSummary.limitation).toContain('independent reviewers');
 
     const evidence = validEvidence();
@@ -37,10 +41,16 @@ describe('ARCA homologation acceptance harness', () => {
       wsfex: evidence.wsfex.map(item => item.documentType === 21
         ? { ...item, mismatchedEchoRejected: false }
         : item.documentType === 20 ? { ...item, canonicalPayloadMismatchRejected: false } : item),
+      wsfe: evidence.wsfe.map(item => item.documentType === 13
+        ? { ...item, caeAloneRejected: false }
+        : item.documentType === 12 ? { ...item, reprocessObservedForResend: false } : item),
       reviews: { ...evidence.reviews, securityAccepted: false },
     });
     expect(rejected.state).toBe('rejected');
-    expect(rejected.failedGateIds).toEqual(expect.arrayContaining(['reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'wsfex_boundary_gate', 'human_review_gate']));
+    expect(rejected.failedGateIds).toEqual(expect.arrayContaining([
+      'reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'wsfex_boundary_gate',
+      'wsfe_recovery_or_echo_gate', 'wsfe_domestic_discipline_gate', 'human_review_gate',
+    ]));
   });
 
   test('probes only a homologation signer that reports delegated certificate and WSAA readiness', async () => {
@@ -66,6 +76,27 @@ describe('ARCA homologation acceptance harness', () => {
         version: 'motora-wsfex-signer-health-v1', environment: 'production', signerVersion: '1', wsfexVersion: '3.1.1',
         certificateDelegationConfigured: true, wsaaReady: true,
       })
+    )).rejects.toThrow();
+  });
+
+  test('probes only a homologation WSFE signer reporting delegated certificate and WSAA readiness', async () => {
+    const report = await probeWsfeHomologationSigner(
+      { baseUrl: 'https://wsfe-signer.example.test', token: 'wsfe-token' },
+      async (_url, init) => {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer wsfe-token');
+        return Response.json({
+          schema: 'motora-wsfe-signer-health-v1',
+          environment: 'homologacion',
+          certificateDelegationConfigured: true,
+          wsaaReady: true,
+        });
+      }
+    );
+    expect(report).toEqual(expect.objectContaining({ state: 'ready', safeHealthReceiptHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+    expect(probeWsfeHomologationSigner({ baseUrl: 'http://wsfe-signer.example.test', token: 'token' })).rejects.toThrow('ARCA_WSFE_SIGNER_HTTPS_REQUIRED');
+    expect(probeWsfeHomologationSigner(
+      { baseUrl: 'https://wsfe-signer.example.test', token: 'token' },
+      async () => Response.json({ schema: 'motora-wsfe-signer-health-v1', environment: 'production', certificateDelegationConfigured: true, wsaaReady: true })
     )).rejects.toThrow();
   });
 
@@ -95,14 +126,20 @@ function readyEnvironment(): Record<string, string> {
     RECLAIM_ARCA_TAXPAYER_PROVIDER_ID: 'provider-readiness',
     RECLAIM_ARCA_CAE_PROVIDER_REVIEWED: 'true',
     RECLAIM_ARCA_CAE_PROVIDER_ID: 'provider-cae',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_ID: 'provider-onboarding',
     RECLAIM_PROOF_VAULT_URL: 'https://proof-vault.example.test',
     RECLAIM_PROOF_VAULT_TOKEN: 'vault-token',
     RECLAIM_PROOF_RETENTION_POLICY_ID: 'tax-evidence-v1',
     ARCA_SIGNER_URL: 'https://wsfex-signer.example.test',
     ARCA_SIGNER_TOKEN: 'signer-token',
+    ARCA_WSFE_SIGNER_URL: 'https://wsfe-signer.example.test',
+    ARCA_WSFE_SIGNER_TOKEN: 'wsfe-signer-token',
     ARCA_BOUNDARY_URL: 'https://arca-boundary.example.test',
     ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN: 'payload-writer-token',
     ARCA_WSFEX_DELEGATION_CONFIRMED: 'true',
+    ARCA_WSFE_DELEGATION_CONFIRMED: 'true',
+    ARCA_FEEWS_POINT_OF_SALE_CONFIRMED: 'true',
     TAX_ENGINE_PRODUCTION_APPROVED: 'false',
   };
 }
@@ -126,6 +163,18 @@ function validEvidence() {
       exactRecoveryReceiptHash: hash(`recovered-${documentType}`),
       mismatchedEchoRejected: true,
       canonicalPayloadMismatchRejected: true,
+      encryptedPayloadAtRestVerified: true,
+      wsaaKeyIsolationVerified: true,
+    })),
+    wsfe: ([11, 12, 13] as const).map(documentType => ({
+      documentType,
+      acceptedReceiptHash: hash(`wsfe-accepted-${documentType}`),
+      ambiguousOutcomeObserved: true,
+      exactRecoveryReceiptHash: hash(`wsfe-recovered-${documentType}`),
+      reprocessObservedForResend: true,
+      mismatchedEchoRejected: true,
+      caeAloneRejected: true,
+      sequenceConflictRejected: true,
       encryptedPayloadAtRestVerified: true,
       wsaaKeyIsolationVerified: true,
     })),

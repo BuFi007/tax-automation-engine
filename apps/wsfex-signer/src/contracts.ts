@@ -161,6 +161,11 @@ export const signerResponseSchema = z.object({
     pointOfSale: z.number().int().positive().max(99998),
     issueDate: z.iso.date(),
     total: moneySchema,
+    // The APPLIED Moneda_ctz (ARCA id + quote) echoed so the desk persists exactly
+    // what was authorized. On recovery it is the ARCA-confirmed quote, already bound
+    // equal to the frozen payload quote.
+    currencyId: z.string().min(1).max(3),
+    currencyQuote: unsignedDecimalSchema,
     associatedDocument: associationSchema.optional(),
   }).strict().nullable(),
   safeErrors: z.array(z.object({ code: z.string(), message: z.string() }).strict()),

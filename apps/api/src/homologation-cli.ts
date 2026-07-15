@@ -1,4 +1,4 @@
-import { buildHomologationPreflight, probeReclaimProofVault, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
+import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
 
 const [command, evidencePath] = process.argv.slice(2);
 
@@ -18,9 +18,14 @@ if (command === 'preflight') {
   const token = process.env.ARCA_SIGNER_TOKEN ?? '';
   const report = await probeWsfexHomologationSigner({ baseUrl, token });
   console.log(JSON.stringify(report, null, 2));
+} else if (command === 'probe-wsfe-signer') {
+  const baseUrl = process.env.ARCA_WSFE_SIGNER_URL ?? '';
+  const token = process.env.ARCA_WSFE_SIGNER_TOKEN ?? '';
+  const report = await probeWsfeHomologationSigner({ baseUrl, token });
+  console.log(JSON.stringify(report, null, 2));
 } else if (command === 'probe-proof-vault') {
   const report = await probeReclaimProofVault({ baseUrl: process.env.RECLAIM_PROOF_VAULT_URL ?? '', token: process.env.RECLAIM_PROOF_VAULT_TOKEN ?? '' });
   console.log(JSON.stringify(report, null, 2));
 } else {
-  throw new Error('USAGE: bun run homologation:preflight | homologation:probe-signer | homologation:probe-proof-vault | homologation:validate -- <redacted-evidence.json>');
+  throw new Error('USAGE: bun run homologation:preflight | homologation:probe-signer | homologation:probe-wsfe-signer | homologation:probe-proof-vault | homologation:validate -- <redacted-evidence.json>');
 }

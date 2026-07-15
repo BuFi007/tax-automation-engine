@@ -11,7 +11,7 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
   return (
     <section className="panel" aria-labelledby="journey-heading">
       <div className="section-heading">
-        <span className="step-number">3</span>
+        <span className="step-number">{snapshot.profile.jurisdiction === 'AR' ? '4' : '3'}</span>
         <div>
           <h2 id="journey-heading">Manual tax journey</h2>
           <p>Preparation, review, submission, acceptance, and satisfaction remain separate.</p>
@@ -54,10 +54,16 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
 
       <div className="execution-gate">
         <LockKeyhole aria-hidden="true" />
-        <div><strong>Execution gate active</strong><p>No filing, payment, ARCA session, or IRS submission can run from this workspace.</p></div>
+        <div><strong>Execution gate active</strong><p>{executionGateCopy(snapshot.profile.jurisdiction)}</p></div>
       </div>
     </section>
   );
+}
+
+export function executionGateCopy(jurisdiction: 'AR' | 'US'): string {
+  return jurisdiction === 'AR'
+    ? 'No filing, payment, or authority submission can run from this workspace. ARCA onboarding remains a separate user-controlled handoff.'
+    : 'No filing, payment, or IRS submission can run from this workspace. U.S. filing remains separately provider- or accountant-gated.';
 }
 
 export function ManualActionReview({ obligation, panelId }: { obligation: TaxObligation; panelId: string }) {

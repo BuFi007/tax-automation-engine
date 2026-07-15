@@ -47,11 +47,14 @@ export type WsfexRetrievedDocument = Readonly<{
   rawResponseHash: string;
 }>;
 
+export type WsfexCotizacion = Readonly<{ monId: string; ctz: string; date: string }>;
+
 export interface WsfexAuthorityClient {
   authorize(ticket: WsfexAccessTicket, payload: AuthorityPayload): Promise<WsfexAuthorizationResult>;
   getLastRequestId(ticket: WsfexAccessTicket): Promise<string>;
   getLastInvoiceNumber(ticket: WsfexAccessTicket, documentType: 19 | 20 | 21, pointOfSale: number): Promise<string>;
   getDocument(ticket: WsfexAccessTicket, documentType: 19 | 20 | 21, pointOfSale: number, invoiceNumber: string): Promise<WsfexRetrievedDocument | null>;
+  getCotizacion(ticket: WsfexAccessTicket, monId: string): Promise<WsfexCotizacion>;
   assertPointOfSaleActive(ticket: WsfexAccessTicket, pointOfSale: number): Promise<void>;
 }
 
@@ -136,6 +139,26 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
         invoiceNumber: requiredText(associated.Cbte_nro, 'WSFEX_RETRIEVED_ASSOCIATION_NUMBER_REQUIRED'),
       } : null,
       rawResponseHash: response.rawHash,
+    };
+  }
+
+  // FEXGetPARAM_Ctz is ARCA's ORIENTATIVO cotización for a currency (Mon_id) plus
+  // its date. Used both to answer the ctz endpoint (fail-closed source) and as the
+  // error-1667 sanity band on submit — never treated as the legal BNA rate.
+  async getCotizacion(ticket: WsfexAccessTicket, monId: string): Promise<WsfexCotizacion> {
+    const response = await this.call('FEXGetPARAM_Ctz', `<Auth>${authXml(ticket)}</Auth><Mon_id>${escapeXml(monId)}</Mon_id>`);
+    assertNoError(response.parsed);
+    const result = node(response.parsed.FEXResultGet);
+    return {
+      monId: nullableText(result.Mon_Id) ?? monId,
+      ctz: requiredText(result.Mon_ctz, 'WSFEX_CTZ_QUOTE_REQUIRED'),
+      // WSFEXV1 v3.1.1 §2.13.3 names the response field `Mon_fecha`.
+      // Keep the older `Fch_cotiz` spelling as a defensive compatibility
+      // fallback for fixtures/proxies that still expose the legacy shape.
+      date: arcaDateToIso(requiredText(
+        nullableText(result.Mon_fecha) ?? nullableText(result.Fch_cotiz),
+        'WSFEX_CTZ_DATE_REQUIRED'
+      )),
     };
   }
 

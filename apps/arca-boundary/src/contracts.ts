@@ -1,14 +1,30 @@
-import { authorityPayloadSchema, isValidCuit } from '@tax-engine/wsfex-signer/contracts';
+import { authorityPayloadSchema as wsfeAuthorityPayloadSchema } from '@tax-engine/wsfe-signer/contracts';
+import { authorityPayloadSchema as wsfexAuthorityPayloadSchema, isValidCuit } from '@tax-engine/wsfex-signer/contracts';
 import { z } from 'zod';
 
+// The boundary seals two independently-schema'd authority-payload families:
+// WSFEX (Factura E, `wsfex-authority-payload-v1`) and WSFE (Factura C,
+// `wsfe-authority-payload-v1`). Fail closed on anything else. Each `.strict()`
+// member carries a distinct `version` literal, so the union is unambiguous.
+export const anyAuthorityPayloadSchema = z.union([wsfexAuthorityPayloadSchema, wsfeAuthorityPayloadSchema]);
+export type AnyAuthorityPayload = z.infer<typeof anyAuthorityPayloadSchema>;
+
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-const referenceSchema = z.string().regex(/^vault:\/\/wsfex\/[0-9a-f-]{36}$/);
+const referenceSchema = z.string().regex(/^vault:\/\/(?:wsfex|wsfe)\/[0-9a-f-]{36}$/);
 const environmentSchema = z.enum(['homologation', 'production']);
+// One WSAA credential can obtain tickets for several ARCA services. The ticket
+// service literal is the only field ARCA scopes per web service, so it stays a
+// closed enum: 'wsfex' (Factura E), 'wsfe' (Factura C / WSFEV1), and 'wsfecred'
+// (Factura de Crédito Electrónica MiPyMEs read-only lifecycle). Ticket issuance
+// only — the read-only wsfecred client stores no authority payload, so the
+// vault referenceSchema above stays scoped to the two issuing services.
+export const wsaaServiceSchema = z.enum(['wsfex', 'wsfe', 'wsfecred']);
+export type WsaaService = z.infer<typeof wsaaServiceSchema>;
 
 export const payloadStoreRequestSchema = z.object({
   version: z.literal('authority-payload-store-v1'),
   workspaceId: z.string().min(1).max(200),
-  payload: authorityPayloadSchema,
+  payload: anyAuthorityPayloadSchema,
   expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 
@@ -61,7 +77,7 @@ export const issuerRevokeRequestSchema = z.object({
 
 export const ticketRequestSchema = z.object({
   version: z.literal('wsaa-ticket-request-v1'),
-  service: z.literal('wsfex'),
+  service: wsaaServiceSchema,
   environment: environmentSchema,
   workspaceId: z.string().min(1).max(200),
   issuerProfileRef: z.string().min(1).max(500),

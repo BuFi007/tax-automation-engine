@@ -5,7 +5,7 @@ import { hashCanonical } from '@tax-engine/core';
 import { Database } from 'bun:sqlite';
 
 import { deriveDomainKey, openJson, sealJson } from './crypto';
-import { issuerAad, payloadAad } from './store';
+import { issuerAad, PAYLOAD_DOMAIN, payloadAad, referenceFamily, type PayloadFamily } from './store';
 
 export function rotateBoundaryMasterKey(input: Readonly<{
   databasePath: string;
@@ -18,8 +18,14 @@ export function rotateBoundaryMasterKey(input: Readonly<{
   if (input.oldMasterKey.equals(input.newMasterKey)) throw new Error('ARCA_BOUNDARY_ROTATION_KEY_UNCHANGED');
   if (!existsSync(input.databasePath)) throw new Error('ARCA_BOUNDARY_DATABASE_NOT_FOUND');
   const database = new Database(input.databasePath, { create: true });
-  const oldPayloadKey = deriveDomainKey(input.oldMasterKey, 'authority-payloads');
-  const newPayloadKey = deriveDomainKey(input.newMasterKey, 'authority-payloads');
+  // Re-encrypt each payload under its own family domain key (WSFEX and WSFE are
+  // domain separated), selected by the reference prefix.
+  const payloadKeys = (masterKey: Buffer): Record<PayloadFamily, Buffer> => ({
+    wsfex: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfex),
+    wsfe: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfe),
+  });
+  const oldPayloadKeys = payloadKeys(input.oldMasterKey);
+  const newPayloadKeys = payloadKeys(input.newMasterKey);
   const oldIssuerKey = deriveDomainKey(input.oldMasterKey, 'issuer-credentials');
   const newIssuerKey = deriveDomainKey(input.newMasterKey, 'issuer-credentials');
   let committed = false;
@@ -33,9 +39,10 @@ export function rotateBoundaryMasterKey(input: Readonly<{
       'SELECT issuer_profile_ref, environment, certificate_fingerprint, encrypted_bundle FROM issuer_credentials'
     ).all();
     const rotatedPayloads = payloads.map(row => {
+      const family = referenceFamily(row.reference);
       const aad = payloadAad(row.reference, row.payload_hash);
-      const value = openJson(oldPayloadKey, aad, row.encrypted_payload);
-      return { reference: row.reference, encrypted: sealJson(newPayloadKey, aad, value) };
+      const value = openJson(oldPayloadKeys[family], aad, row.encrypted_payload);
+      return { reference: row.reference, encrypted: sealJson(newPayloadKeys[family], aad, value) };
     });
     const rotatedIssuers = issuers.map(row => {
       if (row.environment !== 'homologation' && row.environment !== 'production') throw new Error('WSAA_ISSUER_ENVIRONMENT_INVALID');

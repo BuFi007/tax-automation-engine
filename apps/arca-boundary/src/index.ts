@@ -4,6 +4,7 @@ import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
 
 const port = Number(process.env.PORT ?? 4300);
+const hostname = process.env.ARCA_BOUNDARY_HOST ?? '127.0.0.1';
 const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
 if (environment === 'production' && process.env.ARCA_BOUNDARY_PRODUCTION_APPROVED !== 'true') throw new Error('ARCA_BOUNDARY_PRODUCTION_APPROVAL_REQUIRED');
 const tokens = {
@@ -19,6 +20,7 @@ masterKey.fill(0);
 const handler = createBoundaryHandler(service, tokens, environment);
 
 export const server = Bun.serve({
+  hostname,
   port,
   fetch: handler,
 });
@@ -29,4 +31,4 @@ function requiredToken(name: string): string {
   return value;
 }
 
-if (import.meta.main) console.info(`ARCA authority boundary listening on port ${server.port}; environment=${environment}; secrets remain encrypted and outside agent context`);
+if (import.meta.main) console.info(`ARCA authority boundary listening on ${hostname}:${server.port}; environment=${environment}; secrets remain encrypted and outside agent context`);
