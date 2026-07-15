@@ -61,6 +61,8 @@ export function ArcaOnboardingJourney() {
     window.open('https://auth.afip.gob.ar/contribuyente_/login.xhtml', '_blank', 'noopener,noreferrer');
   };
 
+  const scopeDescriptions = arcaScopeDescriptions(scope);
+
   return (
     <section className="panel arca-onboarding" aria-labelledby="arca-onboarding-heading">
       <div className="section-heading">
@@ -97,7 +99,7 @@ export function ArcaOnboardingJourney() {
               </div>
               <div className="onboarding-step-copy">
                 <div><span>{String(index + 1).padStart(2, '0')}</span><h3>{step.title}</h3></div>
-                <p>{step.description}</p>
+                <p>{step.id === 'api_verification' ? scopeDescriptions.apiVerification : step.id === 'ready' ? scopeDescriptions.ready : step.description}</p>
                 {scopeNote && <small>WSFE is omitted for export-only scope; WSFEX delegation remains required.</small>}
               </div>
               <span className="onboarding-owner">{step.owner}</span>
@@ -125,3 +127,15 @@ export function ArcaOnboardingJourney() {
 }
 
 export { STEPS as ARCA_ONBOARDING_UI_STEPS };
+
+export function arcaScopeDescriptions(scope: 'wsfex' | 'wsfex_wsfe') {
+  return scope === 'wsfex'
+    ? {
+        apiVerification: 'WSFEX independently confirms delegation and the active export point of sale for this taxpayer.',
+        ready: 'Electronic export invoicing becomes available only after the authoritative WSFEX receipt and verified ZK evidence agree.',
+      }
+    : {
+        apiVerification: 'WSFEX and WSFE independently confirm delegation and the active point of sale for this taxpayer.',
+        ready: 'Electronic invoicing becomes available only after both authoritative API receipts and verified ZK evidence agree.',
+      };
+}
