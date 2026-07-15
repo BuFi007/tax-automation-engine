@@ -123,7 +123,7 @@ select:disabled { opacity: .75; }
 .onboarding-handoff { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; margin-top: 20px; padding: 16px; border: 1px solid #cfc3ef; border-radius: 14px; background: #f8f5ff; }
 .onboarding-handoff strong { font-size: .86rem; }
 .onboarding-handoff p { margin: 4px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
-.onboarding-button { width: auto; padding: 0 16px; white-space: nowrap; }
+.onboarding-button { width: auto; min-height: 44px; padding: 0 16px; white-space: nowrap; text-decoration: none; }
 .onboarding-button svg { width: 15px; }
 .onboarding-gate { margin-top: 12px; border-color: #cfc3ef; color: var(--purple-dark); background: #f4f0ff; }
 

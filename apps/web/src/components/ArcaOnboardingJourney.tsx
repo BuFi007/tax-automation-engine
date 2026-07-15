@@ -56,11 +56,6 @@ export function ArcaOnboardingJourney() {
   const [scope, setScope] = useState<'wsfex' | 'wsfex_wsfe'>('wsfex_wsfe');
   const [handoffStarted, setHandoffStarted] = useState(false);
 
-  const openHandoff = () => {
-    setHandoffStarted(true);
-    window.open('https://auth.afip.gob.ar/contribuyente_/login.xhtml', '_blank', 'noopener,noreferrer');
-  };
-
   const scopeDescriptions = arcaScopeDescriptions(scope);
 
   return (
@@ -110,12 +105,18 @@ export function ArcaOnboardingJourney() {
 
       <div className="onboarding-handoff">
         <div>
-          <strong>{handoffStarted ? 'Secure handoff opened' : 'Begin with a user-controlled ARCA session'}</strong>
-          <p>{handoffStarted ? 'Finish signing in on ARCA, then return to Motora. No password or session token crosses this boundary.' : 'Motora guides each screen and pauses before any service, point-of-sale, or delegation change.'}</p>
+          <strong>{handoffStarted ? 'ARCA handoff requested' : 'Begin with a user-controlled ARCA session'}</strong>
+          <p>{handoffStarted ? 'Continue in the ARCA tab, then return to Motora. If it did not appear, use Open ARCA again. No password or session token crosses this boundary.' : 'Motora guides each screen and pauses before any service, point-of-sale, or delegation change.'}</p>
         </div>
-        <button className="primary-button onboarding-button" type="button" onClick={openHandoff}>
+        <a
+          className="primary-button onboarding-button"
+          href="https://auth.afip.gob.ar/contribuyente_/login.xhtml"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setHandoffStarted(true)}
+        >
           {handoffStarted ? 'Open ARCA again' : 'Continue with ARCA'} <ExternalLink aria-hidden="true" />
-        </button>
+        </a>
       </div>
 
       <div className="execution-gate onboarding-gate">
