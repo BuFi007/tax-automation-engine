@@ -75,9 +75,15 @@ See [authority boundary operations](apps/arca-boundary/README.md) and
 - `GET /health`
 - `GET /v1/catalogues`
 - `GET /v1/snapshots/demo?jurisdiction=AR|US`
-- `GET /v1/profiles/:workspaceId`
-- `POST /v1/profiles/confirm`
-- `POST /v1/snapshots`
+- `GET /v1/profiles/:workspaceId` (Bearer API key + short-lived user tenant principal)
+- `POST /v1/profiles/confirm` (Bearer API key + short-lived user tenant principal)
+- `POST /v1/evidence/consent-events` (consent-authority token + scoped consent-authority principal)
+- `POST /v1/evidence/batches` (evidence-ingest token + scoped evidence-publisher principal; at most 500 records and 5 MiB)
+- `PUT /v1/snapshot-configurations/:workspaceId[/:projectionKey]` (Bearer API key + short-lived user tenant principal; omitted key is `default`)
+- `POST /v1/snapshots` (Bearer API key + isolated short-lived snapshot-projector principal; optional `projectionKey`, default `default`)
+- `POST /v1/snapshot-projections/:workspaceId[/:projectionKey]` (same projector principal; recomputes only the already user-configured scope)
+- `GET /v1/snapshots/:workspaceId[/:projectionKey]` (Bearer API key + short-lived user tenant principal; returns the stored snapshot receipt)
+- `GET /v1/browser/snapshots/:workspaceId[/:projectionKey]` (same `snapshot:read` principal; returns the HMAC-opaque browser V1 result)
 - `GET /v1/providers/argentina-erp?tenantId=...`
 - `GET /v1/agent/tools`
 - `POST /v1/agent/tools/:toolId/invoke`
@@ -94,13 +100,20 @@ See [authority boundary operations](apps/arca-boundary/README.md) and
 - `POST /v1/agent/runs/:runId/fx-ingress-verification` (trusted accountant channel)
 - `POST /v1/agent/runs/:runId/tax-declaration` (trusted accountant channel)
 - `POST /v1/reclaim/callback` (public callback; cryptographic proof and session binding required)
-- `POST /v1/evidence/append` (trusted connector/workspace harness; separate ingest token)
+
+The former `POST /v1/evidence/append` route is not a production ingestion path. It is disabled by default and can only be enabled outside production with `TAX_ENGINE_LEGACY_EVIDENCE_APPEND_ENABLED=true` for migration tests.
 
 See [Agent backend for Argentina Factura E](docs/agent-backend.md) for the state machine, tool contract, Reclaim provider requirements, Path A/Path B behavior, and recovery invariants.
 
 Set `TAX_ENGINE_API_KEY` to require bearer authentication. Production startup refuses to run without it. CORS defaults to `http://localhost:5173` and can be overridden with `CORS_ORIGIN`.
 
 Production also requires `TAX_ENGINE_DB_PATH` to point to SQLite on a durable mounted volume, for example `/data/tax-engine.sqlite`. The API refuses to start with a missing, blank, or in-memory SQLite path in production. This preserves Factura E case revisions and settlement idempotency across restarts; do not run multiple API replicas against one SQLite file.
+
+Tenant isolation uses canonical `tax-tenant-principal-v2` assertions in `X-Tax-Tenant-Principal` plus a lowercase HMAC-SHA256 in `X-Tax-Tenant-Signature`. Assertions expire within five minutes and bind workspace, actor, and one route capability (`evidence:publish`, `consent:publish`, `arca:onboard`, profile read/confirm, or snapshot configure/project/read). The browser/API gateway, unattended snapshot projector, Desk evidence publisher, and Desk consent authority use four separate HMAC secrets; `snapshot:project` is accepted only under the dedicated projector secret, never the user gateway secret. Workspace IDs accept both current UUIDs and existing safe opaque IDs such as `workspace:1`. There is currently no key identifier or overlap window, so rotate each caller and Tax API atomically during a controlled deployment.
+
+The ARCA UI accepts the short-lived `arca:onboard` assertion through the `arcaAuthority` prop on `App`; Motora's authenticated gateway must mint and refresh it. The browser never receives `TAX_ENGINE_API_KEY`, `TAX_ENGINE_USER_APPROVAL_TOKEN`, or `TAX_ENGINE_EVIDENCE_INGEST_TOKEN`. With that authority present, the UI creates or resumes the workspace-scoped run and persists login handoff, service confirmation, point creation, and explicit selection among multiple discovered FEEWS points. Discovery and API verification remain machine-evidence operations.
+
+The rollback-safe browser read path is `GET /v1/browser/snapshots/:workspaceId/:projectionKey?`; legacy `/v1/snapshots` remains unchanged. This endpoint returns the canonical `TaxSnapshotReadResultV1` envelope and uses the existing `snapshot:read` tenant principal. Production additionally requires a dedicated, distinct, server-only `TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET` of at least 32 bytes. Tax uses it to scope every browser reference and revision to purpose, workspace, and projection; raw core IDs and hashes are never returned.
 
 ## Repository map
 
@@ -116,4 +129,4 @@ docs           Architecture, delivery traceability, and execution gates
 
 ## Deferred by design
 
-Production activation of Reclaim ARCA providers, real WSFEX certificate delegation, IRS e-file integration, tax payment execution, TaxScore, factoring, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The agent orchestration, encrypted authority boundary, and signer service are implemented but fail closed while those external assets are unconfigured.
+Production activation of Reclaim ARCA providers, real WSFEX certificate delegation, IRS e-file integration, tax payment execution, TaxScore, factoring capital, and BullMQ orchestration require provider credentials, their respective security/product milestones, and explicit owner approval. The Factura E factoring path now includes a Tax-owned independently reconciled authority state, dedicated consent, a minimized signed eligibility feature, immediate settlement/adjustment withdrawal, a restricted CRE live-head read, a durable event outbox, and a durable one-use reserve/consume/complete/release fence around settlement and adjustment mutations. A consumed fence never expires; only an authenticated, commitment-backed proof of a deterministic pre-submit no-effect decision may release it. It remains dark until its isolated principals, pinned Ed25519 KMS/HSM signer public key, single-writer durable store, Desk ingress, homologation evidence, and owner approval are configured. The agent orchestration, encrypted authority boundary, and signer service fail closed while those external assets are unconfigured.

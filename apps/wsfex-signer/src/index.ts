@@ -1,28 +1,35 @@
 import { timingSafeEqual } from 'node:crypto';
 
+import { z } from 'zod';
+
 import { WsfexSignerService } from './service';
 import { signerRequestSchema } from './contracts';
 import { SoapWsfexAuthorityClient } from './soap';
 import { SignerAttemptStore } from './store';
 import { HttpAuthorityPayloadVault } from './vault';
 import { HttpWsaaTicketBroker } from './wsaa';
+import { readBoundedBody } from './bounded-body';
 
 const port = Number(process.env.PORT ?? 4200);
 const hostname = process.env.WSFEX_SIGNER_HOST ?? '127.0.0.1';
-const apiToken = requiredEnvironment('WSFEX_SIGNER_API_TOKEN');
-const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
+const apiToken = requiredSecretEnvironment('WSFEX_SIGNER_API_TOKEN');
+const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
+const signerDatabasePath = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:';
+if (environment === 'production' && signerDatabasePath === ':memory:') {
+  throw new Error('WSFEX_SIGNER_DURABLE_DB_REQUIRED');
+}
 const vault = new HttpAuthorityPayloadVault({
   baseUrl: requiredEnvironment('WSFEX_SIGNER_VAULT_URL'),
-  token: requiredEnvironment('WSFEX_SIGNER_VAULT_TOKEN'),
+  token: requiredSecretEnvironment('WSFEX_SIGNER_VAULT_TOKEN'),
 });
 const wsaa = new HttpWsaaTicketBroker({
   baseUrl: requiredEnvironment('WSFEX_WSAA_BROKER_URL'),
-  token: requiredEnvironment('WSFEX_WSAA_BROKER_TOKEN'),
+  token: requiredSecretEnvironment('WSFEX_WSAA_BROKER_TOKEN'),
 });
 const service = new WsfexSignerService(
   { environment, signerVersion: process.env.WSFEX_SIGNER_VERSION ?? '0.1.0' },
-  new SignerAttemptStore(),
+  new SignerAttemptStore(signerDatabasePath),
   vault,
   wsaa,
   new SoapWsfexAuthorityClient(environment)
@@ -45,22 +52,31 @@ export const server = Bun.serve({
         if (!workspaceId || !issuerProfileRef) return json({ error: 'WSFEX_CTZ_ISSUER_PROFILE_REQUIRED' }, 400);
         return json(await service.getCotizacion(monId, { workspaceId, issuerProfileRef }, new Date().toISOString()));
       }
+      if (request.method === 'POST' && url.pathname === '/v1/wsfexv1/params/points-of-sale/discover') {
+        const raw = await readBoundedBody(request, 16 * 1024, 'SIGNER_REQUEST_TOO_LARGE');
+        const { workspaceId, issuerProfileRef } = pointOfSaleDiscoveryRequestSchema.parse(JSON.parse(raw));
+        return json(await service.discoverPointsOfSale(
+          { workspaceId, issuerProfileRef },
+          new Date().toISOString()
+        ));
+      }
       const action = url.pathname === '/v1/wsfex/authorize'
         ? 'authorize'
         : url.pathname === '/v1/wsfex/recover'
           ? 'recover'
-          : null;
+          : url.pathname === '/v1/wsfex/reconcile'
+            ? 'reconcile'
+            : null;
       if (request.method === 'POST' && action) {
-        const declaredBytes = Number(request.headers.get('content-length') ?? 0);
-        if (declaredBytes > 1_048_576) return json({ error: 'SIGNER_REQUEST_TOO_LARGE' }, 413);
-        const raw = await request.text();
-        if (Buffer.byteLength(raw) > 1_048_576) return json({ error: 'SIGNER_REQUEST_TOO_LARGE' }, 413);
+        const raw = await readBoundedBody(request, 1_048_576, 'SIGNER_REQUEST_TOO_LARGE');
         const body = signerRequestSchema.parse(JSON.parse(raw));
         const idempotencyKey = request.headers.get('idempotency-key') ?? '';
         const occurredAt = new Date().toISOString();
         const result = action === 'authorize'
           ? await service.authorize(body, idempotencyKey, occurredAt)
-          : await service.recover(body, idempotencyKey, occurredAt);
+          : action === 'recover'
+            ? await service.recover(body, idempotencyKey, occurredAt)
+            : await service.reconcile(body, idempotencyKey, occurredAt);
         return json(result);
       }
       return json({ error: 'NOT_FOUND' }, 404);
@@ -76,6 +92,20 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name}_REQUIRED`);
   return value;
+}
+
+function requiredSecretEnvironment(name: string): string {
+  const value = requiredEnvironment(name);
+  if (Buffer.byteLength(value) < 32) throw new Error(`${name}_TOO_SHORT`);
+  return value;
+}
+
+function parseArcaEnvironment(
+  raw: string | undefined
+): 'homologation' | 'production' {
+  if (raw === 'production') return 'production';
+  if (raw === 'homologacion' || raw === 'homologation') return 'homologation';
+  throw new Error('ARCA_ENVIRONMENT_INVALID');
 }
 
 function authorized(request: Request, expected: string): boolean {
@@ -95,6 +125,11 @@ function statusFor(code: string): number {
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
+
+const pointOfSaleDiscoveryRequestSchema = z.object({
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: z.string().min(1).max(500),
+}).strict();
 
 if (import.meta.main) {
   console.info(`WSFEX signer listening on ${hostname}:${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);

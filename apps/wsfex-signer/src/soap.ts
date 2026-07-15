@@ -1,6 +1,7 @@
 import { hashCanonical } from '@tax-engine/core';
 import { XMLParser } from 'fast-xml-parser';
 
+import { readBoundedBody } from './bounded-body';
 import type { AuthorityPayload } from './contracts';
 import type { WsfexAccessTicket } from './wsaa';
 
@@ -28,6 +29,7 @@ export type WsfexAuthorizationResult = Readonly<{
   invoiceNumber: string;
   issueDate: string;
   cae: string | null;
+  caeExpiry: string | null;
   reprocessed: boolean;
   safeErrors: readonly Readonly<{ code: string; message: string }>[];
   rawResponseHash: string;
@@ -35,19 +37,52 @@ export type WsfexAuthorizationResult = Readonly<{
 
 export type WsfexRetrievedDocument = Readonly<{
   documentType: 19 | 20 | 21;
+  operationType: 2;
   pointOfSale: number;
   invoiceNumber: string;
   issueDate: string;
+  destinationCountryArcaCode: number;
+  customer: Readonly<{
+    name: string;
+    address: string;
+    countryCuit: string;
+    foreignTaxId: string | null;
+  }>;
   currencyId: string;
   currencyQuote: string;
+  sameCurrencyPayment: boolean | null;
+  paymentDate: string | null;
   total: string;
+  paymentTerms: string | null;
+  commercialObservation: string | null;
+  generalObservation: string | null;
+  language: 1 | 2 | 3;
+  items: readonly Readonly<{
+    code: string | null;
+    description: string;
+    quantity: string;
+    unitCode: number;
+    unitPrice: string;
+    discount: string;
+    total: string;
+  }>[];
   cae: string;
+  caeExpiry: string;
   result: string;
-  associatedDocument: Readonly<{ documentType: 19 | 20 | 21; pointOfSale: number; invoiceNumber: string }> | null;
+  associatedDocument: Readonly<{
+    documentType: 19 | 20 | 21;
+    pointOfSale: number;
+    invoiceNumber: string;
+    representedCuit: string;
+  }> | null;
   rawResponseHash: string;
 }>;
 
 export type WsfexCotizacion = Readonly<{ monId: string; ctz: string; date: string }>;
+export type WsfexPointOfSaleDiscovery = Readonly<{
+  activePoints: readonly number[];
+  rawResponseHash: string;
+}>;
 
 export interface WsfexAuthorityClient {
   authorize(ticket: WsfexAccessTicket, payload: AuthorityPayload): Promise<WsfexAuthorizationResult>;
@@ -55,6 +90,7 @@ export interface WsfexAuthorityClient {
   getLastInvoiceNumber(ticket: WsfexAccessTicket, documentType: 19 | 20 | 21, pointOfSale: number): Promise<string>;
   getDocument(ticket: WsfexAccessTicket, documentType: 19 | 20 | 21, pointOfSale: number, invoiceNumber: string): Promise<WsfexRetrievedDocument | null>;
   getCotizacion(ticket: WsfexAccessTicket, monId: string): Promise<WsfexCotizacion>;
+  getPointsOfSale(ticket: WsfexAccessTicket): Promise<WsfexPointOfSaleDiscovery>;
   assertPointOfSaleActive(ticket: WsfexAccessTicket, pointOfSale: number): Promise<void>;
 }
 
@@ -68,39 +104,56 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
 
   async authorize(ticket: WsfexAccessTicket, payload: AuthorityPayload): Promise<WsfexAuthorizationResult> {
     const response = await this.call('FEXAuthorize', `<Auth>${authXml(ticket)}</Auth><Cmp>${payloadXml(payload, ticket.representedCuit)}</Cmp>`);
-    const result = node(response.parsed.FEXResultAuth);
-    const error = errorFrom(response.parsed);
-    if (error && Object.keys(result).length === 0) {
+    try {
+      const result = node(response.parsed.FEXResultAuth);
+      const error = errorFrom(response.parsed);
+      if (error && Object.keys(result).length === 0) {
+        return {
+          status: 'rejected',
+          requestId: payload.requestId,
+          documentType: payload.documentType,
+          pointOfSale: payload.pointOfSale,
+          invoiceNumber: payload.invoiceNumber,
+          issueDate: payload.issueDate,
+          cae: null,
+          caeExpiry: null,
+          reprocessed: false,
+          safeErrors: [{ code: error, message: `ARCA WSFEX error ${error}` }],
+          rawResponseHash: response.rawHash,
+        };
+      }
+      const status = text(result.Resultado) === 'A' ? 'accepted' as const : 'rejected' as const;
+      const cae = nullableText(result.Cae);
       return {
-        status: 'rejected',
-        requestId: payload.requestId,
-        documentType: payload.documentType,
-        pointOfSale: payload.pointOfSale,
-        invoiceNumber: payload.invoiceNumber,
-        issueDate: payload.issueDate,
-        cae: null,
-        reprocessed: false,
-        safeErrors: [{ code: error, message: `ARCA WSFEX error ${error}` }],
+        status,
+        requestId: requiredText(result.Id, 'WSFEX_RESPONSE_ID_REQUIRED'),
+        documentType: numberInSet(result.Cbte_tipo, [19, 20, 21], 'WSFEX_RESPONSE_DOCUMENT_TYPE_INVALID'),
+        pointOfSale: positiveNumber(result.Punto_vta, 'WSFEX_RESPONSE_POINT_OF_SALE_INVALID'),
+        invoiceNumber: requiredText(result.Cbte_nro, 'WSFEX_RESPONSE_INVOICE_NUMBER_REQUIRED'),
+        issueDate: arcaDateToIso(requiredText(result.Fch_cbte, 'WSFEX_RESPONSE_DATE_REQUIRED')),
+        cae: status === 'accepted' ? requiredText(cae, 'WSFEX_RESPONSE_CAE_REQUIRED') : null,
+        caeExpiry: status === 'accepted'
+          ? arcaDateToIso(requiredText(result.Fch_venc_Cae, 'WSFEX_RESPONSE_CAE_EXPIRY_REQUIRED'))
+          : null,
+        reprocessed: text(result.Reproceso) === 'S',
+        safeErrors: [
+          ...(error ? [{ code: error, message: `ARCA WSFEX error ${error}` }] : []),
+          ...(nullableText(result.Motivos_Obs) ? [{ code: 'ARCA_OBSERVATION', message: 'ARCA returned an observation; inspect the protected signer audit record.' }] : []),
+        ],
         rawResponseHash: response.rawHash,
       };
+    } catch (error) {
+      if (error instanceof WsfexAmbiguousTransportError) throw error;
+      // FEXAuthorize may already have committed even when its 2xx response is
+      // truncated or cannot be bound to the submitted document. Only an exact
+      // FEXGetCMP read may resolve that outcome; never surface a parse failure as
+      // a deterministic no-effect rejection.
+      throw new WsfexAmbiguousTransportError(hashCanonical({
+        action: 'FEXAuthorize',
+        rawHash: response.rawHash,
+        responseError: error instanceof Error ? error.message : 'UNKNOWN',
+      }));
     }
-    const status = text(result.Resultado) === 'A' ? 'accepted' as const : 'rejected' as const;
-    const cae = nullableText(result.Cae);
-    return {
-      status,
-      requestId: requiredText(result.Id, 'WSFEX_RESPONSE_ID_REQUIRED'),
-      documentType: numberInSet(result.Cbte_tipo, [19, 20, 21], 'WSFEX_RESPONSE_DOCUMENT_TYPE_INVALID'),
-      pointOfSale: positiveNumber(result.Punto_vta, 'WSFEX_RESPONSE_POINT_OF_SALE_INVALID'),
-      invoiceNumber: requiredText(result.Cbte_nro, 'WSFEX_RESPONSE_INVOICE_NUMBER_REQUIRED'),
-      issueDate: arcaDateToIso(requiredText(result.Fch_cbte, 'WSFEX_RESPONSE_DATE_REQUIRED')),
-      cae: status === 'accepted' ? requiredText(cae, 'WSFEX_RESPONSE_CAE_REQUIRED') : null,
-      reprocessed: text(result.Reproceso) === 'S',
-      safeErrors: [
-        ...(error ? [{ code: error, message: `ARCA WSFEX error ${error}` }] : []),
-        ...(nullableText(result.Motivos_Obs) ? [{ code: 'ARCA_OBSERVATION', message: 'ARCA returned an observation; inspect the protected signer audit record.' }] : []),
-      ],
-      rawResponseHash: response.rawHash,
-    };
   }
 
   async getLastRequestId(ticket: WsfexAccessTicket): Promise<string> {
@@ -122,21 +175,53 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
     assertNoError(response.parsed);
     const result = node(response.parsed.FEXResultGet);
     const associated = firstNode(node(result.Cmps_asoc).Cmp_asoc);
+    const items = asArray(node(result.Items).Item).map((value, index) => {
+      const item = node(value);
+      return {
+        code: nullableText(item.Pro_codigo),
+        description: requiredText(item.Pro_ds, `WSFEX_RETRIEVED_ITEM_${index + 1}_DESCRIPTION_REQUIRED`),
+        quantity: requiredText(item.Pro_qty, `WSFEX_RETRIEVED_ITEM_${index + 1}_QUANTITY_REQUIRED`),
+        unitCode: nonnegativeNumber(item.Pro_umed, `WSFEX_RETRIEVED_ITEM_${index + 1}_UNIT_INVALID`),
+        unitPrice: requiredText(item.Pro_precio_uni, `WSFEX_RETRIEVED_ITEM_${index + 1}_PRICE_REQUIRED`),
+        discount: requiredText(item.Pro_bonificacion, `WSFEX_RETRIEVED_ITEM_${index + 1}_DISCOUNT_REQUIRED`),
+        total: requiredText(item.Pro_total_item, `WSFEX_RETRIEVED_ITEM_${index + 1}_TOTAL_REQUIRED`),
+      };
+    });
+    if (items.length === 0) throw new Error('WSFEX_RETRIEVED_ITEMS_REQUIRED');
     const cae = requiredText(result.Cae, 'WSFEX_RETRIEVED_CAE_REQUIRED');
     return {
       documentType: numberInSet(result.Cbte_tipo, [19, 20, 21], 'WSFEX_RETRIEVED_DOCUMENT_TYPE_INVALID'),
+      operationType: numberInSet(result.Tipo_expo, [2], 'WSFEX_RETRIEVED_OPERATION_TYPE_INVALID'),
       pointOfSale: positiveNumber(result.Punto_vta, 'WSFEX_RETRIEVED_POINT_OF_SALE_INVALID'),
       invoiceNumber: requiredText(result.Cbte_nro, 'WSFEX_RETRIEVED_INVOICE_NUMBER_REQUIRED'),
       issueDate: arcaDateToIso(requiredText(result.Fecha_cbte, 'WSFEX_RETRIEVED_DATE_REQUIRED')),
+      destinationCountryArcaCode: positiveNumber(result.Dst_cmp, 'WSFEX_RETRIEVED_DESTINATION_INVALID'),
+      customer: {
+        name: requiredText(result.Cliente, 'WSFEX_RETRIEVED_CUSTOMER_NAME_REQUIRED'),
+        address: requiredText(result.Domicilio_cliente, 'WSFEX_RETRIEVED_CUSTOMER_ADDRESS_REQUIRED'),
+        countryCuit: requiredText(result.Cuit_pais_cliente, 'WSFEX_RETRIEVED_CUSTOMER_COUNTRY_CUIT_REQUIRED'),
+        foreignTaxId: nullableText(result.Id_impositivo),
+      },
       currencyId: requiredText(result.Moneda_Id, 'WSFEX_RETRIEVED_CURRENCY_REQUIRED'),
       currencyQuote: requiredText(result.Moneda_ctz, 'WSFEX_RETRIEVED_QUOTE_REQUIRED'),
+      sameCurrencyPayment: optionalBooleanFlag(result.CanMisMonExt, 'WSFEX_RETRIEVED_SAME_CURRENCY_FLAG_INVALID'),
+      paymentDate: nullableText(result.Fecha_pago)
+        ? arcaDateToIso(requiredText(result.Fecha_pago, 'WSFEX_RETRIEVED_PAYMENT_DATE_INVALID'))
+        : null,
       total: requiredText(result.Imp_total, 'WSFEX_RETRIEVED_TOTAL_REQUIRED'),
+      paymentTerms: nullableText(result.Forma_pago),
+      commercialObservation: nullableText(result.Obs_comerciales),
+      generalObservation: nullableText(result.Obs),
+      language: numberInSet(result.Idioma_cbte, [1, 2, 3], 'WSFEX_RETRIEVED_LANGUAGE_INVALID'),
+      items,
       cae,
+      caeExpiry: arcaDateToIso(requiredText(result.Fch_venc_Cae, 'WSFEX_RETRIEVED_CAE_EXPIRY_REQUIRED')),
       result: requiredText(result.Resultado, 'WSFEX_RETRIEVED_RESULT_REQUIRED'),
       associatedDocument: associated ? {
         documentType: numberInSet(associated.Cbte_tipo, [19, 20, 21], 'WSFEX_RETRIEVED_ASSOCIATION_TYPE_INVALID'),
         pointOfSale: positiveNumber(associated.Cbte_punto_vta, 'WSFEX_RETRIEVED_ASSOCIATION_POS_INVALID'),
         invoiceNumber: requiredText(associated.Cbte_nro, 'WSFEX_RETRIEVED_ASSOCIATION_NUMBER_REQUIRED'),
+        representedCuit: requiredText(associated.Cbte_cuit, 'WSFEX_RETRIEVED_ASSOCIATION_CUIT_REQUIRED'),
       } : null,
       rawResponseHash: response.rawHash,
     };
@@ -163,11 +248,24 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
   }
 
   async assertPointOfSaleActive(ticket: WsfexAccessTicket, pointOfSale: number): Promise<void> {
+    const discovery = await this.getPointsOfSale(ticket);
+    if (!discovery.activePoints.includes(pointOfSale)) {
+      throw new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    }
+  }
+
+  async getPointsOfSale(ticket: WsfexAccessTicket): Promise<WsfexPointOfSaleDiscovery> {
     const response = await this.call('FEXGetPARAM_PtoVenta', `<Auth>${authXml(ticket)}</Auth>`);
     assertNoError(response.parsed);
     const entries = asArray(node(response.parsed.FEXResultGet).ClsFEXResponse_PtoVenta);
-    const active = entries.map(node).some(entry => Number(text(entry.Pve_Nro)) === pointOfSale && text(entry.Pve_Bloqueado) !== 'S' && !nullableText(entry.Pve_FchBaja));
-    if (!active) throw new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    const activePoints = entries
+      .map(node)
+      .filter(entry => text(entry.Pve_Bloqueado) !== 'S' && !nullableText(entry.Pve_FchBaja))
+      .map(entry => positiveNumber(entry.Pve_Nro, 'WSFEX_POINT_OF_SALE_NUMBER_INVALID'));
+    return {
+      activePoints: [...new Set(activePoints)].sort((left, right) => left - right),
+      rawResponseHash: response.rawHash,
+    };
   }
 
   private async call(action: string, body: string): Promise<Readonly<{ parsed: XmlNode; rawHash: string }>> {
@@ -176,6 +274,7 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
     try {
       response = await this.fetcher(ENDPOINTS[this.environment], {
         method: 'POST',
+        redirect: 'error',
         headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: `"${NAMESPACE}${action}"` },
         body: envelope,
         signal: AbortSignal.timeout(30_000),
@@ -183,12 +282,29 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
     } catch (error) {
       throw new WsfexAmbiguousTransportError(hashCanonical({ action, requestHash: hashCanonical(envelope), errorType: error instanceof Error ? error.name : 'unknown' }));
     }
-    const raw = await response.text();
-    if (Buffer.byteLength(raw) > 2_097_152) throw new Error('WSFEX_RESPONSE_TOO_LARGE');
+    let raw: string;
+    try {
+      raw = await readBoundedBody(response, 2_097_152, 'WSFEX_RESPONSE_TOO_LARGE');
+    } catch (error) {
+      throw new WsfexAmbiguousTransportError(hashCanonical({
+        action,
+        status: response.status,
+        requestHash: hashCanonical(envelope),
+        responseError: error instanceof Error ? error.message : 'UNKNOWN',
+      }));
+    }
     const rawHash = hashCanonical(raw);
     if (response.status >= 500) throw new WsfexAmbiguousTransportError(hashCanonical({ action, status: response.status, rawHash }));
     if (!response.ok) throw new Error(`WSFEX_HTTP_REJECTED_${response.status}`);
-    const parsedEnvelope = node(this.#parser.parse(raw));
+    if (/<!DOCTYPE|<!ENTITY/i.test(raw)) {
+      throw new WsfexAmbiguousTransportError(hashCanonical({ action, rawHash, responseError: 'UNSAFE_XML' }));
+    }
+    let parsedEnvelope: XmlNode;
+    try {
+      parsedEnvelope = node(this.#parser.parse(raw));
+    } catch {
+      throw new WsfexAmbiguousTransportError(hashCanonical({ action, rawHash, responseError: 'INVALID_XML' }));
+    }
     const soapBody = node(node(parsedEnvelope.Envelope).Body);
     if (soapBody.Fault) throw new Error('WSFEX_SOAP_FAULT');
     const actionResponse = node(soapBody[`${action}Response`]);
@@ -295,6 +411,20 @@ function positiveNumber(value: XmlValue | undefined, code: string): number {
   const parsed = Number(text(value));
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(code);
   return parsed;
+}
+
+function nonnegativeNumber(value: XmlValue | undefined, code: string): number {
+  const parsed = Number(text(value));
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(code);
+  return parsed;
+}
+
+function optionalBooleanFlag(value: XmlValue | undefined, code: string): boolean | null {
+  const parsed = nullableText(value);
+  if (parsed === null) return null;
+  if (parsed === 'S') return true;
+  if (parsed === 'N') return false;
+  throw new Error(code);
 }
 
 function numberInSet<T extends number>(value: XmlValue | undefined, allowed: readonly T[], code: string): T {

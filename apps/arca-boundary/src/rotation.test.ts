@@ -26,7 +26,8 @@ describe('ARCA boundary master-key rotation', () => {
     const databasePath = join(directory, 'boundary.sqlite');
     const oldKey = Buffer.alloc(32, 1);
     const newKey = Buffer.alloc(32, 2);
-    const oldStore = new ArcaBoundaryStore(oldKey, databasePath);
+    const commitmentKey = Buffer.alloc(32, 3);
+    const oldStore = new ArcaBoundaryStore(oldKey, databasePath, commitmentKey);
     const payloadReceipt = oldStore.storePayload({
       workspaceId: 'workspace-1', payload: authorityPayload(), expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'rotation-payload-1', occurredAt: NOW.toISOString(),
     });
@@ -39,18 +40,18 @@ describe('ARCA boundary master-key rotation', () => {
 
     expect(rotateBoundaryMasterKey({ databasePath, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW.toISOString(), dryRun: true }))
       .toEqual({ payloadsValidated: 1, issuersValidated: 1, rotated: false });
-    const afterDryRun = new ArcaBoundaryStore(oldKey, databasePath);
+    const afterDryRun = new ArcaBoundaryStore(oldKey, databasePath, commitmentKey);
     expect(wsfexForeignTaxId(afterDryRun.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload)).toBe('FOREIGN-TAX-SECRET');
     afterDryRun.close();
 
     expect(rotateBoundaryMasterKey({ databasePath, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW.toISOString(), dryRun: false }))
       .toEqual({ payloadsValidated: 1, issuersValidated: 1, rotated: true });
-    const rotatedStore = new ArcaBoundaryStore(newKey, databasePath);
+    const rotatedStore = new ArcaBoundaryStore(newKey, databasePath, commitmentKey);
     expect(wsfexForeignTaxId(rotatedStore.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload)).toBe('FOREIGN-TAX-SECRET');
     expect(rotatedStore.getIssuer('workspace-1', 'issuer://workspace-1/primary', 'homologation').representedCuit).toBe(CUIT);
     rotatedStore.close();
 
-    const staleStore = new ArcaBoundaryStore(oldKey, databasePath);
+    const staleStore = new ArcaBoundaryStore(oldKey, databasePath, commitmentKey);
     expect(() => staleStore.resolvePayload(payloadReceipt.reference, NOW.toISOString())).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
     staleStore.close();
   });

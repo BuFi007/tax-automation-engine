@@ -15,6 +15,7 @@ import {
   facturaENextActions,
   hashCanonical,
   ingestVerifiedReclaimProof,
+  isActiveTaxEvidenceRecord,
   markFacturaETaxDeclared,
   money as normalizeMoney,
   prepareFacturaEAdjustment,
@@ -47,6 +48,10 @@ export type AgentMutationResult<T = undefined> = Readonly<{
   nextActions: readonly string[];
 }>;
 
+export type FacturaEMutationFence = Readonly<{
+  assertMutationAllowed(input: Readonly<{ runId: string; workspaceId: string }>): void;
+}>;
+
 export class FacturaEAgentService {
   constructor(
     private readonly store: TaxProfileStore,
@@ -54,7 +59,8 @@ export class FacturaEAgentService {
     private readonly wsfex: WsfexGateway | null,
     private readonly proofVault: ReclaimProofVault | null = null,
     private readonly proofCustodyRequired = false,
-    private readonly authorityPayloadWriter: AuthorityPayloadWriter | null = null
+    private readonly authorityPayloadWriter: AuthorityPayloadWriter | null = null,
+    private readonly factoringMutationFence: FacturaEMutationFence | null = null
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -178,6 +184,10 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): AgentMutationResult<Readonly<{ adjustmentId: string; intentHash: string }>> {
     return this.mutate('prepare_adjustment', input, current => {
+      this.factoringMutationFence?.assertMutationAllowed({
+        runId: current.runId,
+        workspaceId: current.workspaceId,
+      });
       const applied = prepareFacturaEAdjustment(current, { ...input, asOf: input.occurredAt.slice(0, 10) });
       return { run: applied.run, event: applied.event, output: { adjustmentId: applied.adjustment.adjustmentId, intentHash: applied.adjustment.intentHash } };
     });
@@ -256,6 +266,9 @@ export class FacturaEAgentService {
         pointOfSale: run.intent.pointOfSale,
         invoiceNumber: run.authority.invoiceNumber,
         cae: run.authority.cae,
+        caeExpiry: run.authority.caeExpiry,
+        currencyId: run.authority.currencyId,
+        currencyQuote: run.authority.currencyQuote,
         authorizedAt: run.authority.authorizedAt,
         authorityReceiptHash: run.authority.receiptHash,
         issueDate: run.intent.issueDate,
@@ -278,6 +291,9 @@ export class FacturaEAgentService {
         issuanceState: adjustment.issuanceState,
         documentNumber: adjustment.authority.documentNumber,
         cae: adjustment.authority.cae,
+        caeExpiry: adjustment.authority.caeExpiry,
+        currencyId: adjustment.authority.currencyId,
+        currencyQuote: adjustment.authority.currencyQuote,
         authorityReceiptHash: adjustment.authority.receiptHash,
       })),
       financialLedger: deriveFacturaEAdjustmentLedger(run),
@@ -352,6 +368,7 @@ export class FacturaEAgentService {
     const candidates = this.store.listEvidence(current.workspaceId).filter(record =>
       record.economicEventId === input.economicEventId
       && record.reviewState === 'accepted'
+      && isActiveTaxEvidenceRecord(record)
       && record.money
       && ['invoice', 'payment', 'settlement'].includes(record.economicRole)
     );
@@ -537,6 +554,7 @@ export class FacturaEAgentService {
     requestId: string;
     invoiceNumber: string;
     issuerProfileRef: string;
+    representedCuitCommitment: string;
     customer: Omit<AuthorityPayload['customer'], 'referenceHash'>;
     currencyArcaId: string;
     language: 1 | 2 | 3;
@@ -571,6 +589,7 @@ export class FacturaEAgentService {
       if (hashCanonical(canonicalDocument) !== adjustment.intentHash) throw new Error('ADJUSTMENT_CANONICAL_HASH_MISMATCH');
       payload = {
         version: 'wsfex-authority-payload-v1', canonicalDocument, issuerProfileRef: input.issuerProfileRef,
+        taxpayerReferenceHash: run.intent.taxpayerReferenceHash, representedCuitCommitment: input.representedCuitCommitment,
         subjectId: adjustment.adjustmentId, intentHash: adjustment.intentHash, requestId: input.requestId, invoiceNumber: input.invoiceNumber,
         documentType: adjustment.documentType, operationType: 2, pointOfSale: adjustment.associatedDocument.pointOfSale, issueDate: adjustment.issueDate,
         destinationCountryArcaCode: run.intent.destinationCountryArcaCode,
@@ -591,6 +610,7 @@ export class FacturaEAgentService {
       };
       payload = {
         version: 'wsfex-authority-payload-v1', canonicalDocument, issuerProfileRef: input.issuerProfileRef,
+        taxpayerReferenceHash: run.intent.taxpayerReferenceHash, representedCuitCommitment: input.representedCuitCommitment,
         subjectId: run.intent.intentId, intentHash: run.intentHash, requestId: input.requestId, invoiceNumber: input.invoiceNumber,
         documentType: 19, operationType: 2, pointOfSale: run.intent.pointOfSale, issueDate: run.intent.issueDate,
         destinationCountryArcaCode: run.intent.destinationCountryArcaCode,
@@ -607,7 +627,8 @@ export class FacturaEAgentService {
       workspaceId: run.workspaceId, payload, expiresAt: input.expiresAt, idempotencyKey: `${input.idempotencyKey}:vault`,
     });
     const command = {
-      runId: input.runId, requestId: input.requestId, authorityPayloadRef: payloadReceipt.reference, actorId: input.actorId,
+      runId: input.runId, requestId: input.requestId, authorityPayloadRef: payloadReceipt.reference,
+      authorityPayloadHash: payloadReceipt.payloadHash, actorId: input.actorId,
       idempotencyKey: `${input.idempotencyKey}:submit`, occurredAt: input.occurredAt,
     };
     const submission = input.adjustmentId
@@ -620,6 +641,7 @@ export class FacturaEAgentService {
     runId: string;
     requestId: string;
     authorityPayloadRef: string;
+    authorityPayloadHash: string;
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
@@ -629,7 +651,7 @@ export class FacturaEAgentService {
     const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const current = this.getRun(input.runId);
-    const authority = await this.wsfex.authorize({ run: current, requestId: input.requestId, authorityPayloadRef: input.authorityPayloadRef });
+    const authority = await this.wsfex.authorize({ run: current, requestId: input.requestId, authorityPayloadRef: input.authorityPayloadRef, authorityPayloadHash: input.authorityPayloadHash });
     const applied = recordWsfexAuthorityResult(current, {
       ...input,
       ...authority,
@@ -642,6 +664,7 @@ export class FacturaEAgentService {
     runId: string;
     requestId: string;
     authorityPayloadRef: string;
+    authorityPayloadHash: string;
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
@@ -654,7 +677,7 @@ export class FacturaEAgentService {
     if (current.issuanceState !== 'ambiguous') throw new Error('WSFEX_OUTCOME_NOT_AMBIGUOUS');
     if (current.authority.requestId !== input.requestId) throw new Error('WSFEX_RECOVERY_REQUEST_ID_MISMATCH');
     if (current.authority.payloadReferenceHash !== hashCanonical(input.authorityPayloadRef)) throw new Error('WSFEX_RECOVERY_PAYLOAD_MISMATCH');
-    const authority = await this.wsfex.recover({ run: current, requestId: input.requestId, authorityPayloadRef: input.authorityPayloadRef });
+    const authority = await this.wsfex.recover({ run: current, requestId: input.requestId, authorityPayloadRef: input.authorityPayloadRef, authorityPayloadHash: input.authorityPayloadHash });
     const applied = recordWsfexAuthorityResult(current, {
       ...input,
       ...authority,
@@ -668,6 +691,7 @@ export class FacturaEAgentService {
     adjustmentId: string;
     requestId: string;
     authorityPayloadRef: string;
+    authorityPayloadHash: string;
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
@@ -684,6 +708,7 @@ export class FacturaEAgentService {
       adjustmentId: input.adjustmentId,
       requestId: input.requestId,
       authorityPayloadRef: input.authorityPayloadRef,
+      authorityPayloadHash: input.authorityPayloadHash,
     });
     const applied = recordWsfexAdjustmentAuthorityResult(current, {
       ...input,
@@ -699,6 +724,7 @@ export class FacturaEAgentService {
     adjustmentId: string;
     requestId: string;
     authorityPayloadRef: string;
+    authorityPayloadHash: string;
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
@@ -717,6 +743,7 @@ export class FacturaEAgentService {
       adjustmentId: input.adjustmentId,
       requestId: input.requestId,
       authorityPayloadRef: input.authorityPayloadRef,
+      authorityPayloadHash: input.authorityPayloadHash,
     });
     const applied = recordWsfexAdjustmentAuthorityResult(current, {
       ...input,
@@ -735,6 +762,10 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): AgentMutationResult {
     return this.mutate('record_settlement', input, current => {
+      this.factoringMutationFence?.assertMutationAllowed({
+        runId: current.runId,
+        workspaceId: current.workspaceId,
+      });
       const applied = recordFacturaESettlement(current, input);
       return { ...applied, output: undefined };
     });

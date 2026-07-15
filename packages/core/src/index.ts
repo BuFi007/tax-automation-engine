@@ -1,5 +1,6 @@
 export * from './types';
 export * from './money';
+export * from './financial-decimal';
 export * from './consent';
 export * from './capabilities';
 export * from './catalogue';
@@ -8,4 +9,6 @@ export * from './workflow';
 export * from './snapshot';
 export * from './fixtures';
 export * from './factura-e-agent';
+export * from './factura-e-feature';
+export * from './factura-e-feature-head';
 export * from './arca-onboarding';

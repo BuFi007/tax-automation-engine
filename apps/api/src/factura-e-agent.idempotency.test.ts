@@ -82,6 +82,65 @@ describe('Factura E command idempotency', () => {
       occurredAt,
     })).toThrow('AGENT_IDEMPOTENCY_CONFLICT');
   });
+
+  test('retains settlement evidence for retry when the synchronous factoring fence is active', () => {
+    const store = new TaxProfileStore(':memory:');
+    let fenced = true;
+    const service = new FacturaEAgentService(
+      store,
+      null,
+      null,
+      null,
+      false,
+      null,
+      {
+        assertMutationAllowed() {
+          if (fenced) throw new Error('FACTURA_E_FACTORING_MUTATION_FENCED_RETRYABLE');
+        },
+      }
+    );
+    service.createRun({
+      runId,
+      workspaceId: 'workspace-idempotency',
+      issuancePath: 'reclaim_copilot',
+      actorId: 'agent:tax',
+      idempotencyKey: 'create-fenced-run',
+      occurredAt,
+    });
+    service.draftIntent({
+      runId,
+      intent: intent(),
+      asOf: '2026-07-15',
+      actorId: 'agent:tax',
+      idempotencyKey: 'draft-fenced-intent',
+      occurredAt,
+    });
+    const command = {
+      runId,
+      settlement: {
+        settlementReferenceHash: hashCanonical('fenced-settlement'),
+        asset: 'USDC',
+        network: 'base',
+        amount: { decimal: '1000', currency: 'USD' },
+        observedAt: occurredAt,
+        finalityState: 'final' as const,
+        fees: null,
+        reversesSettlementReferenceHash: null,
+      },
+      actorId: 'agent:tax',
+      idempotencyKey: 'record-fenced-settlement',
+      occurredAt,
+    };
+    expect(() => service.recordSettlement(command))
+      .toThrow('FACTURA_E_FACTORING_MUTATION_FENCED_RETRYABLE');
+    expect(service.getRun(runId).settlements).toEqual([]);
+
+    fenced = false;
+    expect(service.recordSettlement(command)).toMatchObject({ replayed: false });
+    expect(service.getRun(runId).settlements).toHaveLength(1);
+    fenced = true;
+    expect(service.recordSettlement(command)).toMatchObject({ replayed: true });
+  });
 });
 
 function intent(): FacturaEIntentV1 {

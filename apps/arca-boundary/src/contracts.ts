@@ -47,6 +47,38 @@ export const payloadRevokeRequestSchema = z.object({
   reference: referenceSchema,
 }).strict();
 
+export const payloadTerminalRequestSchema = z.object({
+  version: z.literal('authority-payload-terminal-v1'),
+  workspaceId: z.string().min(1).max(200),
+  reference: referenceSchema,
+  payloadHash: sha256Schema,
+  terminalState: z.literal('officially_reconciled'),
+  authorityIdentityHash: sha256Schema,
+  terminalEvidenceHash: sha256Schema,
+}).strict();
+
+export const payloadTerminalReceiptSchema = z.object({
+  version: z.literal('authority-payload-terminal-receipt-v1'),
+  referenceHash: sha256Schema,
+  payloadHash: sha256Schema,
+  authorityIdentityHash: sha256Schema,
+  terminalState: z.literal('officially_reconciled'),
+  retentionPolicyId: z.string().regex(/^[A-Za-z0-9._:-]{1,100}$/),
+  retireAfter: z.iso.datetime({ offset: true }),
+  terminalEvidenceHash: sha256Schema,
+}).strict();
+
+export const payloadRetireRequestSchema = z.object({
+  version: z.literal('authority-payload-retire-eligible-v1'),
+}).strict();
+
+export const payloadRetireReceiptSchema = z.object({
+  version: z.literal('authority-payload-retire-eligible-receipt-v1'),
+  retired: z.number().int().nonnegative(),
+  retentionPolicyId: z.string().regex(/^[A-Za-z0-9._:-]{1,100}$/),
+  occurredAt: z.iso.datetime({ offset: true }),
+}).strict();
+
 export const issuerProvisionRequestSchema = z.object({
   version: z.literal('wsaa-issuer-provision-v1'),
   workspaceId: z.string().min(1).max(200),
@@ -65,6 +97,7 @@ export const issuerProvisionReceiptSchema = z.object({
   issuerProfileRef: z.string(),
   environment: environmentSchema,
   certificateFingerprint: sha256Schema,
+  representedCuitCommitment: sha256Schema,
   delegationConfirmed: z.boolean(),
   storedAt: z.iso.datetime({ offset: true }),
 }).strict();
@@ -87,11 +120,15 @@ export const ticketResponseSchema = z.object({
   token: z.string().min(1),
   sign: z.string().min(1),
   representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+  representedCuitCommitment: sha256Schema,
   expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 
 export type PayloadStoreRequest = z.infer<typeof payloadStoreRequestSchema>;
 export type PayloadStoreReceipt = z.infer<typeof payloadStoreReceiptSchema>;
+export type PayloadTerminalRequest = z.infer<typeof payloadTerminalRequestSchema>;
+export type PayloadTerminalReceipt = z.infer<typeof payloadTerminalReceiptSchema>;
+export type PayloadRetireReceipt = z.infer<typeof payloadRetireReceiptSchema>;
 export type IssuerProvisionRequest = z.infer<typeof issuerProvisionRequestSchema>;
 export type IssuerProvisionReceipt = z.infer<typeof issuerProvisionReceiptSchema>;
 export type TicketRequest = z.infer<typeof ticketRequestSchema>;

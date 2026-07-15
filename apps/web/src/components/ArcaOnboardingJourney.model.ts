@@ -60,3 +60,36 @@ export function arcaScopeDescriptions(scope: 'wsfex' | 'wsfex_wsfe') {
         ready: 'Electronic invoicing becomes available only after both authoritative API receipts and verified ZK evidence agree.',
       };
 }
+
+export const ARCA_POINT_OF_SALE_GUIDE = [
+  {
+    title: 'Entrá al servicio correcto',
+    description: 'En ARCA abrí “Administración de puntos de venta y domicilios”.',
+  },
+  {
+    title: 'Elegí a quién representás',
+    description: 'Seleccioná el CUIT que va a emitir la Factura E y entrá a “A/B/M Puntos de venta”.',
+  },
+  {
+    title: 'Agregá un punto nuevo',
+    description: 'Presioná “Agregar” y elegí un número de 00001 a 99998 que no esté utilizado.',
+  },
+  {
+    title: 'Seleccioná Webservices de exportación',
+    description: 'En Sistema elegí “Comprobantes de Exportación - Webservices”. No uses Comprobantes en Línea ni Facturador Plus para este punto.',
+  },
+  {
+    title: 'Guardá y volvé a Motora',
+    description: 'Elegí el domicilio correspondiente, presioná “Aceptar” y anotá el número del punto creado.',
+  },
+] as const;
+
+export function parseArcaPointOfSale(value: string): number | null {
+  if (!/^\d{5}$/.test(value)) return null;
+  const point = Number(value);
+  return point >= 1 && point <= 99_998 ? point : null;
+}
+
+export function formatArcaPointOfSale(value: number): string {
+  return String(value).padStart(5, '0');
+}

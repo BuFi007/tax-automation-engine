@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Motora isolated ARCA WSFEX signer boundary
-  version: 1.0.0
+  version: 1.1.0
 paths:
   /health:
     get:
@@ -55,6 +55,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SignerResponse'
+  /v1/wsfex/reconcile:
+    post:
+      summary: Independently re-read the exact official document with FEXGetCMP
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignerRequest'
+      responses:
+        '200':
+          description: Normalized result carrying a strict reconciliation attestation when accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignerResponse'
+  /v1/wsfexv1/params/points-of-sale/discover:
+    post:
+      summary: Discover active represented-taxpayer FEEWS points from FEXGetPARAM_PtoVenta
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [workspaceId, issuerProfileRef]
+              properties:
+                workspaceId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                issuerProfileRef:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+      responses:
+        '200':
+          description: Redacted authority-bound point-of-sale discovery receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PointOfSaleDiscovery'
 components:
   securitySchemes:
     bearerAuth:
@@ -69,6 +118,40 @@ components:
         type: string
         pattern: '^[1-9]\d{0,14}$'
   schemas:
+    PointOfSaleDiscovery:
+      type: object
+      additionalProperties: false
+      required: [version, environment, workspaceId, issuerProfileReferenceHash, representedCuitCommitment, activePoints, authorityResponseHash, observedAt, evidenceHash]
+      properties:
+        version:
+          const: arca-wsfex-point-of-sale-discovery-v1
+        environment:
+          enum: [homologation, production]
+        workspaceId:
+          type: string
+          minLength: 1
+        issuerProfileReferenceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        representedCuitCommitment:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        activePoints:
+          type: array
+          maxItems: 1000
+          items:
+            type: integer
+            minimum: 1
+            maximum: 99998
+        authorityResponseHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        observedAt:
+          type: string
+          format: date-time
+        evidenceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
     SignerHealth:
       type: object
       additionalProperties: false
@@ -156,7 +239,7 @@ components:
     SignerRequest:
       type: object
       additionalProperties: false
-      required: [version, environment, workspaceId, runId, requestId, subjectId, intentHash, authorityPayloadRef, expected]
+      required: [version, environment, workspaceId, runId, requestId, subjectId, intentHash, authorityPayloadRef, authorityPayloadHash, expected]
       properties:
         version:
           const: motora-wsfex-boundary-v1
@@ -179,12 +262,16 @@ components:
         authorityPayloadRef:
           type: string
           description: Opaque reference resolved inside the signer/vault boundary; never a raw credential or key.
+        authorityPayloadHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Canonical hash of the sealed authority payload, bound again by any reconciliation attestation.
         expected:
           $ref: '#/components/schemas/ExpectedDocument'
     AuthorizedInvoiceDocument:
       type: object
       additionalProperties: false
-      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total]
+      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total, currencyId, currencyQuote]
       properties:
         intentHash:
           type: string
@@ -202,10 +289,20 @@ components:
           format: date
         total:
           $ref: '#/components/schemas/Money'
+        currencyId:
+          type: string
+          minLength: 1
+          maxLength: 3
+          pattern: '^[A-Z0-9]{1,3}$'
+          description: Exact frozen ARCA Moneda_Id submitted; ARCA-confirmed only on FEXGetCMP recovery because FEXAuthorize does not echo it.
+        currencyQuote:
+          type: string
+          pattern: '^\d+(\.\d+)?$'
+          description: Exact frozen ARCA Moneda_ctz submitted; ARCA-confirmed only on FEXGetCMP recovery because FEXAuthorize does not echo it.
     AuthorizedAdjustmentDocument:
       type: object
       additionalProperties: false
-      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total, associatedDocument]
+      required: [intentHash, documentType, operationType, pointOfSale, issueDate, total, currencyId, currencyQuote, associatedDocument]
       properties:
         intentHash:
           type: string
@@ -223,6 +320,16 @@ components:
           format: date
         total:
           $ref: '#/components/schemas/Money'
+        currencyId:
+          type: string
+          minLength: 1
+          maxLength: 3
+          pattern: '^[A-Z0-9]{1,3}$'
+          description: Exact frozen ARCA Moneda_Id submitted; ARCA-confirmed only on FEXGetCMP recovery because FEXAuthorize does not echo it.
+        currencyQuote:
+          type: string
+          pattern: '^\d+(\.\d+)?$'
+          description: Exact frozen ARCA Moneda_ctz submitted; ARCA-confirmed only on FEXGetCMP recovery because FEXAuthorize does not echo it.
         associatedDocument:
           $ref: '#/components/schemas/AssociatedDocument'
     AuthorizedDocument:
@@ -232,24 +339,31 @@ components:
     SignerResponse:
       type: object
       additionalProperties: false
-      required: [requestId, status, invoiceNumber, cae, reprocessed, authorizedDocument, safeErrors]
+      required: [requestId, status, invoiceNumber, cae, caeExpiry, reprocessed, authorizedDocument, reconciliation, safeErrors]
       properties:
         requestId:
           type: string
           pattern: '^[1-9]\d{0,14}$'
         status:
-          enum: [accepted, rejected, ambiguous]
+          enum: [accepted, rejected, ambiguous, preflight_rejected]
         invoiceNumber:
           type: [string, 'null']
           pattern: '^[1-9]\d{0,7}$'
         cae:
           type: [string, 'null']
           pattern: '^\d{10,20}$'
+        caeExpiry:
+          type: [string, 'null']
+          format: date
         reprocessed:
           type: [boolean, 'null']
         authorizedDocument:
           oneOf:
             - $ref: '#/components/schemas/AuthorizedDocument'
+            - type: 'null'
+        reconciliation:
+          oneOf:
+            - $ref: '#/components/schemas/ReconciliationAttestation'
             - type: 'null'
         safeErrors:
           type: array
@@ -262,3 +376,67 @@ components:
                 type: string
               message:
                 type: string
+    ReconciliationAttestation:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - source
+        - environment
+        - representedCuitCommitment
+        - authorityIdentityHash
+        - authorityResponseHash
+        - payloadHash
+        - requestId
+        - intentHash
+        - documentType
+        - pointOfSale
+        - invoiceNumber
+        - cae
+        - observedAt
+        - evidenceHash
+      properties:
+        version:
+          const: arca-wsfex-reconciliation-attestation-v1
+        source:
+          const: FEXGetCMP
+        environment:
+          enum: [homologation, production]
+        representedCuitCommitment:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        authorityIdentityHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Hash of environment, WSFEXV1 authority, represented-CUIT commitment, document type, POS, and voucher number. CAE is evidence, not identity.
+        authorityResponseHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Canonical hash of the raw FEXGetCMP SOAP response; raw XML is not returned.
+        payloadHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        requestId:
+          type: string
+          pattern: '^[1-9]\d{0,14}$'
+        intentHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        documentType:
+          enum: [19, 20, 21]
+        pointOfSale:
+          type: integer
+          minimum: 1
+          maximum: 99998
+        invoiceNumber:
+          type: string
+          pattern: '^[1-9]\d{0,7}$'
+        cae:
+          type: string
+          pattern: '^\d{10,20}$'
+        observedAt:
+          type: string
+          format: date-time
+        evidenceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'

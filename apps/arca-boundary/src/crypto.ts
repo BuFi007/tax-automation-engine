@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const VERSION = 'v1';
@@ -13,6 +13,28 @@ export function loadMasterKey(environment: NodeJS.ProcessEnv = process.env): Buf
   return key;
 }
 
+export function loadRepresentedCuitCommitmentKey(
+  environment: NodeJS.ProcessEnv = process.env
+): Buffer {
+  const encoded = environment.ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_FILE
+    ? readFileSync(environment.ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_FILE, 'utf8').trim()
+    : environment.ARCA_BOUNDARY_CUIT_COMMITMENT_KEY?.trim();
+  if (!encoded) throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_REQUIRED');
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32) throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_INVALID');
+  return key;
+}
+
+export function commitRepresentedCuit(key: Buffer, representedCuit: string): string {
+  if (key.length !== 32) throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_INVALID');
+  if (!/^\d{11}$/.test(representedCuit))
+    throw new Error('ARCA_BOUNDARY_REPRESENTED_CUIT_INVALID');
+  return createHmac('sha256', key)
+    .update('arca-represented-cuit-commitment-v1\0', 'utf8')
+    .update(representedCuit, 'utf8')
+    .digest('hex');
+}
+
 export function sealJson(masterKey: Buffer, aad: string, value: unknown): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', masterKey, iv);
@@ -22,7 +44,7 @@ export function sealJson(masterKey: Buffer, aad: string, value: unknown): string
   return [VERSION, iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.');
 }
 
-export function deriveDomainKey(masterKey: Buffer, domain: 'authority-payloads' | 'authority-payloads-wsfe' | 'issuer-credentials' | 'reclaim-proofs'): Buffer {
+export function deriveDomainKey(masterKey: Buffer, domain: 'authority-payloads' | 'authority-payloads-wsfe' | 'issuer-credentials' | 'represented-cuit-commitments' | 'reclaim-proofs'): Buffer {
   return Buffer.from(hkdfSync('sha256', masterKey, Buffer.from('motora-arca-boundary-v1'), Buffer.from(domain), 32));
 }
 

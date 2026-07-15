@@ -3,6 +3,11 @@ import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 import type { ManualArcaOnboardingCommand, ArcaOnboardingService } from './arca-onboarding';
+import { readBoundedBody } from './bounded-body';
+import {
+  assertTaxTenantPrincipalScope,
+  type TaxTenantPrincipalV2,
+} from './tenant-principal';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const idempotencySchema = z.string().min(8).max(200);
@@ -17,7 +22,11 @@ export async function handleArcaOnboardingRoute(
   request: Request,
   url: URL,
   service: ArcaOnboardingService,
-  options: Readonly<{ userApprovalToken: string | null; evidenceIngestToken: string | null }>,
+  options: Readonly<{
+    userApprovalToken: string | null;
+    evidenceIngestToken: string | null;
+    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+  }>,
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/arca-onboarding/callback') {
     const sessionId = request.headers.get('x-reclaim-session-id');
@@ -39,26 +48,31 @@ export async function handleArcaOnboardingRoute(
       environment: z.enum(['homologation', 'production']),
       requestedServices: z.array(z.enum(['wsfex', 'wsfe'])).min(1).max(2),
       ...baseMutationSchema,
-    }).strict().parse(await request.json());
+    }).strict().parse(await boundedJson(request));
+    requireUserAuthority(request, options, body.workspaceId, body.actorId);
     return json({ data: service.createRun({ ...body, occurredAt: new Date().toISOString() }) }, 201);
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/arca-onboarding/runs') {
     const workspaceId = url.searchParams.get('workspaceId');
     if (!workspaceId) return json({ error: 'WORKSPACE_ID_REQUIRED' }, 400);
+    requireWorkspaceAuthority(options, workspaceId);
     return json({ data: service.listRuns(workspaceId) });
   }
 
   const eventsMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/events$/);
   if (request.method === 'GET' && eventsMatch) {
     const onboardingId = decodeURIComponent(eventsMatch[1]!);
-    return json({ data: service.getRun(onboardingId), events: service.listEvents(onboardingId) });
+    const run = service.getRun(onboardingId);
+    requireWorkspaceAuthority(options, run.workspaceId);
+    return json({ data: run, events: service.listEvents(onboardingId) });
   }
 
   const reclaimMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/zk-evidence\/request$/);
   if (request.method === 'POST' && reclaimMatch) {
-    requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
-    const body = z.object(baseMutationSchema).strict().parse(await request.json());
+    const body = z.object(baseMutationSchema).strict().parse(await boundedJson(request));
+    const run = service.getRun(decodeURIComponent(reclaimMatch[1]!));
+    requireUserAuthority(request, options, run.workspaceId, body.actorId);
     return json({ data: await service.startReclaim({
       ...body,
       onboardingId: decodeURIComponent(reclaimMatch[1]!),
@@ -66,18 +80,57 @@ export async function handleArcaOnboardingRoute(
     }) });
   }
 
+  const verificationMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/api-verification\/wsfex$/);
+  if (request.method === 'POST' && verificationMatch) {
+    requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
+    const body = z.object({
+      ...baseMutationSchema,
+      issuerProfileRef: z.string().min(1).max(500),
+    }).strict().parse(await boundedJson(request));
+    return json({ data: await service.verifyWsfexApi({
+      onboardingId: decodeURIComponent(verificationMatch[1]!),
+      issuerProfileRef: body.issuerProfileRef,
+      actorId: body.actorId,
+      idempotencyKey: body.idempotencyKey,
+      occurredAt: new Date().toISOString(),
+    }) });
+  }
+
+  const selectionMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/point-of-sale-selection$/);
+  if (request.method === 'POST' && selectionMatch) {
+    const onboardingId = decodeURIComponent(selectionMatch[1]!);
+    const body = z.object({
+      ...baseMutationSchema,
+      exportPointOfSale: pointOfSaleSchema,
+    }).strict().parse(await boundedJson(request));
+    const run = service.getRun(onboardingId);
+    requireUserAuthority(request, options, run.workspaceId, body.actorId);
+    return json({ data: service.applyManualCommand({
+      onboardingId,
+      actorId: body.actorId,
+      occurredAt: new Date().toISOString(),
+      command: {
+        kind: 'select_discovered_point_of_sale',
+        exportPointOfSale: body.exportPointOfSale,
+        idempotencyKey: body.idempotencyKey,
+      },
+    }) });
+  }
+
   const stepMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/steps\/([a-z_]+)$/);
   if (request.method === 'POST' && stepMatch) {
     const onboardingId = decodeURIComponent(stepMatch[1]!);
     const step = stepMatch[2]!;
-    const raw = await request.json();
+    const raw = await boundedJson(request);
     const occurredAt = new Date().toISOString();
     if (step === 'point_of_sale_discovery' || step === 'api_verification') {
       requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
-    } else {
-      requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
     }
     const parsed = commandForStep(step, raw);
+    if (step !== 'point_of_sale_discovery' && step !== 'api_verification') {
+      const run = service.getRun(onboardingId);
+      requireUserAuthority(request, options, run.workspaceId, parsed.actorId);
+    }
     return json({ data: service.applyManualCommand({
       onboardingId,
       actorId: parsed.actorId,
@@ -89,10 +142,34 @@ export async function handleArcaOnboardingRoute(
   const runMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)$/);
   if (request.method === 'GET' && runMatch) {
     const run = service.getRun(decodeURIComponent(runMatch[1]!));
+    requireWorkspaceAuthority(options, run.workspaceId);
     return json({ data: run, nextActions: service.nextActions(run) });
   }
 
   return null;
+}
+
+function requireWorkspaceAuthority(
+  options: Readonly<{ tenantPrincipal?: TaxTenantPrincipalV2 | null }>,
+  workspaceId: string,
+): void {
+  if (options.tenantPrincipal) assertTaxTenantPrincipalScope(options.tenantPrincipal, workspaceId);
+}
+
+function requireUserAuthority(
+  request: Request,
+  options: Readonly<{
+    userApprovalToken: string | null;
+    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+  }>,
+  workspaceId: string,
+  actorId: string,
+): void {
+  if (options.tenantPrincipal) {
+    assertTaxTenantPrincipalScope(options.tenantPrincipal, workspaceId, actorId);
+    return;
+  }
+  requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
 }
 
 function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string; command: ManualArcaOnboardingCommand }> {
@@ -111,8 +188,22 @@ function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string;
       return { actorId: body.actorId, command: { kind: 'record_service_adherence', ...withoutActor(body) } };
     }
     case 'point_of_sale_discovery': {
-      const body = z.object({ ...baseMutationSchema, exportPointOfSale: pointOfSaleSchema.nullable(), evidenceHash: sha256Schema }).strict().parse(raw);
-      return { actorId: body.actorId, command: { kind: 'record_point_of_sale_discovery', ...withoutActor(body) } };
+      const body = z.object({
+        ...baseMutationSchema,
+        exportPointOfSale: pointOfSaleSchema.nullable(),
+        activeExportPoints: z.array(pointOfSaleSchema).max(100).optional(),
+        evidenceHash: sha256Schema,
+      }).strict().parse(raw);
+      return {
+        actorId: body.actorId,
+        command: {
+          kind: 'record_point_of_sale_discovery',
+          exportPointOfSale: body.exportPointOfSale,
+          evidenceHash: body.evidenceHash,
+          idempotencyKey: body.idempotencyKey,
+          ...(body.activeExportPoints === undefined ? {} : { activeExportPoints: body.activeExportPoints }),
+        },
+      };
     }
     case 'point_of_sale_creation': {
       const body = z.object({ ...baseMutationSchema, exportPointOfSale: pointOfSaleSchema, evidenceHash: sha256Schema }).strict().parse(raw);
@@ -122,6 +213,8 @@ function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string;
       const body = z.object({
         ...baseMutationSchema,
         delegatedServices: z.object({ wsfex: z.boolean(), wsfe: z.boolean() }).strict(),
+        issuerProfileReferenceHash: sha256Schema,
+        representedCuitCommitment: sha256Schema,
         evidenceHash: sha256Schema,
       }).strict().parse(raw);
       return { actorId: body.actorId, command: { kind: 'record_ws_delegation', ...withoutActor(body) } };
@@ -152,11 +245,23 @@ function withoutActor<T extends { actorId: string }>(value: T): Omit<T, 'actorId
 
 async function boundedProofPayload(request: Request): Promise<unknown> {
   const maxBytes = Number(process.env.RECLAIM_CALLBACK_MAX_BYTES ?? 52_428_800);
-  const declaredBytes = Number(request.headers.get('content-length') ?? 0);
-  if (declaredBytes > maxBytes) throw new Error('RECLAIM_PROOF_PAYLOAD_TOO_LARGE');
-  const raw = await request.text();
-  if (Buffer.byteLength(raw) > maxBytes) throw new Error('RECLAIM_PROOF_PAYLOAD_TOO_LARGE');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 52_428_800) {
+    throw new Error('RECLAIM_CALLBACK_LIMIT_CONFIGURATION_INVALID');
+  }
+  const raw = await readBoundedBody(
+    request,
+    maxBytes,
+    'RECLAIM_PROOF_PAYLOAD_TOO_LARGE',
+  );
   return (request.headers.get('content-type') ?? '').includes('application/json') ? JSON.parse(raw) as unknown : raw;
+}
+
+async function boundedJson(request: Request): Promise<unknown> {
+  return JSON.parse(await readBoundedBody(
+    request,
+    64 * 1024,
+    'ARCA_ONBOARDING_REQUEST_TOO_LARGE',
+  )) as unknown;
 }
 
 function requireTrustedToken(request: Request, header: string, expected: string | null, purpose: string): void {

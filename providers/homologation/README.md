@@ -12,6 +12,36 @@ Configure secrets only through the approved secret manager, then run:
 bun run homologation:preflight
 ```
 
+The checked-in live smoke can be evaluated separately:
+
+```bash
+bun --filter @tax-engine/api homologation:validate-live-smoke -- \
+  ../../providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json
+```
+
+The current smoke is intentionally **blocked**: WSAA and the WSFEX signer are
+reachable, but `FEXGetPARAM_PtoVenta` returned zero active FEEWS points. Until
+that API result changes, no Factura E attempt is authorized and production
+cannot be enabled.
+
+After the represented taxpayer creates or activates a FEEWS point, rerun the
+authoritative discovery through the isolated signer:
+
+```bash
+bun --filter @tax-engine/api homologation:probe-points-of-sale
+```
+
+The command reads `ARCA_HOMOLOGATION_WORKSPACE_ID` and
+`ARCA_HOMOLOGATION_ISSUER_PROFILE_REF` from the server environment, calls
+`FEXGetPARAM_PtoVenta`, and outputs only active point numbers and receipt hashes.
+It exits `2` for an empty list and refuses to run when `ARCA_ENVIRONMENT=production`.
+That receipt is the evidence used by the deterministic onboarding endpoint
+`POST /v1/arca-onboarding/runs/:id/api-verification/wsfex`, after delegation.
+The endpoint requires the active point selected during the earlier portal step
+to appear in ARCA's result and binds the receipt to the exact issuer-profile hash
+and represented-CUIT commitment recorded during delegation. Reclaim may support
+the earlier portal discovery, but it cannot satisfy this API-verification step.
+
 The command exits `0` only when all of these are true:
 
 - explicit homologation authority and an approved test identity are recorded;

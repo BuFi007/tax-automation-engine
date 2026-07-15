@@ -5,6 +5,53 @@ import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
 import { TaxProfileStore } from './store';
 
 describe('ARCA onboarding HTTP boundary', () => {
+  test('accepts a short-lived tenant-scoped user authority without exposing the static approval token', async () => {
+    const request = jsonRequest('/v1/arca-onboarding/runs', {
+      onboardingId: '60000000-0000-4000-8000-000000000011',
+      workspaceId: 'workspace-1',
+      taxpayerReferenceHash: 'a'.repeat(64),
+      environment: 'homologation',
+      requestedServices: ['wsfex'],
+      actorId: 'user:owner',
+      idempotencyKey: 'create-scoped-onboarding',
+    });
+    const response = await handle(request, {
+      userApprovalToken: null,
+      evidenceIngestToken: null,
+      tenantPrincipal: {
+        version: 'tax-tenant-principal-v2',
+        workspaceId: 'workspace-1',
+        actorId: 'user:owner',
+        capability: 'arca:onboard',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+    });
+    expect(response?.status).toBe(201);
+  });
+
+  test('rejects a tenant principal that attempts to create another workspace run', async () => {
+    const request = jsonRequest('/v1/arca-onboarding/runs', {
+      onboardingId: '60000000-0000-4000-8000-000000000012',
+      workspaceId: 'workspace-2',
+      taxpayerReferenceHash: 'b'.repeat(64),
+      environment: 'homologation',
+      requestedServices: ['wsfex'],
+      actorId: 'user:owner',
+      idempotencyKey: 'create-cross-tenant',
+    });
+    expect(handle(request, {
+      userApprovalToken: null,
+      evidenceIngestToken: null,
+      tenantPrincipal: {
+        version: 'tax-tenant-principal-v2',
+        workspaceId: 'workspace-1',
+        actorId: 'user:owner',
+        capability: 'arca:onboard',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+    })).rejects.toThrow('TAX_TENANT_SCOPE_UNAUTHORIZED');
+  });
+
   test('strictly rejects credential material in run creation', async () => {
     const request = jsonRequest('/v1/arca-onboarding/runs', {
       onboardingId: '60000000-0000-4000-8000-000000000010',
@@ -32,6 +79,14 @@ describe('ARCA onboarding HTTP boundary', () => {
     expect(handle(request)).rejects.toThrow('EVIDENCE_INGEST_CONFIGURATION_REQUIRED');
   });
 
+  test('requires a trusted evidence channel for authoritative WSFEX verification', async () => {
+    const request = jsonRequest(
+      '/v1/arca-onboarding/runs/60000000-0000-4000-8000-000000000010/api-verification/wsfex',
+      {}
+    );
+    expect(handle(request)).rejects.toThrow('EVIDENCE_INGEST_CONFIGURATION_REQUIRED');
+  });
+
   test('rejects a Reclaim callback without its bound session header', async () => {
     const request = jsonRequest('/v1/reclaim/arca-onboarding/callback', {});
     const response = await handle(request);
@@ -42,7 +97,7 @@ describe('ARCA onboarding HTTP boundary', () => {
 
 function handle(
   request: Request,
-  options: Readonly<{ userApprovalToken: string | null; evidenceIngestToken: string | null }> = { userApprovalToken: null, evidenceIngestToken: null },
+  options: Parameters<typeof handleArcaOnboardingRoute>[3] = { userApprovalToken: null, evidenceIngestToken: null },
 ) {
   const service = new ArcaOnboardingService(new TaxProfileStore(':memory:'), null, null, false);
   return handleArcaOnboardingRoute(request, new URL(request.url), service, options);

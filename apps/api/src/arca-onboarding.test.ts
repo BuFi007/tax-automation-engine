@@ -10,12 +10,44 @@ import type {
 } from './arca-onboarding-reclaim';
 import type { ReclaimProofVault } from './proof-vault';
 import { TaxProfileStore } from './store';
+import type { WsfexPointOfSaleGateway } from './wsfex';
 
 const now = '2026-07-14T12:00:00.000Z';
 const onboardingId = '60000000-0000-4000-8000-000000000010';
 const hash = (value: string) => hashCanonical(value);
 
 describe('ARCA onboarding API service', () => {
+  test('completes WSFEX API verification only with an active, authority-bound FEEWS point', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const service = new ArcaOnboardingService(store, null, null, false, new FakePointOfSaleGateway([4]));
+    service.createRun({
+      onboardingId, workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation',
+      requestedServices: ['wsfex'], actorId: 'user:owner', idempotencyKey: 'create-onboarding', occurredAt: now,
+    });
+    advanceToApiVerificationStep(service);
+    const result = await service.verifyWsfexApi({
+      onboardingId, issuerProfileRef: 'vault://issuer/profile-1',
+      actorId: 'system:arca-authority', idempotencyKey: 'official-api-verification', occurredAt: now,
+    });
+    expect(result.output).toEqual(expect.objectContaining({ state: 'recorded', activePoints: [4] }));
+    expect(result.run.currentStep).toBe('zk_evidence');
+    expect(result.run.apiVerification.wsfex).toBe(true);
+  });
+
+  test('rejects WSFEX API evidence from a different represented taxpayer binding', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const service = new ArcaOnboardingService(store, null, null, false, new FakePointOfSaleGateway([4], hash('other-cuit')));
+    service.createRun({
+      onboardingId, workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation',
+      requestedServices: ['wsfex'], actorId: 'user:owner', idempotencyKey: 'create-onboarding', occurredAt: now,
+    });
+    advanceToApiVerificationStep(service);
+    await expect(service.verifyWsfexApi({
+      onboardingId, issuerProfileRef: 'vault://issuer/profile-1',
+      actorId: 'system:arca-authority', idempotencyKey: 'official-api-verification', occurredAt: now,
+    })).rejects.toThrow('ARCA_POINT_OF_SALE_AUTHORITY_BINDING_MISMATCH');
+  });
+
   test('persists the deterministic flow, verifies Reclaim, and retains only custody metadata', async () => {
     const store = new TaxProfileStore(':memory:');
     const gateway = new FakeOnboardingReclaimGateway();
@@ -56,6 +88,17 @@ describe('ARCA onboarding API service', () => {
 });
 
 function advanceToApiVerification(service: ArcaOnboardingService): ArcaOnboardingRunV1 {
+  advanceToApiVerificationStep(service);
+  const apply = (command: Parameters<ArcaOnboardingService['applyManualCommand']>[0]['command']) => service.applyManualCommand({
+    onboardingId, command, actorId: 'user:owner', occurredAt: now,
+  }).run;
+  return apply({
+    kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 4,
+    observedAt: now, wsfexReceiptHash: hash('wsfex'), wsfeReceiptHash: hash('wsfe'), idempotencyKey: 'api-verification',
+  });
+}
+
+function advanceToApiVerificationStep(service: ArcaOnboardingService): ArcaOnboardingRunV1 {
   const apply = (command: Parameters<ArcaOnboardingService['applyManualCommand']>[0]['command']) => service.applyManualCommand({
     onboardingId, command, actorId: 'user:owner', occurredAt: now,
   }).run;
@@ -65,14 +108,13 @@ function advanceToApiVerification(service: ArcaOnboardingService): ArcaOnboardin
     evidenceHash: hash('services'), idempotencyKey: 'service-adherence',
   });
   apply({ kind: 'record_point_of_sale_discovery', exportPointOfSale: 4, evidenceHash: hash('pos'), idempotencyKey: 'pos-discovery' });
+  const run = service.getRun(onboardingId);
   apply({
-    kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: true },
+    kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: run.requestedServices.includes('wsfe') },
+    issuerProfileReferenceHash: hash('vault://issuer/profile-1'), representedCuitCommitment: hash('represented-cuit'),
     evidenceHash: hash('delegation'), idempotencyKey: 'delegation',
   });
-  return apply({
-    kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 4,
-    observedAt: now, wsfexReceiptHash: hash('wsfex'), wsfeReceiptHash: hash('wsfe'), idempotencyKey: 'api-verification',
-  });
+  return service.getRun(onboardingId);
 }
 
 class FakeOnboardingReclaimGateway implements ArcaOnboardingReclaimGateway {
@@ -117,5 +159,25 @@ class FakeOnboardingProofVault implements ReclaimProofVault {
       retentionPolicyId: 'tax-evidence-v1',
       storedAt: now,
     };
+  }
+}
+
+class FakePointOfSaleGateway implements WsfexPointOfSaleGateway {
+  constructor(
+    private readonly activePoints: readonly number[],
+    private readonly representedCuitCommitment = hash('represented-cuit')
+  ) {}
+  async discoverPointsOfSale(input: Readonly<{ workspaceId: string; issuerProfileRef: string }>) {
+    const receipt = {
+      version: 'arca-wsfex-point-of-sale-discovery-v1' as const,
+      environment: 'homologation' as const,
+      workspaceId: input.workspaceId,
+      issuerProfileReferenceHash: hash(input.issuerProfileRef),
+      representedCuitCommitment: this.representedCuitCommitment,
+      activePoints: [...this.activePoints],
+      authorityResponseHash: hash('authority-response'),
+      observedAt: now,
+    };
+    return { ...receipt, evidenceHash: hashCanonical(receipt) };
   }
 }

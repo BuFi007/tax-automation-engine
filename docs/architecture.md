@@ -53,7 +53,7 @@ also checks the tenant's WSFEX point of sale through the business service.
 
 Associated export notes 20/21 retain independent approval, authority, CAE, request-recovery, and original-document association inside the same immutable case. A derived exact-decimal ledger recomputes the authorized net balance without rewriting the invoice or settlement history. Raw verified Reclaim artifacts can cross only into the external encrypted proof-vault boundary; Motora stores normalized claims, attestation policy/results, and the opaque custody receipt.
 
-The UI receives a `TaxWidgetSnapshotV1`, never raw evidence. Each conclusion carries source references, freshness, confidence, consent scope hash, evidence hash, accountant review state, rule versions, and limitations.
+The UI receives a stored `TaxWidgetSnapshotReceiptV1` containing its `TaxWidgetSnapshotV1`, never raw evidence. The receipt binds the named projection (defaulting to `default`) to the stored snapshot, input, and configuration hashes, evidence generation, generation/as-of/expiry timestamps, and current-read validity. Each conclusion carries source references, freshness, confidence, consent scope hash, evidence hash, accountant review state, rule versions, and limitations.
 
 The system models these lifecycle dimensions independently:
 

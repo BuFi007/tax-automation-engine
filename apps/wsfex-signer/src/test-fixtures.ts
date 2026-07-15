@@ -13,6 +13,7 @@ export function request(overrides: Partial<SignerRequest> = {}): SignerRequest {
     subjectId: 'invoice-1',
     intentHash,
     authorityPayloadRef: 'vault://wsfex/payload-1',
+    authorityPayloadHash: hashCanonical(payload()),
     expected: {
       documentType: 19,
       operationType: 2,
@@ -30,6 +31,8 @@ export function payload(overrides: Partial<AuthorityPayload> = {}): AuthorityPay
     version: 'wsfex-authority-payload-v1',
     canonicalDocument,
     issuerProfileRef: 'vault://issuer/profile-1',
+    taxpayerReferenceHash: canonicalDocument.taxpayerReferenceHash,
+    representedCuitCommitment: hashCanonical('represented-cuit:20123456786'),
     subjectId: 'invoice-1',
     intentHash: hashCanonical(canonicalDocument),
     requestId: '101',

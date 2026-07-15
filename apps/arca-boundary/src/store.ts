@@ -3,8 +3,20 @@ import { randomUUID } from 'node:crypto';
 import { hashCanonical } from '@tax-engine/core';
 import { Database } from 'bun:sqlite';
 
-import { anyAuthorityPayloadSchema, type AnyAuthorityPayload, type IssuerProvisionReceipt, type PayloadStoreReceipt } from './contracts';
-import { deriveDomainKey, openJson, sealJson } from './crypto';
+import {
+  anyAuthorityPayloadSchema,
+  type AnyAuthorityPayload,
+  type IssuerProvisionReceipt,
+  type PayloadStoreReceipt,
+  type PayloadTerminalReceipt,
+  type PayloadTerminalRequest,
+} from './contracts';
+import {
+  commitRepresentedCuit,
+  deriveDomainKey,
+  openJson,
+  sealJson,
+} from './crypto';
 
 // WSFEX (Factura E) and WSFE (Factura C) payloads are cryptographically domain
 // separated: each family seals under its own HKDF domain key and carries its own
@@ -22,6 +34,7 @@ export type IssuerCredential = Readonly<{
   environment: 'homologation' | 'production';
   certificateHolderCuit: string;
   representedCuit: string;
+  representedCuitCommitment: string | null;
   certificatePem: string;
   privateKeyPem: string;
   certificateFingerprint: string;
@@ -33,13 +46,24 @@ export class ArcaBoundaryStore {
   readonly #db: Database;
   readonly #payloadKeys: Record<PayloadFamily, Buffer>;
   readonly #issuerKey: Buffer;
+  readonly #representedCuitCommitmentKey: Buffer;
 
-  constructor(masterKey: Buffer, path = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:') {
+  constructor(
+    masterKey: Buffer,
+    path = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:',
+    representedCuitCommitmentKey = deriveDomainKey(
+      masterKey,
+      'represented-cuit-commitments'
+    )
+  ) {
     this.#payloadKeys = {
       wsfex: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfex),
       wsfe: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfe),
     };
     this.#issuerKey = deriveDomainKey(masterKey, 'issuer-credentials');
+    if (representedCuitCommitmentKey.length !== 32)
+      throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_INVALID');
+    this.#representedCuitCommitmentKey = Buffer.from(representedCuitCommitmentKey);
     this.#db = new Database(path, { create: true });
     this.#db.exec(`
       PRAGMA journal_mode = WAL;
@@ -54,7 +78,28 @@ export class ArcaBoundaryStore {
         encrypted_payload TEXT NOT NULL,
         stored_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
+        resolution_state TEXT NOT NULL DEFAULT 'unresolved',
+        terminal_command_hash TEXT,
+        terminal_evidence_hash TEXT,
+        authority_identity_hash TEXT,
+        retention_policy_id TEXT,
+        terminal_at TEXT,
+        retire_after TEXT,
         revoked_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS authority_payload_tombstones (
+        reference TEXT PRIMARY KEY,
+        workspace_id_hash TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        idempotency_key_hash TEXT NOT NULL UNIQUE,
+        stored_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        terminal_evidence_hash TEXT NOT NULL,
+        authority_identity_hash TEXT NOT NULL,
+        retention_policy_id TEXT NOT NULL,
+        terminal_at TEXT NOT NULL,
+        retired_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS issuer_credentials (
         issuer_profile_ref TEXT PRIMARY KEY,
@@ -62,6 +107,7 @@ export class ArcaBoundaryStore {
         environment TEXT NOT NULL,
         certificate_holder_cuit_hash TEXT NOT NULL,
         represented_cuit_hash TEXT NOT NULL,
+        represented_cuit_commitment TEXT NOT NULL,
         certificate_fingerprint TEXT NOT NULL,
         credential_bundle_hash TEXT NOT NULL,
         encrypted_bundle TEXT NOT NULL,
@@ -79,6 +125,14 @@ export class ArcaBoundaryStore {
       );
     `);
     this.ensureCertificateHolderColumn();
+    this.ensureIssuerColumn('represented_cuit_commitment', 'TEXT');
+    this.ensurePayloadColumn('resolution_state', "TEXT NOT NULL DEFAULT 'unresolved'");
+    this.ensurePayloadColumn('terminal_command_hash', 'TEXT');
+    this.ensurePayloadColumn('terminal_evidence_hash', 'TEXT');
+    this.ensurePayloadColumn('authority_identity_hash', 'TEXT');
+    this.ensurePayloadColumn('retention_policy_id', 'TEXT');
+    this.ensurePayloadColumn('terminal_at', 'TEXT');
+    this.ensurePayloadColumn('retire_after', 'TEXT');
   }
 
   storePayload(input: Readonly<{
@@ -98,6 +152,14 @@ export class ArcaBoundaryStore {
       if (existing.input_hash !== inputHash) throw new Error('AUTHORITY_PAYLOAD_IDEMPOTENCY_CONFLICT');
       return payloadReceipt(existing);
     }
+    const retired = this.#db.query<PayloadTombstoneRow, [string]>(
+      'SELECT * FROM authority_payload_tombstones WHERE idempotency_key_hash = ?'
+    ).get(idempotencyKeyHash);
+    if (retired) {
+      if (retired.input_hash !== inputHash)
+        throw new Error('AUTHORITY_PAYLOAD_IDEMPOTENCY_CONFLICT');
+      return payloadReceipt(retired);
+    }
     const reference = `vault://${family}/${randomUUID()}`;
     const encryptedPayload = sealJson(this.#payloadKeys[family], payloadAad(reference, payloadHash), payload);
     this.#db.query(`
@@ -113,7 +175,12 @@ export class ArcaBoundaryStore {
     const family = referenceFamily(reference);
     const row = this.#db.query<PayloadRow, [string]>('SELECT * FROM authority_payloads WHERE reference = ?').get(reference);
     if (!row || row.revoked_at) throw new Error('AUTHORITY_PAYLOAD_NOT_FOUND');
-    if (Date.parse(row.expires_at) <= Date.parse(occurredAt)) throw new Error('AUTHORITY_PAYLOAD_EXPIRED');
+    if (row.resolution_state !== 'unresolved' && row.resolution_state !== 'officially_reconciled')
+      throw new Error('AUTHORITY_PAYLOAD_RESOLUTION_STATE_INVALID');
+    if (
+      row.resolution_state === 'officially_reconciled'
+      && (!row.retire_after || Date.parse(row.retire_after) <= Date.parse(occurredAt))
+    ) throw new Error('AUTHORITY_PAYLOAD_TERMINAL_RETENTION_ELAPSED');
     // The family key + AAD already bind the ciphertext to its reference family;
     // re-parsing and re-checking the family is defence in depth against confusion.
     const payload = anyAuthorityPayloadSchema.parse(openJson(this.#payloadKeys[family], payloadAad(row.reference, row.payload_hash), row.encrypted_payload));
@@ -126,9 +193,103 @@ export class ArcaBoundaryStore {
   revokePayload(workspaceId: string, reference: string, occurredAt: string): void {
     const row = this.#db.query<PayloadRow, [string]>('SELECT * FROM authority_payloads WHERE reference = ?').get(reference);
     if (!row || row.workspace_id_hash !== hashCanonical(workspaceId)) throw new Error('AUTHORITY_PAYLOAD_NOT_FOUND');
-    if (row.revoked_at) return;
-    this.#db.query('UPDATE authority_payloads SET revoked_at = ? WHERE reference = ?').run(occurredAt, reference);
-    this.appendEvent('authority_payload_revoked', hashCanonical(reference), row.payload_hash, occurredAt);
+    if (row.resolution_state === 'unresolved')
+      throw new Error('AUTHORITY_PAYLOAD_UNRESOLVED_REVOCATION_FORBIDDEN');
+    if (!row.retire_after || Date.parse(row.retire_after) > Date.parse(occurredAt))
+      throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_ACTIVE');
+    this.#db.transaction(() => this.retirePayloadRow(row, occurredAt))();
+    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  }
+
+  markPayloadTerminal(
+    input: PayloadTerminalRequest,
+    policy: Readonly<{ retentionPolicyId: string; terminalRetentionMs: number }>,
+    occurredAt: string
+  ): PayloadTerminalReceipt {
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(policy.retentionPolicyId))
+      throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_INVALID');
+    if (
+      !Number.isSafeInteger(policy.terminalRetentionMs)
+      || policy.terminalRetentionMs < 24 * 60 * 60_000
+    ) throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_INVALID');
+    const terminalAt = Date.parse(occurredAt);
+    if (!Number.isFinite(terminalAt)) throw new Error('AUTHORITY_PAYLOAD_OCCURRED_AT_INVALID');
+    const commandHash = hashCanonical({
+      version: input.version,
+      workspaceIdHash: hashCanonical(input.workspaceId),
+      referenceHash: hashCanonical(input.reference),
+      payloadHash: input.payloadHash,
+      terminalState: input.terminalState,
+      authorityIdentityHash: input.authorityIdentityHash,
+    });
+    return this.#db.transaction(() => {
+      const row = this.#db.query<PayloadRow, [string]>(
+        'SELECT * FROM authority_payloads WHERE reference = ?'
+      ).get(input.reference);
+      if (
+        !row
+        || row.workspace_id_hash !== hashCanonical(input.workspaceId)
+        || row.payload_hash !== input.payloadHash
+      ) throw new Error('AUTHORITY_PAYLOAD_NOT_FOUND');
+      if (row.resolution_state === 'officially_reconciled') {
+        if (row.terminal_command_hash !== commandHash)
+          throw new Error('AUTHORITY_PAYLOAD_TERMINAL_CONFLICT');
+        return terminalReceipt(row);
+      }
+      if (row.resolution_state !== 'unresolved')
+        throw new Error('AUTHORITY_PAYLOAD_RESOLUTION_STATE_INVALID');
+      const policyRetireAfter = terminalAt + policy.terminalRetentionMs;
+      const retireAfter = new Date(
+        Math.max(policyRetireAfter, Date.parse(row.expires_at))
+      ).toISOString();
+      const updated = this.#db.query(`
+        UPDATE authority_payloads
+        SET resolution_state = 'officially_reconciled', terminal_command_hash = ?,
+            terminal_evidence_hash = ?, authority_identity_hash = ?,
+            retention_policy_id = ?, terminal_at = ?, retire_after = ?
+        WHERE reference = ? AND resolution_state = 'unresolved'
+      `).run(
+        commandHash,
+        input.terminalEvidenceHash,
+        input.authorityIdentityHash,
+        policy.retentionPolicyId,
+        occurredAt,
+        retireAfter,
+        input.reference
+      );
+      if (updated.changes !== 1)
+        throw new Error('AUTHORITY_PAYLOAD_TERMINAL_CONFLICT');
+      this.appendEvent(
+        'authority_payload_officially_reconciled',
+        hashCanonical(input.reference),
+        input.terminalEvidenceHash,
+        occurredAt
+      );
+      return terminalReceipt(this.requiredPayload(input.reference));
+    })();
+  }
+
+  retireEligiblePayloads(
+    retentionPolicyId: string,
+    occurredAt: string
+  ): number {
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(retentionPolicyId))
+      throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_INVALID');
+    if (!Number.isFinite(Date.parse(occurredAt)))
+      throw new Error('AUTHORITY_PAYLOAD_OCCURRED_AT_INVALID');
+    const retired = this.#db.transaction(() => {
+      const rows = this.#db.query<PayloadRow, [string, string]>(`
+        SELECT * FROM authority_payloads
+        WHERE resolution_state = 'officially_reconciled'
+          AND retention_policy_id = ?
+          AND retire_after IS NOT NULL
+          AND retire_after <= ?
+      `).all(retentionPolicyId, occurredAt);
+      for (const row of rows) this.retirePayloadRow(row, occurredAt);
+      return rows.length;
+    })();
+    if (retired > 0) this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    return retired;
   }
 
   provisionIssuer(input: Readonly<{
@@ -137,9 +298,21 @@ export class ArcaBoundaryStore {
     replaceCertificateFingerprint: string | null;
     occurredAt: string;
   }>): IssuerProvisionReceipt {
+    const representedCuitCommitment = commitRepresentedCuit(
+      this.#representedCuitCommitmentKey,
+      input.credential.representedCuit
+    );
+    const credential: IssuerCredential = {
+      ...input.credential,
+      representedCuitCommitment,
+    };
+    const credentialBundleHash = hashCanonical({
+      validatedCredentialBundleHash: input.credentialBundleHash,
+      representedCuitCommitment,
+    });
     const existing = this.#db.query<IssuerRow, [string]>('SELECT * FROM issuer_credentials WHERE issuer_profile_ref = ?').get(input.credential.issuerProfileRef);
     if (existing) {
-      if (existing.credential_bundle_hash === input.credentialBundleHash) return issuerReceipt(existing);
+      if (existing.credential_bundle_hash === credentialBundleHash) return issuerReceipt(existing);
       if (!input.replaceCertificateFingerprint || input.replaceCertificateFingerprint !== existing.certificate_fingerprint) {
         throw new Error('WSAA_ISSUER_ROTATION_PRECONDITION_FAILED');
       }
@@ -148,19 +321,20 @@ export class ArcaBoundaryStore {
     }
     const encryptedBundle = sealJson(
       this.#issuerKey,
-      issuerAad(input.credential.issuerProfileRef, input.credential.environment, input.credential.certificateFingerprint),
-      input.credential
+      issuerAad(credential.issuerProfileRef, credential.environment, credential.certificateFingerprint),
+      credential
     );
     this.#db.query(`
       INSERT INTO issuer_credentials (
-        issuer_profile_ref, workspace_id_hash, environment, certificate_holder_cuit_hash, represented_cuit_hash, certificate_fingerprint,
+        issuer_profile_ref, workspace_id_hash, environment, certificate_holder_cuit_hash, represented_cuit_hash, represented_cuit_commitment, certificate_fingerprint,
         credential_bundle_hash, encrypted_bundle, delegation_confirmed, active, stored_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(issuer_profile_ref) DO UPDATE SET
         workspace_id_hash = excluded.workspace_id_hash,
         environment = excluded.environment,
         certificate_holder_cuit_hash = excluded.certificate_holder_cuit_hash,
         represented_cuit_hash = excluded.represented_cuit_hash,
+        represented_cuit_commitment = excluded.represented_cuit_commitment,
         certificate_fingerprint = excluded.certificate_fingerprint,
         credential_bundle_hash = excluded.credential_bundle_hash,
         encrypted_bundle = excluded.encrypted_bundle,
@@ -168,15 +342,16 @@ export class ArcaBoundaryStore {
         active = 1,
         updated_at = excluded.updated_at
     `).run(
-      input.credential.issuerProfileRef,
-      hashCanonical(input.credential.workspaceId),
-      input.credential.environment,
-      hashCanonical(input.credential.certificateHolderCuit),
-      hashCanonical(input.credential.representedCuit),
-      input.credential.certificateFingerprint,
-      input.credentialBundleHash,
+      credential.issuerProfileRef,
+      hashCanonical(credential.workspaceId),
+      credential.environment,
+      hashCanonical(credential.certificateHolderCuit),
+      hashCanonical(credential.representedCuit),
+      representedCuitCommitment,
+      credential.certificateFingerprint,
+      credentialBundleHash,
       encryptedBundle,
-      input.credential.delegationConfirmed ? 1 : 0,
+      credential.delegationConfirmed ? 1 : 0,
       existing?.stored_at ?? input.occurredAt,
       input.occurredAt
     );
@@ -186,6 +361,7 @@ export class ArcaBoundaryStore {
       issuerProfileRef: input.credential.issuerProfileRef,
       environment: input.credential.environment,
       certificateFingerprint: input.credential.certificateFingerprint,
+      representedCuitCommitment,
       delegationConfirmed: input.credential.delegationConfirmed,
       storedAt: input.occurredAt,
     };
@@ -216,9 +392,14 @@ export class ArcaBoundaryStore {
 
   close(): void {
     this.#db.close();
+    for (const key of Object.values(this.#payloadKeys)) key.fill(0);
+    this.#issuerKey.fill(0);
+    this.#representedCuitCommitmentKey.fill(0);
   }
 
   private openIssuer(row: IssuerRow): IssuerCredential {
+    if (!/^[a-f0-9]{64}$/.test(row.represented_cuit_commitment ?? ''))
+      throw new Error('WSAA_ISSUER_REPRESENTED_CUIT_UNBOUND');
     const opened = openJson(this.#issuerKey, issuerAad(row.issuer_profile_ref, environment(row.environment), row.certificate_fingerprint), row.encrypted_bundle) as Partial<IssuerCredential>;
     const credential = {
       ...opened,
@@ -230,6 +411,11 @@ export class ArcaBoundaryStore {
       || credential.certificateFingerprint !== row.certificate_fingerprint
       || hashCanonical(credential.certificateHolderCuit) !== row.certificate_holder_cuit_hash
       || hashCanonical(credential.representedCuit) !== row.represented_cuit_hash
+      || credential.representedCuitCommitment !== row.represented_cuit_commitment
+      || commitRepresentedCuit(
+        this.#representedCuitCommitmentKey,
+        credential.representedCuit
+      ) !== row.represented_cuit_commitment
     ) throw new Error('WSAA_ISSUER_BINDING_MISMATCH');
     return credential;
   }
@@ -239,6 +425,70 @@ export class ArcaBoundaryStore {
     if (columns.some(column => column.name === 'certificate_holder_cuit_hash')) return;
     this.#db.exec('ALTER TABLE issuer_credentials ADD COLUMN certificate_holder_cuit_hash TEXT');
     this.#db.exec('UPDATE issuer_credentials SET certificate_holder_cuit_hash = represented_cuit_hash WHERE certificate_holder_cuit_hash IS NULL');
+  }
+
+  private ensureIssuerColumn(name: string, type: string): void {
+    const columns = this.#db.query<{ name: string }, []>('PRAGMA table_info(issuer_credentials)').all();
+    if (!columns.some(column => column.name === name))
+      this.#db.exec(`ALTER TABLE issuer_credentials ADD COLUMN ${name} ${type}`);
+  }
+
+  private ensurePayloadColumn(name: string, type: string): void {
+    const columns = this.#db.query<{ name: string }, []>('PRAGMA table_info(authority_payloads)').all();
+    if (!columns.some(column => column.name === name))
+      this.#db.exec(`ALTER TABLE authority_payloads ADD COLUMN ${name} ${type}`);
+  }
+
+  private requiredPayload(reference: string): PayloadRow {
+    const row = this.#db.query<PayloadRow, [string]>(
+      'SELECT * FROM authority_payloads WHERE reference = ?'
+    ).get(reference);
+    if (!row) throw new Error('AUTHORITY_PAYLOAD_NOT_FOUND');
+    return row;
+  }
+
+  private retirePayloadRow(row: PayloadRow, occurredAt: string): void {
+    if (
+      row.resolution_state !== 'officially_reconciled'
+      || !row.terminal_evidence_hash
+      || !row.authority_identity_hash
+      || !row.retention_policy_id
+      || !row.terminal_at
+      || !row.retire_after
+      || row.retire_after > occurredAt
+    ) throw new Error('AUTHORITY_PAYLOAD_RETIREMENT_NOT_ELIGIBLE');
+    this.#db.query(`
+      INSERT INTO authority_payload_tombstones (
+        reference, workspace_id_hash, payload_hash, input_hash,
+        idempotency_key_hash, stored_at, expires_at, terminal_evidence_hash,
+        authority_identity_hash, retention_policy_id, terminal_at, retired_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(reference) DO NOTHING
+    `).run(
+      row.reference,
+      row.workspace_id_hash,
+      row.payload_hash,
+      row.input_hash,
+      row.idempotency_key_hash,
+      row.stored_at,
+      row.expires_at,
+      row.terminal_evidence_hash,
+      row.authority_identity_hash,
+      row.retention_policy_id,
+      row.terminal_at,
+      occurredAt
+    );
+    const removed = this.#db.query(
+      'DELETE FROM authority_payloads WHERE reference = ? AND resolution_state = ?'
+    ).run(row.reference, 'officially_reconciled');
+    if (removed.changes !== 1)
+      throw new Error('AUTHORITY_PAYLOAD_RETIREMENT_CONFLICT');
+    this.appendEvent(
+      'authority_payload_retired',
+      hashCanonical(row.reference),
+      row.terminal_evidence_hash,
+      occurredAt
+    );
   }
 
   private appendEvent(action: string, subjectHash: string, artifactHash: string, occurredAt: string): void {
@@ -256,7 +506,29 @@ type PayloadRow = {
   encrypted_payload: string;
   stored_at: string;
   expires_at: string;
+  resolution_state: string;
+  terminal_command_hash: string | null;
+  terminal_evidence_hash: string | null;
+  authority_identity_hash: string | null;
+  retention_policy_id: string | null;
+  terminal_at: string | null;
+  retire_after: string | null;
   revoked_at: string | null;
+};
+
+type PayloadTombstoneRow = {
+  reference: string;
+  workspace_id_hash: string;
+  payload_hash: string;
+  input_hash: string;
+  idempotency_key_hash: string;
+  stored_at: string;
+  expires_at: string;
+  terminal_evidence_hash: string;
+  authority_identity_hash: string;
+  retention_policy_id: string;
+  terminal_at: string;
+  retired_at: string;
 };
 
 type IssuerRow = {
@@ -265,6 +537,7 @@ type IssuerRow = {
   environment: string;
   certificate_holder_cuit_hash: string;
   represented_cuit_hash: string;
+  represented_cuit_commitment: string | null;
   certificate_fingerprint: string;
   credential_bundle_hash: string;
   encrypted_bundle: string;
@@ -294,14 +567,41 @@ export function issuerAad(issuerProfileRef: string, environmentValue: 'homologat
   return `wsaa-issuer:${issuerProfileRef}:${environmentValue}:${certificateFingerprint}`;
 }
 
-function payloadReceipt(row: PayloadRow): PayloadStoreReceipt {
+function payloadReceipt(row: Pick<
+  PayloadRow,
+  'reference' | 'payload_hash' | 'stored_at' | 'expires_at'
+>): PayloadStoreReceipt {
   return { version: 'authority-payload-store-receipt-v1', reference: row.reference, payloadHash: row.payload_hash, storedAt: row.stored_at, expiresAt: row.expires_at };
 }
 
 function issuerReceipt(row: IssuerRow): IssuerProvisionReceipt {
+  if (!/^[a-f0-9]{64}$/.test(row.represented_cuit_commitment ?? ''))
+    throw new Error('WSAA_ISSUER_REPRESENTED_CUIT_UNBOUND');
   return {
     version: 'wsaa-issuer-provision-receipt-v1', issuerProfileRef: row.issuer_profile_ref, environment: environment(row.environment),
-    certificateFingerprint: row.certificate_fingerprint, delegationConfirmed: Boolean(row.delegation_confirmed), storedAt: row.updated_at,
+    certificateFingerprint: row.certificate_fingerprint,
+    representedCuitCommitment: row.represented_cuit_commitment!,
+    delegationConfirmed: Boolean(row.delegation_confirmed), storedAt: row.updated_at,
+  };
+}
+
+function terminalReceipt(row: PayloadRow): PayloadTerminalReceipt {
+  if (
+    row.resolution_state !== 'officially_reconciled'
+    || !row.retention_policy_id
+    || !row.retire_after
+    || !row.terminal_evidence_hash
+    || !row.authority_identity_hash
+  ) throw new Error('AUTHORITY_PAYLOAD_TERMINAL_RECEIPT_INVALID');
+  return {
+    version: 'authority-payload-terminal-receipt-v1',
+    referenceHash: hashCanonical(row.reference),
+    payloadHash: row.payload_hash,
+    authorityIdentityHash: row.authority_identity_hash!,
+    terminalState: 'officially_reconciled',
+    retentionPolicyId: row.retention_policy_id,
+    retireAfter: row.retire_after,
+    terminalEvidenceHash: row.terminal_evidence_hash,
   };
 }
 
