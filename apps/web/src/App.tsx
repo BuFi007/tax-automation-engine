@@ -9,8 +9,14 @@ import { ObligationJourney } from './components/ObligationJourney';
 import { ProfileSelector } from './components/ProfileSelector';
 import { TaxWidget } from './components/TaxWidget';
 import { ArcaOnboardingJourney } from './components/ArcaOnboardingJourney';
+import { LiveArcaOnboardingJourney } from './components/ArcaOnboardingJourney.live';
+import type { ArcaOnboardingBrowserAuthority } from './api';
 
-export function App() {
+export function App({ arcaAuthority = null, arcaEnvironment = 'homologation', arcaRequestedServices = ['wsfex', 'wsfe'] }: Readonly<{
+  arcaAuthority?: ArcaOnboardingBrowserAuthority | null;
+  arcaEnvironment?: 'homologation' | 'production';
+  arcaRequestedServices?: readonly ('wsfex' | 'wsfe')[];
+}>) {
   const [jurisdiction, setJurisdiction] = useState<JurisdictionCode>('AR');
   const [regimeId, setRegimeId] = useState(DEFAULT_REGIMES.AR);
   const [founderResidency, setFounderResidency] = useState<FounderResidency>('foreign');
@@ -64,7 +70,9 @@ export function App() {
               onFounderResidencyChange={setFounderResidency}
             />
             <EvidenceCoverage snapshot={snapshot} />
-            {jurisdiction === 'AR' && <ArcaOnboardingJourney />}
+            {jurisdiction === 'AR' && (arcaAuthority
+              ? <LiveArcaOnboardingJourney snapshot={snapshot} authority={arcaAuthority} environment={arcaEnvironment} requestedServices={arcaRequestedServices} />
+              : <ArcaOnboardingJourney />)}
             <ObligationJourney snapshot={snapshot} />
           </div>
         </>

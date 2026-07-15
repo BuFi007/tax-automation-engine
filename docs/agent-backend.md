@@ -225,11 +225,62 @@ The signer recomputes the canonical intent/adjustment hash and maps every
 approved line, amount, date, quote, and association before calling ARCA; it does
 not trust an `intentHash` field supplied by the vault.
 
-An accepted signer response must echo an `authorizedDocument` containing the frozen invoice/adjustment hash, document/operation types, point of sale, issue date, currency, and exact total. Notes must echo their original Factura E association. Motora rejects the CAE if any field differs.
+An accepted signer response must echo an `authorizedDocument` containing the frozen invoice/adjustment hash, document/operation types, point of sale, issue date, submitted ARCA currency ID and quote, and exact total. `FEXAuthorize` does not echo the currency fields, so the direct path carries the exact frozen values submitted to ARCA; only an independent `FEXGetCMP` read confirms them. The response must also carry the parsed `Fch_venc_Cae` as `caeExpiry`. Notes must echo their original Factura E association. Tax rejects the CAE if any frozen field differs or the expiry is absent.
+
+Issuer authority is bound without exposing raw CUIT to Tax: issuer provisioning
+returns a keyed `representedCuitCommitment`; the private preparation service copies
+that exact value into the sealed payload; and the WSAA ticket must carry the same
+commitment. The signer then scopes request-ID leases and durable attempts by
+environment plus that commitment. Legacy issuer/ticket/attempt state without the
+binding fails closed and must be reprovisioned or explicitly reconciled.
+
+An `officially_reconciled` result requires a strict signer attestation over the
+complete matching `FEXGetCMP` document and the raw SOAP response hash. Its official
+identity is environment + WSFEXV1 + represented-CUIT commitment + voucher type +
+point of sale + voucher number; CAE is evidence, not identity. Tax validates the
+attestation and uses that identity for the permanent authority lock.
 
 The signer contract is specified in [`providers/wsfex/openapi.yaml`](../providers/wsfex/openapi.yaml), with operational invariants in [`providers/wsfex/README.md`](../providers/wsfex/README.md) and a deployable implementation in [`apps/wsfex-signer`](../apps/wsfex-signer/README.md).
 
-On network timeout or a 5xx response, the API records `ambiguous` and does not guess a retry. Recovery is allowed only with the same request ID and authority-payload reference. The signer must implement exact WSFEX replay plus `FEXGetCMP`, `FEXGetLast_CMP`, and `FEXGetLast_ID` reconciliation.
+On network timeout or a 5xx response, the API records `ambiguous` and does not guess a retry. Recovery is allowed only with the same request ID, payload hash, and authority-payload reference. The signer queries `FEXGetCMP` first and replays only after a conclusive not-found result; a transport-ambiguous read never causes a write. Deterministic preflight failures return `preflight_rejected` without creating an attempt. After exact official reconciliation, Tax marks the encrypted payload terminal; unresolved payloads remain recoverable regardless of nominal expiry, and ciphertext retirement is delayed by the explicit boundary-owned policy.
+
+## Factura E factoring feature
+
+Tax is the sole fiscal-truth producer for factoring. An accepted submit response
+or a CAE-shaped value is insufficient: the authority execution must reach
+`officially_reconciled` through an independent official read. A separate,
+versioned `factura_e_factoring` consent must also be active, and the canonical
+Tax run must be current, undisputed, adjustment-free, and exactly
+`settlementState=unobserved`. Any observed, final, reversed, or disputed
+settlement blocks a new feature and withdraws an existing one.
+
+The resulting `FacturaEFeatureV1` is a short-lived, chained, Ed25519-signed
+predicate. It contains purpose-scoped workspace/invoice commitments and three
+booleans only. It deliberately excludes CUIT, CAE, counterparty, amount,
+currency, invoice dates, point of sale, authority invoice ID, score, credentials,
+and raw proof. Tax sends only the feature digest to a KMS/HSM-style signer.
+
+Three purpose-scoped principals remain separate. Desk and the projector use
+body-bound HMAC assertions; the CRE read uses its dedicated server-only API key
+over HTTPS and an exact, strict request schema:
+
+- Desk may grant or revoke dedicated user consent at
+  `POST /v1/factoring/factura-e/executions/:executionId/consent`;
+- the Tax projector may refresh or withdraw the feature at
+  `POST /v1/internal/factoring/factura-e/executions/:executionId/project`;
+- CRE alone may re-read the current restricted, independently signed head
+  immediately before a DON report at
+  `POST /v1/factoring/factura-e-feature-head`. Its dedicated API key is the
+  standalone workflow's `TAX_FEATURE_API_KEY`; the request binds the accepted
+  feature ID/hash/revision and both opaque commitments.
+
+The last route is classified `restricted-tax-to-cre`; it is not a browser or
+Desk endpoint. It rechecks official authority, canonical settlement, adjustment,
+consent revision, feature TTL, commitments, and private source revision on every
+read. Active and withdrawn public features leave through a durable SQLite
+outbox with leases, fencing, bounded retry, exact receipt correlation, and
+restart recovery. A stale active event therefore cannot authorize a lock: CRE
+must still read the latest restricted Tax head.
 
 ## Required environment
 
@@ -239,7 +290,52 @@ TAX_ENGINE_DB_PATH=/data/tax-engine.sqlite
 TAX_ENGINE_USER_APPROVAL_TOKEN
 TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN
 TAX_ENGINE_EVIDENCE_INGEST_TOKEN
+TAX_ENGINE_CONSENT_EVENT_TOKEN
+TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN
 TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN
+TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET
+TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET
+TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET
+TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET
+
+TAX_ENGINE_ARCA_AUTHORITY_CORRIDOR_ENABLED=false
+TAX_ENGINE_ARCA_REMOTE_EFFECTS_ENABLED=false
+TAX_ENGINE_ARCA_AUTHORITY_PRODUCTION_APPROVED=false
+TAX_ENGINE_ARCA_REMOTE_EFFECTS_PRODUCTION_APPROVED=false
+TAX_ENGINE_MOTORA_AUTHORITY_PRINCIPAL_HMAC_SECRET
+TAX_ENGINE_OPEN_AGENTS_APPROVAL_PRINCIPAL_HMAC_SECRET
+TAX_AUTHORITY_EXECUTION_DB_PATH=/data/tax-authority-executions.sqlite
+TAX_ENGINE_ARCA_PREPARATION_URL
+TAX_ENGINE_ARCA_PREPARATION_HMAC_SECRET
+
+TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED=false
+TAX_FACTURA_E_FEATURE_DB_PATH=/data/tax-factura-e-features.sqlite
+TAX_FACTURA_E_FEATURE_POLL_INTERVAL_MS=5000 # enforced range: 1000..10000
+TAX_FACTURA_E_FEATURE_COMMITMENT_HMAC_SECRET
+TAX_FACTURA_E_FEATURE_DESK_CONSENT_HMAC_SECRET
+TAX_FACTURA_E_FEATURE_PROJECTOR_HMAC_SECRET
+TAX_FACTURA_E_FEATURE_CRE_READER_API_KEY
+TAX_FACTURA_E_FEATURE_CRE_RESERVATION_API_KEY
+TAX_FACTURA_E_FEATURE_DESK_EFFECT_RECEIPT_ENABLED=false
+TAX_FACTURA_E_FEATURE_DESK_EFFECT_RECEIPT_PRODUCTION_APPROVED=false
+TAX_FACTURA_E_FEATURE_DESK_EFFECT_RECEIPT_KEY_ID
+TAX_FACTURA_E_FEATURE_DESK_EFFECT_RECEIPT_ED25519_PUBLIC_KEY_PEM
+TAX_FACTURA_E_FEATURE_DESK_EFFECT_RECEIPT_API_KEY
+TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_ENABLED=false
+TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_PRODUCTION_APPROVED=false
+TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_KEY_ID
+TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_ED25519_PUBLIC_KEY_PEM
+TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_API_KEY
+TAX_FACTURA_E_FEATURE_SIGNER_URL
+TAX_FACTURA_E_FEATURE_SIGNER_KEY_VERSION
+TAX_FACTURA_E_FEATURE_SIGNER_HMAC_SECRET
+TAX_FACTURA_E_FEATURE_EVENT_URL
+TAX_FACTURA_E_FEATURE_EVENT_HMAC_SECRET
+
+# CRE release is pre-consume only. Completion requires the exact fresh Desk
+# Ed25519 submission envelope; consumed no-effect release requires the separate
+# recovery signer and independent evidence reference. Both paths are dark by
+# default and require explicit production approval.
 
 RECLAIM_APP_ID
 RECLAIM_APP_SECRET
@@ -257,6 +353,9 @@ ARCA_SIGNER_URL
 ARCA_SIGNER_TOKEN
 ARCA_BOUNDARY_URL
 ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN
+ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_FILE
+ARCA_BOUNDARY_PAYLOAD_RETENTION_POLICY_ID
+ARCA_BOUNDARY_PAYLOAD_TERMINAL_RETENTION_DAYS=30
 ARCA_ENVIRONMENT=homologacion | production
 ```
 
@@ -266,17 +365,22 @@ Missing Reclaim or signer configuration is reported as `configuration_required`;
 
 The deployable [`apps/reclaim-proof-vault`](../apps/reclaim-proof-vault/README.md) service implements this custody boundary. It independently verifies the callback artifact hash, stores the raw proof under a per-artifact wrapped key, enforces a versioned purpose/retention policy, and supports scoped human review plus cryptographic erasure. Motora receives only the opaque receipt. Run `bun run homologation:probe-proof-vault` to verify HTTPS health and an active policy without disclosing custody contents.
 
-The shared workspace harness appends normalized connector evidence through `POST /v1/evidence/append` using `X-Tax-Evidence-Ingest-Token`. This credential is also excluded from the agent runtime, so an agent cannot manufacture its own “accepted” transaction history.
+Desk publishes normalized, checkpointed connector evidence through `POST /v1/evidence/batches` using `X-Tax-Evidence-Ingest-Token` and a short-lived tenant principal signed by the evidence-publisher trust domain. Consent is a separate ordered stream sent to `POST /v1/evidence/consent-events` with `X-Tax-Consent-Event-Token` and the consent-authority principal. Neither credential or signing secret is available to the agent runtime, so an agent cannot grant consent or manufacture its own accepted transaction history. The legacy append route is disabled in production.
+
+User profile and snapshot routes use a third principal secret. All v2 assertions bind the workspace, actor, and exactly one route capability, expire within five minutes, and are verified only by Tax. Keep the three secrets distinct. The v2 assertion has no key identifier or overlapping-key window; operational rotation must therefore update each caller and the Tax API atomically.
+
+For cross-period fiscal adjustments, a debit or credit note is recognized in the note's requested period while its exact active Factura E target remains in the as-of lineage and fact receipt. A credit note follows the original invoice's active canonical settlement state; a debit note requires its own settlement. Source/provider, party, jurisdiction, source and normalized currencies, and cumulative credit conservation must all match before either note can affect a tax actual.
 
 ## Completion boundary
 
 The code implements the agent orchestration, proof verification adapter, human gates, immutable audit trail, and signer contract. Live ARCA behavior still requires:
 
 1. reviewed Reclaim provider definitions and credentials;
-2. an authorized WSFEX homologation certificate, delegated test identity, and active FEEWS point of sale provisioned into the implemented encrypted authority boundary;
+2. an authorized WSFEX homologation certificate, delegated test identity, active FEEWS point of sale, and stable represented-CUIT commitment provisioned into both the encrypted boundary and private preparation service;
 3. an approved encrypted proof-vault retention policy when durable proof custody is required;
 4. workspace identity replacing the bootstrap trusted-channel tokens;
-5. authorized end-to-end homologation and production smoke tests.
+5. a reviewed Ed25519 feature-signing key, Desk event ingress, and CRE restricted-head principal;
+6. authorized end-to-end homologation and production smoke tests.
 
 Until those external assets are configured and verified, the health endpoint reports the corresponding provider as `configuration_required`, and no production-compliance claim is made.
 

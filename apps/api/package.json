@@ -11,12 +11,15 @@
     "test": "bun test src",
     "homologation:preflight": "bun src/homologation-cli.ts preflight",
     "homologation:probe-signer": "bun src/homologation-cli.ts probe-signer",
+    "homologation:probe-points-of-sale": "bun src/homologation-cli.ts probe-points-of-sale",
     "homologation:probe-wsfe-signer": "bun src/homologation-cli.ts probe-wsfe-signer",
     "homologation:probe-proof-vault": "bun src/homologation-cli.ts probe-proof-vault",
-    "homologation:validate": "bun src/homologation-cli.ts validate-report"
+    "homologation:validate": "bun src/homologation-cli.ts validate-report",
+    "homologation:validate-live-smoke": "bun src/homologation-cli.ts validate-live-smoke"
   },
   "dependencies": {
     "@reclaimprotocol/js-sdk": "5.8.0",
+    "@tax-engine/browser-contracts": "workspace:*",
     "@tax-engine/core": "workspace:*",
     "@tax-engine/erp": "workspace:*",
     "@tax-engine/wsfex-signer": "workspace:*",
