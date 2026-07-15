@@ -2,9 +2,18 @@ import { describe, expect, test } from 'bun:test';
 
 import { hashCanonical } from '@tax-engine/core';
 
-import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
+import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence, validateLiveWsfexSmoke } from './homologation';
 
 describe('ARCA homologation acceptance harness', () => {
+  test('keeps live smoke blocked when ARCA reports zero FEEWS points', async () => {
+    const smoke = await Bun.file(new URL('../../../providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json', import.meta.url)).json();
+    const report = validateLiveWsfexSmoke(smoke);
+    expect(report.state).toBe('blocked');
+    expect(report.failedGateIds).toContain('feews_point_of_sale_missing');
+    expect(report.safeSummary.activeFeeWsPointCount).toBe(0);
+    expect(report.safeSummary.productionEnabled).toBe(false);
+  });
+
   test('reports missing authority and provider assets without disclosing configured values', () => {
     const preflight = buildHomologationPreflight({
       ARCA_SIGNER_TOKEN: 'must-not-leak',
@@ -25,6 +34,10 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.state).toBe('ready_for_authorized_homologation');
     expect(preflight.gates.every(gate => gate.state === 'ready')).toBe(true);
     expect(buildHomologationPreflight({ ...readyEnvironment(), ARCA_ENVIRONMENT: 'production', TAX_ENGINE_PRODUCTION_APPROVED: 'true' }).state).toBe('blocked');
+    expect(buildHomologationPreflight({
+      ...readyEnvironment(),
+      TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
+    }).gates.find(gate => gate.id === 'tenant_principal_boundaries')?.state).toBe('missing');
   });
 
   test('accepts only redacted evidence with complete Reclaim, WSFEX, journey, and human-review coverage', () => {
@@ -118,7 +131,13 @@ function readyEnvironment(): Record<string, string> {
     TAX_ENGINE_USER_APPROVAL_TOKEN: 'user-token',
     TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN: 'accountant-token',
     TAX_ENGINE_EVIDENCE_INGEST_TOKEN: 'ingest-token',
+    TAX_ENGINE_CONSENT_EVENT_TOKEN: 'consent-token',
+    TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN: 'snapshot-projector-token',
     TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN: 'authority-payload-token',
+    TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
+    TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET: 'snapshot-projector-principal-secret',
+    TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET: 'publisher-principal-secret',
+    TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'consent-principal-secret',
     RECLAIM_APP_ID: 'app-id',
     RECLAIM_APP_SECRET: 'app-secret',
     RECLAIM_CALLBACK_BASE_URL: 'https://tax-api.example.test',

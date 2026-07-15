@@ -3,6 +3,7 @@ import { XMLParser } from 'fast-xml-parser';
 import * as forge from 'node-forge';
 
 import type { WsaaService } from './contracts';
+import { readBoundedBody } from './bounded-body';
 import { fingerprintDer } from './crypto';
 import type { IssuerCredential } from './store';
 
@@ -39,6 +40,7 @@ export class SoapWsaaLoginClient implements WsaaLoginClient {
     try {
       response = await this.fetcher(ENDPOINTS[input.credential.environment], {
         method: 'POST',
+        redirect: 'error',
         headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: '""' },
         body: envelope,
         signal: AbortSignal.timeout(20_000),
@@ -46,10 +48,10 @@ export class SoapWsaaLoginClient implements WsaaLoginClient {
     } catch (error) {
       throw new Error(`WSAA_TRANSPORT_FAILED_${error instanceof Error ? error.name.toUpperCase() : 'UNKNOWN'}`);
     }
-    const raw = await response.text();
-    if (Buffer.byteLength(raw) > 1_048_576) throw new Error('WSAA_RESPONSE_TOO_LARGE');
+    const raw = await readBoundedBody(response, 1_048_576, 'WSAA_RESPONSE_TOO_LARGE');
     const rawHash = hashCanonical(raw);
     if (!response.ok) throw new Error(`WSAA_HTTP_REJECTED_${response.status}`);
+    if (/<!DOCTYPE|<!ENTITY/i.test(raw)) throw new Error('WSAA_LOGIN_RESPONSE_UNSAFE_XML');
     const outer = xmlNode(this.#parser.parse(raw));
     const body = xmlNode(xmlNode(outer.Envelope).Body);
     if (body.Fault) throw new Error('WSAA_SOAP_FAULT');
@@ -109,6 +111,7 @@ export function validateIssuerCredential(input: Readonly<{
     environment: input.environment,
     certificateHolderCuit: input.certificateHolderCuit,
     representedCuit: input.representedCuit,
+    representedCuitCommitment: null,
     certificatePem: input.certificatePem,
     privateKeyPem: input.privateKeyPem,
     certificateFingerprint,

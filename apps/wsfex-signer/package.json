@@ -11,7 +11,8 @@
     "start": "bun src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test src"
+    "test": "bun test src",
+    "verify:wsdl": "bun scripts/verify-wsdl.ts"
   },
   "dependencies": {
     "@tax-engine/core": "workspace:*",

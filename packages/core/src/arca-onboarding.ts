@@ -58,8 +58,13 @@ export type ArcaOnboardingRunV1 = Readonly<{
     number: number | null;
     source: 'discovered' | 'created' | null;
     active: boolean;
+    candidates?: readonly number[];
   }>;
   delegation: Readonly<Record<ArcaWebService, boolean>>;
+  authorityBinding?: Readonly<{
+    issuerProfileReferenceHash: string | null;
+    representedCuitCommitment: string | null;
+  }>;
   apiVerification: Readonly<{
     wsfex: boolean;
     wsfe: boolean;
@@ -106,7 +111,13 @@ export type ArcaOnboardingCommand =
   | Readonly<{
       kind: 'record_point_of_sale_discovery';
       exportPointOfSale: number | null;
+      activeExportPoints?: readonly number[];
       evidenceHash: string;
+      idempotencyKey: string;
+    }>
+  | Readonly<{
+      kind: 'select_discovered_point_of_sale';
+      exportPointOfSale: number;
       idempotencyKey: string;
     }>
   | Readonly<{
@@ -118,6 +129,8 @@ export type ArcaOnboardingCommand =
   | Readonly<{
       kind: 'record_ws_delegation';
       delegatedServices: Readonly<Record<ArcaWebService, boolean>>;
+      issuerProfileReferenceHash: string;
+      representedCuitCommitment: string;
       evidenceHash: string;
       idempotencyKey: string;
     }>
@@ -184,6 +197,10 @@ export function createArcaOnboardingRun(input: Readonly<{
       steps: ARCA_ONBOARDING_STEPS.map(step => initialStep(step)),
       pointOfSale: { number: null, source: null, active: false },
       delegation: { wsfex: false, wsfe: false },
+      authorityBinding: {
+        issuerProfileReferenceHash: null,
+        representedCuitCommitment: null,
+      },
       apiVerification: { wsfex: false, wsfe: false, observedAt: null },
       reclaimSession: null,
       zkEvidence: null,
@@ -227,6 +244,24 @@ export function applyArcaOnboardingCommand(
       requireCurrentStep(run, 'point_of_sale_discovery');
       assertHash(command.evidenceHash, 'POINT_OF_SALE_DISCOVERY_EVIDENCE_HASH_INVALID');
       assertPointOfSale(command.exportPointOfSale, true);
+      const candidates = uniquePoints(command.activeExportPoints
+        ?? (command.exportPointOfSale === null ? [] : [command.exportPointOfSale]));
+      if (command.exportPointOfSale !== null && !candidates.includes(command.exportPointOfSale)) {
+        throw new Error('ARCA_POINT_OF_SALE_DISCOVERY_SELECTION_INVALID');
+      }
+      if (candidates.length > 1) {
+        next = {
+          ...run,
+          pointOfSale: { number: null, source: null, active: false, candidates },
+          steps: updateStep(run.steps, 'point_of_sale_discovery', {
+            state: 'action_required',
+            evidenceHashes: [command.evidenceHash],
+            safeMetadata: { activeExportPointCount: candidates.length },
+          }),
+        };
+        safeMetadata = { existingExportPointOfSaleFound: true, activeExportPointCount: candidates.length };
+        break;
+      }
       next = completeStep(run, 'point_of_sale_discovery', occurredAt, [command.evidenceHash], {
         existingExportPointOfSaleFound: command.exportPointOfSale !== null,
       });
@@ -245,6 +280,32 @@ export function applyArcaOnboardingCommand(
       safeMetadata = { existingExportPointOfSaleFound: command.exportPointOfSale !== null };
       break;
     }
+    case 'select_discovered_point_of_sale': {
+      requireCurrentStep(run, 'point_of_sale_discovery');
+      assertPointOfSale(command.exportPointOfSale, false);
+      const candidates = run.pointOfSale.candidates ?? [];
+      if (candidates.length < 2 || !candidates.includes(command.exportPointOfSale)) {
+        throw new Error('ARCA_POINT_OF_SALE_SELECTION_INVALID');
+      }
+      const discoveryEvidence = run.steps.find(step => step.step === 'point_of_sale_discovery')?.evidenceHashes ?? [];
+      next = completeStep(run, 'point_of_sale_discovery', occurredAt, discoveryEvidence, {
+        existingExportPointOfSaleFound: true,
+        activeExportPointCount: candidates.length,
+        selectedExportPointOfSale: command.exportPointOfSale,
+      });
+      next = {
+        ...next,
+        pointOfSale: { number: command.exportPointOfSale, source: 'discovered', active: true, candidates },
+        steps: updateStep(next.steps, 'point_of_sale_creation', {
+          state: 'skipped',
+          completedAt: occurredAt,
+          safeMetadata: { reason: 'active_export_point_of_sale_selected' },
+        }),
+      };
+      next = activateStep(next, 'ws_delegation');
+      safeMetadata = { selectedExportPointOfSale: command.exportPointOfSale };
+      break;
+    }
     case 'record_point_of_sale_creation':
       requireCurrentStep(run, 'point_of_sale_creation');
       assertPointOfSale(command.exportPointOfSale, false);
@@ -258,6 +319,8 @@ export function applyArcaOnboardingCommand(
     case 'record_ws_delegation':
       requireCurrentStep(run, 'ws_delegation');
       assertHash(command.evidenceHash, 'WS_DELEGATION_EVIDENCE_HASH_INVALID');
+      assertHash(command.issuerProfileReferenceHash, 'WS_DELEGATION_ISSUER_PROFILE_HASH_INVALID');
+      assertHash(command.representedCuitCommitment, 'WS_DELEGATION_REPRESENTED_CUIT_COMMITMENT_INVALID');
       for (const service of run.requestedServices) {
         if (!command.delegatedServices[service]) throw new Error(`ARCA_${service.toUpperCase()}_DELEGATION_REQUIRED`);
       }
@@ -265,11 +328,22 @@ export function applyArcaOnboardingCommand(
         wsfexDelegated: command.delegatedServices.wsfex,
         wsfeDelegated: command.delegatedServices.wsfe,
       });
-      next = { ...next, delegation: { ...command.delegatedServices } };
+      next = {
+        ...next,
+        delegation: { ...command.delegatedServices },
+        authorityBinding: {
+          issuerProfileReferenceHash: command.issuerProfileReferenceHash,
+          representedCuitCommitment: command.representedCuitCommitment,
+        },
+      };
       safeMetadata = { delegatedServiceCount: run.requestedServices.length };
       break;
     case 'record_api_verification':
       requireCurrentStep(run, 'api_verification');
+      if (run.requestedServices.includes('wsfex') && (
+        !run.authorityBinding?.issuerProfileReferenceHash
+        || !run.authorityBinding?.representedCuitCommitment
+      )) throw new Error('ARCA_WSFEX_AUTHORITY_BINDING_REQUIRED');
       assertPointOfSale(command.activeExportPointOfSale, false);
       assertRequestedReceiptHash(run.requestedServices, 'wsfex', command.wsfexReceiptHash, 'WSFEX_RECEIPT_HASH_INVALID');
       assertRequestedReceiptHash(run.requestedServices, 'wsfe', command.wsfeReceiptHash, 'WSFE_RECEIPT_HASH_INVALID');
@@ -362,7 +436,9 @@ export function arcaOnboardingNextActions(run: ArcaOnboardingRunV1): readonly st
   switch (run.currentStep) {
     case 'login_handoff': return ['USER_LOG_IN_DIRECTLY_WITH_ARCA'];
     case 'service_adherence': return ['USER_CONFIRM_SERVICE_ADHERENCE'];
-    case 'point_of_sale_discovery': return ['DISCOVER_EXPORT_POINT_OF_SALE'];
+    case 'point_of_sale_discovery': return (run.pointOfSale.candidates?.length ?? 0) > 1
+      ? ['USER_SELECT_EXPORT_POINT_OF_SALE']
+      : ['DISCOVER_EXPORT_POINT_OF_SALE'];
     case 'point_of_sale_creation': return ['USER_CONFIRM_POINT_OF_SALE_CREATION'];
     case 'ws_delegation': return ['USER_CONFIRM_WEB_SERVICE_DELEGATION'];
     case 'api_verification': return ['VERIFY_WSFEX_AND_WSFE'];
@@ -423,6 +499,11 @@ function requestedServicesSatisfied(
 
 function uniqueServices(services: readonly ArcaWebService[]): readonly ArcaWebService[] {
   return [...new Set(services)];
+}
+
+function uniquePoints(points: readonly number[]): readonly number[] {
+  for (const point of points) assertPointOfSale(point, false);
+  return [...new Set(points)].sort((left, right) => left - right);
 }
 
 function assertPointOfSale(value: number | null, nullable: boolean): void {

@@ -33,7 +33,9 @@ describe('ARCA onboarding step engine', () => {
       kind: 'record_point_of_sale_creation', exportPointOfSale: 4, evidenceHash: hash('pos-created'), idempotencyKey: 'create-pos-1',
     });
     run = apply(run, {
-      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: true }, evidenceHash: hash('delegation'), idempotencyKey: 'delegate-1',
+      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: true },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('delegation'), idempotencyKey: 'delegate-1',
     });
     run = apply(run, {
       kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 4,
@@ -66,13 +68,39 @@ describe('ARCA onboarding step engine', () => {
     expect(run.steps.find(step => step.step === 'point_of_sale_creation')?.state).toBe('skipped');
   });
 
+  test('requires the user to select one candidate when discovery returns multiple active points', () => {
+    let run = advanceToDiscovery(createRun());
+    run = apply(run, {
+      kind: 'record_point_of_sale_discovery',
+      exportPointOfSale: null,
+      activeExportPoints: [9, 4, 9],
+      evidenceHash: hash('pos-candidates'),
+      idempotencyKey: 'discover-candidates',
+    });
+    expect(run.currentStep).toBe('point_of_sale_discovery');
+    expect(run.pointOfSale.candidates).toEqual([4, 9]);
+    expect(arcaOnboardingNextActions(run)).toEqual(['USER_SELECT_EXPORT_POINT_OF_SALE']);
+    expect(() => apply(run, {
+      kind: 'select_discovered_point_of_sale', exportPointOfSale: 7, idempotencyKey: 'select-invalid',
+    })).toThrow('ARCA_POINT_OF_SALE_SELECTION_INVALID');
+
+    run = apply(run, {
+      kind: 'select_discovered_point_of_sale', exportPointOfSale: 9, idempotencyKey: 'select-nine',
+    });
+    expect(run.currentStep).toBe('ws_delegation');
+    expect(run.pointOfSale).toEqual({ number: 9, source: 'discovered', active: true, candidates: [4, 9] });
+    expect(run.steps.find(step => step.step === 'point_of_sale_creation')?.state).toBe('skipped');
+  });
+
   test('supports an export-only WSFEX scope without inventing WSFE evidence', () => {
     let run = advanceToDiscovery(createRun(['wsfex']));
     run = apply(run, {
       kind: 'record_point_of_sale_discovery', exportPointOfSale: 8, evidenceHash: hash('pos-eight'), idempotencyKey: 'discover-eight',
     });
     run = apply(run, {
-      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false }, evidenceHash: hash('wsfex-only'), idempotencyKey: 'delegate-wsfex',
+      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('wsfex-only'), idempotencyKey: 'delegate-wsfex',
     });
     run = apply(run, {
       kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: false }, activeExportPointOfSale: 8,
@@ -97,12 +125,16 @@ describe('ARCA onboarding step engine', () => {
       kind: 'record_point_of_sale_discovery', exportPointOfSale: 3, evidenceHash: hash('pos-three'), idempotencyKey: 'discover-three',
     });
     expect(() => apply(run, {
-      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false }, evidenceHash: hash('partial'), idempotencyKey: 'partial-delegation',
+      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('partial'), idempotencyKey: 'partial-delegation',
     })).toThrow('ARCA_WSFE_DELEGATION_REQUIRED');
 
     const command = {
       kind: 'record_ws_delegation' as const,
-      delegatedServices: { wsfex: true, wsfe: true }, evidenceHash: hash('all'), idempotencyKey: 'all-delegation',
+      delegatedServices: { wsfex: true, wsfe: true },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('all'), idempotencyKey: 'all-delegation',
     };
     const first = applyArcaOnboardingCommand(run, command, 'user:owner', now);
     const replay = applyArcaOnboardingCommand(first.run, command, 'user:owner', now);
@@ -115,6 +147,24 @@ describe('ARCA onboarding step engine', () => {
       workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation', actorId: 'user:owner',
       occurredAt: now, idempotencyKey: 'create-sensitive', claveFiscal: 'never-store-me',
     } as never)).toThrow('ARCA_SENSITIVE_MATERIAL_FORBIDDEN');
+  });
+
+  test('fails closed for legacy delegation state without an authority binding', () => {
+    let run = advanceToDiscovery(createRun(['wsfex']));
+    run = apply(run, {
+      kind: 'record_point_of_sale_discovery', exportPointOfSale: 4,
+      evidenceHash: hash('pos-four'), idempotencyKey: 'discover-four',
+    });
+    run = apply(run, {
+      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('delegation'), idempotencyKey: 'delegate-four',
+    });
+    const { authorityBinding: _authorityBinding, ...legacy } = run;
+    expect(() => apply(legacy, {
+      kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: false }, activeExportPointOfSale: 4,
+      observedAt: now, wsfexReceiptHash: hash('wsfex-four'), wsfeReceiptHash: null, idempotencyKey: 'verify-four',
+    })).toThrow('ARCA_WSFEX_AUTHORITY_BINDING_REQUIRED');
   });
 });
 

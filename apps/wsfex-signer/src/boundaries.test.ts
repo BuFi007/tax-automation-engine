@@ -12,6 +12,7 @@ describe('signer external trust boundaries', () => {
     const authorityPayload = payload();
     const vault = new HttpAuthorityPayloadVault({ baseUrl: 'https://vault.test/', token: 'vault-secret' }, async (input, init) => {
       expect(String(input)).toBe('https://vault.test/v1/authority-payloads/resolve');
+      expect(init?.redirect).toBe('error');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer vault-secret');
       expect(JSON.parse(String(init?.body))).toEqual({ version: 'authority-payload-resolve-v1', reference: 'vault://payload/1' });
       return Response.json({ payload: authorityPayload, payloadHash: hashCanonical(authorityPayload) });
@@ -23,24 +24,42 @@ describe('signer external trust boundaries', () => {
     await expect(mismatched.resolve('vault://payload/1')).rejects.toThrow('SIGNER_VAULT_PAYLOAD_HASH_MISMATCH');
   });
 
+  test('pins boundary origins and bounds chunked vault responses', async () => {
+    expect(() => new HttpAuthorityPayloadVault({ baseUrl: 'https://user@vault.test', token: 'secret' }))
+      .toThrow('SIGNER_VAULT_URL_INVALID');
+    expect(() => new HttpWsaaTicketBroker({ baseUrl: 'https://wsaa.test/proxy', token: 'secret' }))
+      .toThrow('WSAA_BROKER_URL_INVALID');
+    let cancelled = false;
+    const vault = new HttpAuthorityPayloadVault({ baseUrl: 'https://vault.test', token: 'secret' }, async (_input, init) => {
+      expect(init?.redirect).toBe('error');
+      return new Response(new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array(600_000)); },
+        cancel() { cancelled = true; },
+      }));
+    });
+    await expect(vault.resolve('vault://payload/1')).rejects.toThrow('SIGNER_VAULT_RESPONSE_TOO_LARGE');
+    expect(cancelled).toBe(true);
+  });
+
   test('obtains only an ephemeral wsfex ticket and redacted readiness from the WSAA broker', async () => {
     expect(() => new HttpWsaaTicketBroker({ baseUrl: 'http://wsaa.test', token: 'secret' })).toThrow('WSAA_BROKER_HTTPS_REQUIRED');
     const requests: string[] = [];
     const broker = new HttpWsaaTicketBroker({ baseUrl: 'https://wsaa.test', token: 'broker-secret' }, async (input, init) => {
       requests.push(String(input));
+      expect(init?.redirect).toBe('error');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer broker-secret');
       if (String(input).includes('/tickets')) {
         expect(JSON.parse(String(init?.body))).toEqual({
           version: 'wsaa-ticket-request-v1', service: 'wsfex', environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/1',
         });
-        return Response.json({ token: 'ephemeral-token', sign: 'ephemeral-sign', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' });
+        return Response.json({ token: 'ephemeral-token', sign: 'ephemeral-sign', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' });
       }
       return Response.json({
         version: 'wsaa-broker-health-v1', service: 'wsfex', environment: 'homologation', certificateDelegationConfigured: true, wsaaReady: true,
       });
     });
     const ticket = await broker.getTicket({ environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/1' });
-    expect(ticket).toEqual(expect.objectContaining({ representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' }));
+    expect(ticket).toEqual(expect.objectContaining({ representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }));
     await expect(broker.health('homologation')).resolves.toEqual({ certificateDelegationConfigured: true, wsaaReady: true });
     expect(requests).toEqual([
       'https://wsaa.test/v1/wsaa/tickets',
@@ -50,7 +69,7 @@ describe('signer external trust boundaries', () => {
 
   test('rejects an expired or near-expiry WSAA ticket', async () => {
     const broker = new HttpWsaaTicketBroker({ baseUrl: 'https://wsaa.test', token: 'secret' }, async () => Response.json({
-      token: 'token', sign: 'sign', representedCuit: '20123456786', expiresAt: '2026-01-01T00:00:00.000Z',
+      token: 'token', sign: 'sign', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2026-01-01T00:00:00.000Z',
     }));
     await expect(broker.getTicket({ environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1' }))
       .rejects.toThrow('WSAA_TICKET_EXPIRED_OR_TOO_CLOSE');

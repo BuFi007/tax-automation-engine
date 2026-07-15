@@ -13,6 +13,7 @@ import {
 import type { ArcaOnboardingReclaimGateway, ArcaOnboardingReclaimRequest } from './arca-onboarding-reclaim';
 import type { ReclaimProofVault } from './proof-vault';
 import type { TaxProfileStore } from './store';
+import type { WsfexPointOfSaleGateway } from './wsfex';
 
 export type ArcaOnboardingMutationResult<T = undefined> = Readonly<{
   run: ArcaOnboardingRunV1;
@@ -30,6 +31,7 @@ export class ArcaOnboardingService {
     private readonly reclaim: ArcaOnboardingReclaimGateway | null,
     private readonly proofVault: ReclaimProofVault | null,
     private readonly proofCustodyRequired: boolean,
+    private readonly wsfexPointOfSale: WsfexPointOfSaleGateway | null = null,
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -49,6 +51,9 @@ export class ArcaOnboardingService {
       reclaimProofCustody: this.proofVault
         ? 'available'
         : this.proofCustodyRequired ? 'configuration_required' : 'not_required',
+      pointOfSaleAuthorityDiscovery: this.wsfexPointOfSale
+        ? 'available'
+        : 'configuration_required',
       invariants: [
         'credentials_and_browser_cookies_are_never_collected',
         'user_confirms_account_and_permission_changes_at_action_time',
@@ -105,6 +110,83 @@ export class ArcaOnboardingService {
     const applied = applyArcaOnboardingCommand(current, input.command, input.actorId, input.occurredAt);
     if (!applied.event) return result(applied.run, true, undefined);
     return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+  }
+
+  async verifyWsfexApi(input: Readonly<{
+    onboardingId: string;
+    issuerProfileRef: string;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): Promise<ArcaOnboardingMutationResult<Readonly<{
+    state: 'recorded' | 'wsfe_verification_required';
+    activePoints: readonly number[];
+    evidenceHash: string;
+  }> | null>> {
+    if (!this.wsfexPointOfSale) throw new Error('ARCA_POINT_OF_SALE_DISCOVERY_CONFIGURATION_REQUIRED');
+    const replay = this.store.getArcaOnboardingRunByIdempotency(input.onboardingId, input.idempotencyKey);
+    if (replay) return result(replay, true, null);
+    const current = this.getRun(input.onboardingId);
+    if (current.currentStep !== 'api_verification') {
+      throw new Error('ARCA_ONBOARDING_STEP_OUT_OF_ORDER');
+    }
+    if (!current.requestedServices.includes('wsfex')) {
+      throw new Error('ARCA_WSFEX_NOT_REQUESTED');
+    }
+    const receipt = await this.wsfexPointOfSale.discoverPointsOfSale({
+      workspaceId: current.workspaceId,
+      issuerProfileRef: input.issuerProfileRef,
+    });
+    if (receipt.environment !== current.environment) {
+      throw new Error('ARCA_POINT_OF_SALE_ENVIRONMENT_MISMATCH');
+    }
+    if (
+      receipt.issuerProfileReferenceHash !== current.authorityBinding?.issuerProfileReferenceHash
+      || receipt.representedCuitCommitment !== current.authorityBinding?.representedCuitCommitment
+    ) {
+      throw new Error('ARCA_POINT_OF_SALE_AUTHORITY_BINDING_MISMATCH');
+    }
+    const selected = current.pointOfSale.number;
+    if (selected === null || !current.pointOfSale.active) {
+      throw new Error('ARCA_POINT_OF_SALE_REQUIRED');
+    }
+    if (!receipt.activePoints.includes(selected)) {
+      throw new Error('ARCA_POINT_OF_SALE_NOT_ACTIVE');
+    }
+    if (current.requestedServices.includes('wsfe')) {
+      return {
+        run: current,
+        replayed: false,
+        output: {
+          state: 'wsfe_verification_required',
+          activePoints: receipt.activePoints,
+          evidenceHash: receipt.evidenceHash,
+        },
+        nextActions: ['VERIFY_WSFE_API_AND_RECORD_COMBINED_RECEIPTS'],
+      };
+    }
+    const applied = this.applyManualCommand({
+      onboardingId: current.onboardingId,
+      actorId: input.actorId,
+      occurredAt: input.occurredAt,
+      command: {
+        kind: 'record_api_verification',
+        verifiedServices: { wsfex: true, wsfe: false },
+        activeExportPointOfSale: selected,
+        observedAt: receipt.observedAt,
+        wsfexReceiptHash: receipt.evidenceHash,
+        wsfeReceiptHash: null,
+        idempotencyKey: input.idempotencyKey,
+      },
+    });
+    return {
+      ...applied,
+      output: {
+        state: 'recorded',
+        activePoints: receipt.activePoints,
+        evidenceHash: receipt.evidenceHash,
+      },
+    };
   }
 
   async startReclaim(input: Readonly<{
