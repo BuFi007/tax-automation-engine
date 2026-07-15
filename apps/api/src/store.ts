@@ -14,11 +14,30 @@ import type {
 
 import { assertCatalogueSafeProfile } from './profile-validation';
 
+export function resolveTaxEngineDatabasePath(
+  configuredPath: string | null | undefined = process.env.TAX_ENGINE_DB_PATH,
+  nodeEnvironment: string | undefined = process.env.NODE_ENV,
+): string {
+  const path = configuredPath?.trim() || ':memory:';
+  if (nodeEnvironment === 'production' && isInMemorySqlitePath(path)) {
+    throw new Error('TAX_ENGINE_DB_PATH_REQUIRED_IN_PRODUCTION');
+  }
+  return path;
+}
+
+function isInMemorySqlitePath(path: string): boolean {
+  const normalized = path.toLowerCase();
+  return normalized === ':memory:'
+    || normalized.startsWith('file::memory:')
+    || /(?:\?|&)mode=memory(?:&|$)/.test(normalized);
+}
+
 export class TaxProfileStore {
   readonly #db: Database;
 
-  constructor(path = process.env.TAX_ENGINE_DB_PATH ?? ':memory:') {
-    this.#db = new Database(path, { create: true });
+  constructor(path = process.env.TAX_ENGINE_DB_PATH) {
+    const databasePath = resolveTaxEngineDatabasePath(path);
+    this.#db = new Database(databasePath, { create: true });
     this.#db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS tax_profiles (

@@ -221,6 +221,7 @@ On network timeout or a 5xx response, the API records `ambiguous` and does not g
 
 ```text
 TAX_ENGINE_API_KEY
+TAX_ENGINE_DB_PATH=/data/tax-engine.sqlite
 TAX_ENGINE_USER_APPROVAL_TOKEN
 TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN
 TAX_ENGINE_EVIDENCE_INGEST_TOKEN
@@ -244,6 +245,8 @@ ARCA_BOUNDARY_URL
 ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN
 ARCA_ENVIRONMENT=homologacion | production
 ```
+
+`TAX_ENGINE_DB_PATH` must live on a durable mounted volume in production. A missing, blank, or in-memory SQLite path fails startup so settlement acknowledgements cannot outlive the Factura E revision and idempotency log they depend on. This SQLite deployment is single-writer; horizontal replicas require a shared transactional store rather than a shared SQLite file.
 
 Missing Reclaim or signer configuration is reported as `configuration_required`; the backend fails closed.
 

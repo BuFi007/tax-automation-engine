@@ -175,7 +175,7 @@ describe('Factura E agent domain', () => {
     expect(run).toEqual(expect.objectContaining({ issuanceState: 'arca_authorized', authority: expect.objectContaining({ reprocessed: true, requestId: '1001' }) }));
   });
 
-  test('reconciles partial settlements and records reversals as separate freezing events', () => {
+  test('preserves full reversal behavior for one of multiple final settlements', () => {
     let run: FacturaEAgentRunV1 = {
       ...createRun('reclaim_copilot'),
       intent: intent(),
@@ -210,6 +210,89 @@ describe('Factura E agent domain', () => {
       actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'reversal-600',
     }).run;
     expect(run).toEqual(expect.objectContaining({ settlementState: 'reversed', financeEligibility: 'frozen' }));
+    expect(deriveFacturaEAdjustmentLedger(run)).toEqual(expect.objectContaining({
+      finalSettlementTotal: '400',
+      settlementGap: '600',
+    }));
+  });
+
+  test('subtracts partial and multiple reversals from the referenced final settlement', () => {
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'),
+      intent: intent(),
+      intentHash: hashCanonical(intent()),
+      intentState: 'frozen',
+      issuanceState: 'arca_authorized',
+      fxIngressState: 'verified',
+    };
+    const finalReference = hash('final-1000');
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: finalReference, asset: 'USDC', network: 'base', amount: { decimal: '1000.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'final-1000',
+    }).run;
+    const firstReversalReference = hash('reversal-250');
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: firstReversalReference, asset: 'USDC', network: 'base', amount: { decimal: '250.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'reversal-250',
+    }).run;
+    expect(deriveFacturaEAdjustmentLedger(run).finalSettlementTotal).toBe('750');
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('reversal-350'), asset: 'USDC', network: 'base', amount: { decimal: '350.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'reversal-350',
+    }).run;
+    expect(run).toEqual(expect.objectContaining({ settlementState: 'reversed', financeEligibility: 'frozen' }));
+    expect(deriveFacturaEAdjustmentLedger(run)).toEqual(expect.objectContaining({
+      finalSettlementTotal: '400',
+      settlementGap: '600',
+    }));
+
+    expect(() => recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('reversal-of-reversal'), asset: 'USDC', network: 'base', amount: { decimal: '1.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: firstReversalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'reversal-of-reversal',
+    })).toThrow('REVERSED_SETTLEMENT_NOT_FINAL');
+  });
+
+  test('rejects cumulative reversals above the original final settlement amount', () => {
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'),
+      intent: intent(),
+      intentHash: hashCanonical(intent()),
+      intentState: 'frozen',
+    };
+    const finalReference = hash('over-reversal-final');
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: finalReference, asset: 'USDC', network: 'base', amount: { decimal: '1000.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'over-reversal-final',
+    }).run;
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('over-reversal-600'), asset: 'USDC', network: 'base', amount: { decimal: '600.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'over-reversal-600',
+    }).run;
+    expect(() => recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('over-reversal-400-01'), asset: 'USDC', network: 'base', amount: { decimal: '400.01', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'over-reversal-400-01',
+    })).toThrow('REVERSED_SETTLEMENT_AMOUNT_EXCEEDED');
   });
 
   test('derives the corrected balance and invalidates stale tax and finance conclusions after dilution', () => {

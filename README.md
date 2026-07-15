@@ -100,6 +100,8 @@ See [Agent backend for Argentina Factura E](docs/agent-backend.md) for the state
 
 Set `TAX_ENGINE_API_KEY` to require bearer authentication. Production startup refuses to run without it. CORS defaults to `http://localhost:5173` and can be overridden with `CORS_ORIGIN`.
 
+Production also requires `TAX_ENGINE_DB_PATH` to point to SQLite on a durable mounted volume, for example `/data/tax-engine.sqlite`. The API refuses to start with a missing, blank, or in-memory SQLite path in production. This preserves Factura E case revisions and settlement idempotency across restarts; do not run multiple API replicas against one SQLite file.
+
 ## Repository map
 
 ```text

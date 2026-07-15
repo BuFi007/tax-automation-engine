@@ -767,8 +767,15 @@ export function recordFacturaESettlement(run: FacturaEAgentRunV1, input: Readonl
   }
   if (input.settlement.finalityState === 'reversed') {
     if (!input.settlement.reversesSettlementReferenceHash) throw new Error('REVERSED_SETTLEMENT_REFERENCE_REQUIRED');
-    if (!run.settlements.some(settlement => settlement.settlementReferenceHash === input.settlement.reversesSettlementReferenceHash)) {
-      throw new Error('REVERSED_SETTLEMENT_NOT_FOUND');
+    const reversedSettlement = run.settlements.find(settlement => settlement.settlementReferenceHash === input.settlement.reversesSettlementReferenceHash);
+    if (!reversedSettlement) throw new Error('REVERSED_SETTLEMENT_NOT_FOUND');
+    if (reversedSettlement.finalityState !== 'final') throw new Error('REVERSED_SETTLEMENT_NOT_FINAL');
+    const previouslyReversedAmount = run.settlements
+      .filter(settlement => settlement.finalityState === 'reversed'
+        && settlement.reversesSettlementReferenceHash === reversedSettlement.settlementReferenceHash)
+      .reduce((sum, settlement) => sum.add(settlement.amount.decimal), new Decimal(0));
+    if (previouslyReversedAmount.add(settlementAmount).gt(reversedSettlement.amount.decimal)) {
+      throw new Error('REVERSED_SETTLEMENT_AMOUNT_EXCEEDED');
     }
   } else if (input.settlement.reversesSettlementReferenceHash) {
     throw new Error('REVERSAL_REFERENCE_ONLY_ALLOWED_FOR_REVERSAL');
@@ -919,13 +926,20 @@ function assertCaeMatchesAdjustment(claims: ArcaCaeClaimsV1, run: FacturaEAgentR
 }
 
 function finalSettlementAmount(settlements: readonly FacturaESettlementV1[]): Decimal {
-  const reversedReferences = new Set(settlements
-    .filter(settlement => settlement.finalityState === 'reversed')
-    .map(settlement => settlement.reversesSettlementReferenceHash)
-    .filter((reference): reference is string => Boolean(reference)));
+  const reversedAmountsByReference = settlements
+    .filter((settlement): settlement is FacturaESettlementV1 & { reversesSettlementReferenceHash: string } => (
+      settlement.finalityState === 'reversed' && Boolean(settlement.reversesSettlementReferenceHash)
+    ))
+    .reduce((amounts, settlement) => {
+      const previous = amounts.get(settlement.reversesSettlementReferenceHash) ?? new Decimal(0);
+      amounts.set(settlement.reversesSettlementReferenceHash, previous.add(settlement.amount.decimal));
+      return amounts;
+    }, new Map<string, Decimal>());
   return settlements
-    .filter(settlement => settlement.finalityState === 'final' && !reversedReferences.has(settlement.settlementReferenceHash))
-    .reduce((sum, settlement) => sum.add(settlement.amount.decimal), new Decimal(0));
+    .filter(settlement => settlement.finalityState === 'final')
+    .reduce((sum, settlement) => sum
+      .add(settlement.amount.decimal)
+      .sub(reversedAmountsByReference.get(settlement.settlementReferenceHash) ?? 0), new Decimal(0));
 }
 
 function deriveSettlementState(
