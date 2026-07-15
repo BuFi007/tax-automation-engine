@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { executionGateCopy } from './ObligationJourney';
+import { executionGateCopy } from './ObligationJourney.model';
 
 // Regression: ISSUE-003 — United States execution gate mentioned ARCA onboarding
 // Found by /qa on 2026-07-14

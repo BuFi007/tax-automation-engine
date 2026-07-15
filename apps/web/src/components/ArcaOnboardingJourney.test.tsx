@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { ARCA_ONBOARDING_UI_STEPS, ArcaOnboardingJourney } from './ArcaOnboardingJourney';
+import { ArcaOnboardingJourney } from './ArcaOnboardingJourney';
+import { ARCA_ONBOARDING_UI_STEPS } from './ArcaOnboardingJourney.model';
 
 test('renders the deterministic ARCA onboarding order and credential boundary', () => {
   const html = renderToStaticMarkup(<ArcaOnboardingJourney />);
