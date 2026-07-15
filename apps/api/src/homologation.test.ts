@@ -15,6 +15,9 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.productionActivationAllowed).toBe(false);
     expect(JSON.stringify(preflight)).not.toContain('must-not-leak');
     expect(preflight.gates.find(gate => gate.id === 'explicit_homologation_authority')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'wsfe_certificate_delegation')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'feews_point_of_sale')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'reviewed_reclaim_onboarding_provider')?.state).toBe('missing');
   });
 
   test('becomes ready only with reviewed HTTPS homologation boundaries and explicit authority', () => {
@@ -123,6 +126,8 @@ function readyEnvironment(): Record<string, string> {
     RECLAIM_ARCA_TAXPAYER_PROVIDER_ID: 'provider-readiness',
     RECLAIM_ARCA_CAE_PROVIDER_REVIEWED: 'true',
     RECLAIM_ARCA_CAE_PROVIDER_ID: 'provider-cae',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_ID: 'provider-onboarding',
     RECLAIM_PROOF_VAULT_URL: 'https://proof-vault.example.test',
     RECLAIM_PROOF_VAULT_TOKEN: 'vault-token',
     RECLAIM_PROOF_RETENTION_POLICY_ID: 'tax-evidence-v1',
@@ -133,6 +138,8 @@ function readyEnvironment(): Record<string, string> {
     ARCA_BOUNDARY_URL: 'https://arca-boundary.example.test',
     ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN: 'payload-writer-token',
     ARCA_WSFEX_DELEGATION_CONFIRMED: 'true',
+    ARCA_WSFE_DELEGATION_CONFIRMED: 'true',
+    ARCA_FEEWS_POINT_OF_SALE_CONFIRMED: 'true',
     TAX_ENGINE_PRODUCTION_APPROVED: 'false',
   };
 }

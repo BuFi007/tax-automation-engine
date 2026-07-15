@@ -159,6 +159,37 @@ Provider definitions are external Reclaim assets and must be reviewed against th
 
 The repository includes the deployable output contract and acceptance runbook under [`providers/reclaim`](../providers/reclaim/README.md).
 
+## Credentialless ARCA onboarding
+
+The human product exposes a separate deterministic setup flow before invoice issuance:
+
+```text
+login_handoff
+service_adherence
+point_of_sale_discovery
+point_of_sale_creation
+ws_delegation
+api_verification
+zk_evidence
+ready
+```
+
+Each run is append-only and idempotent. It stores a taxpayer reference hash, safe point-of-sale number, delegated-service flags, authority receipt hashes, normalized Reclaim claims, and an opaque proof-custody receipt. It rejects Clave Fiscal, PIN, cookies, bearer tokens, and raw CUIT fields at both the HTTP and domain boundaries.
+
+`point_of_sale_creation` is skipped when discovery finds an active compatible point. Service adherence, point-of-sale creation, and WSFEX/WSFE delegation are user-confirmed account changes. Reclaim proves the resulting portal facts through a reviewed prover-side WITNESS provider; it does not perform those changes. `ready` is derived only after WSFEX/WSFE independently verify the requested services and active point of sale, followed by a context-bound Reclaim proof.
+
+The trusted UI uses these routes:
+
+```text
+POST /v1/arca-onboarding/runs
+GET  /v1/arca-onboarding/runs/:onboardingId
+POST /v1/arca-onboarding/runs/:onboardingId/steps/:step
+POST /v1/arca-onboarding/runs/:onboardingId/zk-evidence/request
+POST /v1/reclaim/arca-onboarding/callback
+```
+
+Human account-change steps require `X-Tax-User-Approval-Token`. Discovery and authoritative API verification require `X-Tax-Evidence-Ingest-Token`. The callback is accepted without the Motora API key only because its proof, provider version, expiry, session, and full onboarding context are cryptographically verified before any state transition.
+
 ## Delegated WSFEX Path A
 
 The API never stores a private key or raw WSFEX authentication fields. It calls an isolated signer/provider service for invoices 19 and associated notes 20/21 with:
@@ -200,6 +231,7 @@ RECLAIM_APP_SECRET
 RECLAIM_CALLBACK_BASE_URL
 RECLAIM_ARCA_TAXPAYER_PROVIDER_ID
 RECLAIM_ARCA_CAE_PROVIDER_ID
+RECLAIM_ARCA_ONBOARDING_PROVIDER_ID
 RECLAIM_REQUIRE_TEE=false
 RECLAIM_PROOF_CUSTODY_REQUIRED=false
 RECLAIM_PROOF_VAULT_URL

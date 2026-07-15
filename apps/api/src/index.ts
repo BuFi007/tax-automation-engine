@@ -10,6 +10,9 @@ import { ReclaimProtocolGateway } from './reclaim';
 import { TaxProfileStore } from './store';
 import { HttpWsfexGateway } from './wsfex';
 import { HttpAuthorityPayloadWriter } from './authority-payload';
+import { ArcaOnboardingService } from './arca-onboarding';
+import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
+import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
@@ -33,6 +36,12 @@ const proofVault = HttpReclaimProofVault.fromEnvironment();
 const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
 const authorityPayloadWriter = HttpAuthorityPayloadWriter.fromEnvironment();
 const facturaEAgent = new FacturaEAgentService(store, reclaimGateway, wsfexGateway, proofVault, proofCustodyRequired, authorityPayloadWriter);
+const arcaOnboarding = new ArcaOnboardingService(
+  store,
+  ReclaimArcaOnboardingGateway.fromEnvironment(),
+  proofVault,
+  proofCustodyRequired,
+);
 const jurisdictionSchema = z.enum(['AR', 'US']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
@@ -62,11 +71,17 @@ export const server = Bun.serve({
     if (request.method === 'OPTIONS') return applyCors(new Response(null, { status: 204 }), request);
 
     try {
+      if (url.pathname === '/v1/reclaim/arca-onboarding/callback') {
+        const callbackResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken });
+        return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
       if (url.pathname === '/v1/reclaim/callback') {
         const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, authorityPayloadToken });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
+      const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken });
+      if (onboardingResponse) return applyCors(onboardingResponse, request);
       const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, authorityPayloadToken });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
@@ -76,6 +91,7 @@ export const server = Bun.serve({
           authorityEnvironment: arcaEnvironment,
           filingEnabled: Boolean(wsfexGateway && arcaEnvironment === 'production'),
           agent: facturaEAgent.capabilities(),
+          arcaOnboarding: arcaOnboarding.capabilities(),
         }), request);
       }
       if (request.method === 'GET' && url.pathname === '/v1/catalogues') {
