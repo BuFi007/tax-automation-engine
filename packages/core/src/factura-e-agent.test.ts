@@ -6,6 +6,7 @@ import {
   approveFacturaEIntent,
   createFacturaEAgentRun,
   deriveFacturaEAdjustmentLedger,
+  deriveFacturaESettlementEvidenceLedger,
   draftFacturaEIntent,
   facturaENextActions,
   hashCanonical,
@@ -264,6 +265,66 @@ describe('Factura E agent domain', () => {
     })).toThrow('REVERSED_SETTLEMENT_NOT_FINAL');
   });
 
+  test('requires a tax amendment after a full reversal invalidates a declared final settlement', () => {
+    const finalReference = hash('declared-full-reversal-final');
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'),
+      intent: intent(),
+      intentHash: hashCanonical(intent()),
+      intentState: 'frozen',
+      issuanceState: 'arca_authorized',
+      settlementState: 'final',
+      fxIngressState: 'verified',
+      taxDeclarationState: 'declared',
+      financeEligibility: 'reviewable',
+      settlements: [{
+        settlementReferenceHash: finalReference, asset: 'USDC', network: 'base', amount: { decimal: '1000.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null,
+      }],
+    };
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('declared-full-reversal'), asset: 'USDC', network: 'base', amount: { decimal: '1000.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'declared-full-reversal',
+    }).run;
+    expect(run).toEqual(expect.objectContaining({
+      settlementState: 'reversed', taxDeclarationState: 'amendment_required', financeEligibility: 'frozen',
+    }));
+    expect(facturaENextActions(run)).toContain('request_accountant_tax_amendment');
+  });
+
+  test('requires a tax amendment after a partial reversal invalidates a declared final settlement', () => {
+    const finalReference = hash('declared-partial-reversal-final');
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'),
+      intent: intent(),
+      intentHash: hashCanonical(intent()),
+      intentState: 'frozen',
+      issuanceState: 'arca_authorized',
+      settlementState: 'final',
+      fxIngressState: 'verified',
+      taxDeclarationState: 'declared',
+      financeEligibility: 'reviewable',
+      settlements: [{
+        settlementReferenceHash: finalReference, asset: 'USDC', network: 'base', amount: { decimal: '1000.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null,
+      }],
+    };
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('declared-partial-reversal'), asset: 'USDC', network: 'base', amount: { decimal: '250.00', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: finalReference,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'declared-partial-reversal',
+    }).run;
+    expect(run).toEqual(expect.objectContaining({
+      settlementState: 'reversed', taxDeclarationState: 'amendment_required', financeEligibility: 'frozen',
+    }));
+    expect(deriveFacturaEAdjustmentLedger(run).finalSettlementTotal).toBe('750');
+  });
+
   test('rejects cumulative reversals above the original final settlement amount', () => {
     let run: FacturaEAgentRunV1 = {
       ...createRun('reclaim_copilot'),
@@ -293,6 +354,118 @@ describe('Factura E agent domain', () => {
       },
       actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'over-reversal-400-01',
     })).toThrow('REVERSED_SETTLEMENT_AMOUNT_EXCEEDED');
+  });
+
+  test('retains a privacy-safe settlement envelope and deduplicates source fees across allocations', () => {
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'),
+      intent: intent(),
+      intentHash: hashCanonical(intent()),
+      intentState: 'frozen',
+    };
+    const sourceIdentityHash = hash('shared-source-receipt');
+    const evidence = {
+      version: 'factura-e-settlement-evidence-v1' as const,
+      source: { kind: 'circle_transfer' as const, provider: 'circle', identityHash: sourceIdentityHash, revision: 1 },
+      sourceMoney: { currency: 'USD', grossAmount: '1001', feeAmount: '1', netAmount: '1000' },
+      sourceEquivalentAmount: '400',
+      allocationBasis: 'net' as const,
+      fx: null,
+      verification: { method: 'provider_webhook' as const, evidenceHash: hash('provider-proof'), verifiedAt: now },
+    };
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('shared-source-allocation-400'), asset: 'USD', network: 'bank', amount: { decimal: '400', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null, evidence,
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'shared-source-allocation-400',
+    }).run;
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('shared-source-allocation-600'), asset: 'USD', network: 'bank', amount: { decimal: '600', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: null, reversesSettlementReferenceHash: null,
+        evidence: { ...evidence, sourceEquivalentAmount: '600' },
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'shared-source-allocation-600',
+    }).run;
+    const ledger = deriveFacturaESettlementEvidenceLedger(run.settlements);
+    expect(ledger).toEqual(expect.objectContaining({
+      completeness: 'complete',
+      feeSemantics: {
+        sourceFeeScope: 'source_receipt', sourceFeeDedupeKey: 'sourceIdentityHash', allocationFeeScope: 'settlement_allocation',
+      },
+      sources: [expect.objectContaining({ sourceIdentityHash, money: expect.objectContaining({ feeAmount: '1' }) })],
+    }));
+    expect(ledger.allocations).toHaveLength(2);
+    expect(ledger.allocations.every(allocation => allocation.allocationFees === null)).toBe(true);
+
+    run = recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('shared-source-reversal-100'), asset: 'USD', network: 'bank', amount: { decimal: '100', currency: 'USD' }, observedAt: now,
+        finalityState: 'reversed', fees: null, reversesSettlementReferenceHash: hash('shared-source-allocation-600'),
+        evidence: {
+          ...evidence,
+          source: { ...evidence.source, kind: 'provider_reversal', revision: 2 },
+          sourceEquivalentAmount: '100',
+        },
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'shared-source-reversal-100',
+    }).run;
+    expect(deriveFacturaESettlementEvidenceLedger(run.settlements)).toEqual(expect.objectContaining({
+      completeness: 'complete',
+      sources: [expect.objectContaining({ sourceIdentityHash, sourceKind: 'provider_reversal', sourceRevision: 2 })],
+      allocations: expect.arrayContaining([expect.objectContaining({
+        finalityState: 'reversed', sourceIdentityHash, sourceEquivalentAmount: '100', allocationFees: null,
+      })]),
+    }));
+  });
+
+  test('rejects a source-level fee projected onto a partial invoice allocation', () => {
+    const run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'), intent: intent(), intentHash: hashCanonical(intent()), intentState: 'frozen',
+    };
+    expect(() => recordFacturaESettlement(run, {
+      settlement: {
+        settlementReferenceHash: hash('partial-source-fee'), asset: 'USD', network: 'bank', amount: { decimal: '400', currency: 'USD' }, observedAt: now,
+        finalityState: 'final', fees: { decimal: '1', currency: 'USD' }, reversesSettlementReferenceHash: null,
+        evidence: {
+          version: 'factura-e-settlement-evidence-v1',
+          source: { kind: 'reviewed_bank_match', provider: 'plaid', identityHash: hash('partial-source'), revision: 1 },
+          sourceMoney: { currency: 'USD', grossAmount: '1001', feeAmount: '1', netAmount: '1000' },
+          sourceEquivalentAmount: '400', allocationBasis: 'net', fx: null,
+          verification: { method: 'reviewed_financial_match', evidenceHash: hash('bank-review'), verifiedAt: now },
+        },
+      },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'partial-source-fee',
+    })).toThrow('SETTLEMENT_PARTIAL_ALLOCATION_FEE_FORBIDDEN');
+  });
+
+  test('requires hash-bound FX evidence for a cross-currency source allocation', () => {
+    let run: FacturaEAgentRunV1 = {
+      ...createRun('reclaim_copilot'), intent: intent(), intentHash: hashCanonical(intent()), intentState: 'frozen',
+    };
+    const evidence = {
+      version: 'factura-e-settlement-evidence-v1' as const,
+      source: { kind: 'external_wallet_receipt' as const, provider: 'external.wallet', identityHash: hash('cross-currency-source'), revision: 1 },
+      sourceMoney: { currency: 'USDC', grossAmount: '1000', feeAmount: '0', netAmount: '1000' },
+      sourceEquivalentAmount: '1000', allocationBasis: 'net' as const,
+      fx: {
+        rate: '1', sourceCurrency: 'USDC', allocationCurrency: 'USD', evidenceHash: hash('cross-currency-fx'), verifiedAt: now,
+      },
+      verification: { method: 'onchain_receipt' as const, evidenceHash: hash('wallet-proof'), verifiedAt: now },
+    };
+    const settlement = {
+      settlementReferenceHash: hash('cross-currency-allocation'), asset: 'USDC', network: 'base', amount: { decimal: '1000', currency: 'USD' }, observedAt: now,
+      finalityState: 'final' as const, fees: null, reversesSettlementReferenceHash: null, evidence,
+    };
+    run = recordFacturaESettlement(run, {
+      settlement, actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'cross-currency-allocation',
+    }).run;
+    expect(deriveFacturaESettlementEvidenceLedger(run.settlements).allocations[0]?.fx).toEqual(evidence.fx);
+    expect(() => recordFacturaESettlement({ ...run, settlements: [] }, {
+      settlement: { ...settlement, evidence: { ...evidence, fx: null } },
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'cross-currency-without-fx',
+    })).toThrow('SETTLEMENT_FX_EVIDENCE_REQUIRED');
   });
 
   test('derives the corrected balance and invalidates stale tax and finance conclusions after dilution', () => {

@@ -85,6 +85,47 @@ const authorityPayloadInputSchema = z.object({
   expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 
+const settlementCurrencySchema = z.string().regex(/^[A-Z][A-Z0-9]{2,11}$/);
+const settlementEvidenceSchema = z.object({
+  version: z.literal('factura-e-settlement-evidence-v1'),
+  source: z.object({
+    kind: z.enum([
+      'circle_transfer',
+      'circle_memo',
+      'bridge_liquidation',
+      'external_wallet_receipt',
+      'reviewed_bank_match',
+      'reviewed_accounting_match',
+      'approved_manual_evidence',
+      'recibu_payment',
+      'provider_reversal',
+    ]),
+    provider: z.string().regex(/^[a-z][a-z0-9._-]{1,62}[a-z0-9]$/),
+    identityHash: sha256Schema,
+    revision: z.number().int().positive().safe(),
+  }).strict(),
+  sourceMoney: z.object({
+    currency: settlementCurrencySchema,
+    grossAmount: decimalSchema,
+    feeAmount: decimalSchema,
+    netAmount: decimalSchema,
+  }).strict(),
+  sourceEquivalentAmount: decimalSchema,
+  allocationBasis: z.enum(['gross', 'net']),
+  fx: z.object({
+    rate: decimalSchema,
+    sourceCurrency: settlementCurrencySchema,
+    allocationCurrency: settlementCurrencySchema,
+    evidenceHash: sha256Schema,
+    verifiedAt: z.iso.datetime({ offset: true }),
+  }).strict().nullable(),
+  verification: z.object({
+    method: z.enum(['provider_webhook', 'onchain_receipt', 'reviewed_financial_match', 'approved_manual_review']),
+    evidenceHash: sha256Schema,
+    verifiedAt: z.iso.datetime({ offset: true }),
+  }).strict(),
+}).strict();
+
 const settlementSchema = z.object({
   settlementReferenceHash: sha256Schema,
   asset: z.string().min(1).max(32),
@@ -94,6 +135,7 @@ const settlementSchema = z.object({
   finalityState: z.enum(['observed', 'final', 'reversed', 'disputed']),
   fees: moneySchema.nullable(),
   reversesSettlementReferenceHash: sha256Schema.nullable(),
+  evidence: settlementEvidenceSchema.nullable().optional(),
 }).strict();
 const intentJsonSchema = z.toJSONSchema(intentSchema);
 const settlementJsonSchema = z.toJSONSchema(settlementSchema);
@@ -192,7 +234,7 @@ export const FACTURA_E_AGENT_TOOLS = [
       requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' },
     },
   }, 'automatic_after_ambiguity'),
-  tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence. This does not mark FX ingress or tax declaration verified.', {
+  tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence, including an optional privacy-safe source/fee/FX proof envelope. This does not mark FX ingress or tax declaration verified.', {
     type: 'object', required: ['runId', 'settlement'], additionalProperties: false,
     properties: { runId: { type: 'string', format: 'uuid' }, settlement: settlementJsonSchema },
   }, 'automatic'),

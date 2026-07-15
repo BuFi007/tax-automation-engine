@@ -28,7 +28,7 @@ Each case stores these dimensions independently:
 - financing eligibility
 - immutable associated debit/credit notes and their corrected net balance
 
-`financeEligibility` remains `frozen` until the invoice is ARCA-authorized, settlement is final, and FX ingress is separately verified. A reversed or disputed settlement freezes it again.
+`financeEligibility` remains `frozen` until the invoice is ARCA-authorized, settlement is final, and FX ingress is separately verified. A reversed or disputed settlement freezes it again. If a full or partial reversal makes a previously declared final settlement non-final, the declaration moves to `amendment_required`.
 An open adjustment also freezes financing. An authorized credit note is recorded as dilution and stays frozen for financing review. If a correction is authorized after tax evidence was declared, the state becomes `amendment_required`; it never remains silently clean.
 
 ## Agent tools
@@ -55,7 +55,7 @@ Fetch `GET /v1/agent/tools` to receive OpenAI-compatible function definitions an
 | `tax_ar_factura_e_recover_adjustment_wsfex` | Recovers an ambiguous note result | Same adjustment, request ID, and payload reference |
 | `tax_ar_factura_e_record_settlement` | Adds immutable settlement evidence | Does not verify FX/tax state |
 
-All mutations require an idempotency key. The database stores every case revision and event; the same key returns the prior result rather than running the action twice.
+All mutations require an idempotency key. The database stores every case revision and event plus a canonical command hash. The same `(runId, key, operation, command body)` returns the prior result rather than running the action twice; reusing `(runId, key)` with a changed operation or body fails with `AGENT_IDEMPOTENCY_CONFLICT` (HTTP 409). Server-assigned retry time is excluded from the command hash.
 
 The capability response also carries the existing 22-read financial manifest. `propose_from_evidence` reads only accepted records already normalized by the workspace bridge (banks, wallets, QuickBooks/Xero/Conta Azul/Contabilium, Magic Inbox, transaction enrichment, knowledge graph, and financial analytics). Records that represent the same economic event are compared, not summed. Conflicting currency, amount, or counterparty claims block the draft.
 
@@ -79,6 +79,20 @@ Send it to:
 POST /v1/agent/tools/tax_ar_factura_e_create_case/invoke
 Authorization: Bearer <TAX_ENGINE_API_KEY>
 ```
+
+### Settlement evidence projection
+
+`tax_ar_factura_e_record_settlement` still accepts the legacy narrow settlement object. New invoice-settlement deliveries should also include the optional `settlement.evidence` object with version `factura-e-settlement-evidence-v1`:
+
+- `source`: normalized kind/provider, SHA-256 `identityHash`, and monotonic revision
+- `sourceMoney`: exact source-currency gross, fee, and net (`gross = fee + net`)
+- `sourceEquivalentAmount` and `allocationBasis` (`gross` or `net`)
+- verified FX rate/pair/evidence hash for cross-currency allocations; `null` for same-currency allocations
+- verification method, evidence hash, and verification time
+
+Raw provider event IDs, account/wallet identifiers, evidence lookup references, CUIT/TIN values, and credentials are not accepted in this projection. Source and verification identities are lowercase SHA-256 commitments.
+
+The accounting attestation packet exposes `settlementEvidence` version `factura-e-settlement-evidence-ledger-v1`. Its `sources` are deduplicated by `sourceIdentityHash`, while `allocations` retain invoice-level amounts, source equivalents, FX, reversal links, and verification commitments. `sourceMoney.feeAmount` is a receipt-level fee and must be counted once per source identity. `allocationFees` is populated only when a same-currency allocation consumes the complete selected source basis (or the fee is zero); partial allocations cannot repeat a source-level fee. Packet `completeness` is `complete`, `partial`, or `legacy_narrow` so an accountant never mistakes absent provenance for verified provenance.
 
 ## Trusted transitions outside the agent
 

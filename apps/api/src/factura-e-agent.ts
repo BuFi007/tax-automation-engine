@@ -10,6 +10,7 @@ import {
   closeReclaimSession,
   createFacturaEAgentRun,
   deriveFacturaEAdjustmentLedger,
+  deriveFacturaESettlementEvidenceLedger,
   draftFacturaEIntent,
   facturaENextActions,
   hashCanonical,
@@ -89,12 +90,13 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('create_run', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const existing = this.store.getFacturaEAgentRun(input.runId);
     if (existing) throw new Error('AGENT_RUN_ALREADY_EXISTS');
     const created = createFacturaEAgentRun(input);
-    const run = this.persist(created.run, created.event, input.occurredAt);
+    const run = this.persist(created.run, created.event, input.occurredAt, commandHash);
     return result(run, false, undefined);
   }
 
@@ -175,10 +177,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult<Readonly<{ adjustmentId: string; intentHash: string }>> {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('prepare_adjustment', input, current => {
       const applied = prepareFacturaEAdjustment(current, { ...input, asOf: input.occurredAt.slice(0, 10) });
       return { run: applied.run, event: applied.event, output: { adjustmentId: applied.adjustment.adjustmentId, intentHash: applied.adjustment.intentHash } };
-    }, input.occurredAt);
+    });
   }
 
   approveAdjustment(input: Readonly<{
@@ -189,10 +191,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('approve_adjustment', input, current => {
       const applied = approveFacturaEAdjustment(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   approveAdjustmentByAccountant(input: Readonly<{
@@ -203,10 +205,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('approve_adjustment_by_accountant', input, current => {
       const applied = approveFacturaEAdjustmentByAccountant(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   adjustmentCopilotPacket(runId: string, adjustmentId: string) {
@@ -280,6 +282,7 @@ export class FacturaEAgentService {
       })),
       financialLedger: deriveFacturaEAdjustmentLedger(run),
       settlements: run.settlements,
+      settlementEvidence: deriveFacturaESettlementEvidenceLedger(run.settlements),
       fxIngress: { state: run.fxIngressState, evidenceHash: run.fxIngressEvidenceHash },
       taxDeclaration: { state: run.taxDeclarationState, evidenceHash: run.taxDeclarationEvidenceHash },
       authorityProofs: run.verifiedProofs.map(proof => ({
@@ -315,10 +318,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult<Readonly<{ valid: boolean; errors: readonly string[]; intentHash: string }>> {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('draft_intent', input, current => {
       const applied = draftFacturaEIntent(current, input);
       return { run: applied.run, event: applied.event, output: applied.validation };
-    }, input.occurredAt);
+    });
   }
 
   proposeIntentFromEvidence(input: Readonly<{
@@ -340,7 +343,8 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult<Readonly<{ valid: boolean; errors: readonly string[]; intentHash: string; sourceEvidenceIds: readonly string[] }>> {
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('propose_intent_from_evidence', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, { valid: replay.intentState === 'validated', errors: [], intentHash: replay.intentHash ?? '', sourceEvidenceIds: [] });
     const current = this.getRun(input.runId);
     const profile = this.store.get(current.workspaceId);
@@ -381,7 +385,7 @@ export class FacturaEAgentService {
       ruleVersionIds: [...ARGENTINA_FACTURA_E_RULE_IDS],
     };
     const applied = draftFacturaEIntent(current, { ...input, intent, asOf: input.occurredAt.slice(0, 10) });
-    const run = this.persist(applied.run, applied.event, input.occurredAt);
+    const run = this.persist(applied.run, applied.event, input.occurredAt, commandHash);
     return result(run, false, { ...applied.validation, sourceEvidenceIds: candidates.map(record => record.evidenceId) });
   }
 
@@ -394,7 +398,8 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): Promise<AgentMutationResult<ReclaimRequestResult>> {
     if (!this.reclaim) throw new Error('RECLAIM_CONFIGURATION_REQUIRED');
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('start_reclaim', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) {
       const replayEvent = this.store.getFacturaEAgentEventByIdempotency(input.runId, input.idempotencyKey);
       const sessionId = replayEvent?.safeMetadata.sessionId;
@@ -415,7 +420,7 @@ export class FacturaEAgentService {
     }
     const request = await this.reclaim.createRequest(current, input.purpose, input.occurredAt, input.subjectId);
     const applied = addReclaimSession(current, { ...input, session: request.session });
-    const run = this.persist(applied.run, applied.event, input.occurredAt);
+    const run = this.persist(applied.run, applied.event, input.occurredAt, commandHash);
     this.store.bindReclaimSession(run.runId, request.session, input.occurredAt);
     this.store.saveReclaimRequestArtifact({
       sessionId: request.session.sessionId,
@@ -440,23 +445,25 @@ export class FacturaEAgentService {
     } catch (error) {
       if (error instanceof Error && error.message === 'RECLAIM_SESSION_EXPIRED') {
         const idempotencyKey = `reclaim-session-expired:${session.sessionId}:${session.expiresAt}`;
-        if (!this.store.getFacturaEAgentRunByIdempotency(runId, idempotencyKey)) {
+        const expiryCommand = {
+          runId, sessionId, state: 'expired', reasonCode: 'RECLAIM_SESSION_EXPIRED',
+          actorId: 'system:reclaim-expiry', idempotencyKey, occurredAt,
+        } as const;
+        const commandHash = facturaEAgentCommandHash('expire_reclaim_session', expiryCommand);
+        if (!this.store.getFacturaEAgentRunByIdempotency(runId, idempotencyKey, commandHash)) {
           const closed = closeReclaimSession(current, {
-            sessionId,
-            state: 'expired',
-            reasonCode: 'RECLAIM_SESSION_EXPIRED',
-            actorId: 'system:reclaim-expiry',
+            ...expiryCommand,
             actorKind: 'system',
-            occurredAt,
-            idempotencyKey,
           });
-          this.persist(closed.run, closed.event, occurredAt);
+          this.persist(closed.run, closed.event, occurredAt, commandHash);
         }
       }
       throw error;
     }
     const idempotencyKey = `reclaim-proof:${proof.proofHash}`;
-    const replay = this.store.getFacturaEAgentRunByIdempotency(runId, idempotencyKey);
+    const command = { runId, sessionId, proofHash: proof.proofHash, actorId: 'reclaim', idempotencyKey, occurredAt };
+    const commandHash = facturaEAgentCommandHash('ingest_reclaim_proof', command);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(runId, idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     if (this.proofCustodyRequired && !this.proofVault) throw new Error('RECLAIM_PROOF_VAULT_CONFIGURATION_REQUIRED');
     if (this.proofVault) {
@@ -464,7 +471,7 @@ export class FacturaEAgentService {
       proof = { ...proof, custodyReceipt };
     }
     const applied = ingestVerifiedReclaimProof(current, { proof, occurredAt, idempotencyKey });
-    return result(this.persist(applied.run, applied.event, occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, occurredAt, commandHash), false, undefined);
   }
 
   cancelReclaimSession(input: Readonly<{
@@ -474,7 +481,7 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('cancel_reclaim_session', input, current => {
       const closed = closeReclaimSession(current, {
         ...input,
         state: 'cancelled',
@@ -482,7 +489,7 @@ export class FacturaEAgentService {
         actorKind: 'user',
       });
       return { ...closed, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   requestApproval(input: Readonly<{
@@ -491,11 +498,11 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('request_approval', input, current => {
       this.assertProfileMatchesReadiness(current);
       const applied = requestFacturaEApproval(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   approveIntent(input: Readonly<{
@@ -505,10 +512,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('approve_intent', input, current => {
       const applied = approveFacturaEIntent(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   approveIntentByAccountant(input: Readonly<{
@@ -518,10 +525,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('approve_intent_by_accountant', input, current => {
       const applied = approveFacturaEIntentByAccountant(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   async prepareAndSubmitWsfex(input: Readonly<{
@@ -618,7 +625,8 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): Promise<AgentMutationResult> {
     if (!this.wsfex) throw new Error('WSFEX_CONFIGURATION_REQUIRED');
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('submit_wsfex', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const current = this.getRun(input.runId);
     const authority = await this.wsfex.authorize({ run: current, requestId: input.requestId, authorityPayloadRef: input.authorityPayloadRef });
@@ -627,7 +635,7 @@ export class FacturaEAgentService {
       ...authority,
       payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
     });
-    return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, input.occurredAt, commandHash), false, undefined);
   }
 
   async recoverWsfex(input: Readonly<{
@@ -639,7 +647,8 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): Promise<AgentMutationResult> {
     if (!this.wsfex) throw new Error('WSFEX_CONFIGURATION_REQUIRED');
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('recover_wsfex', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const current = this.getRun(input.runId);
     if (current.issuanceState !== 'ambiguous') throw new Error('WSFEX_OUTCOME_NOT_AMBIGUOUS');
@@ -651,7 +660,7 @@ export class FacturaEAgentService {
       ...authority,
       payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
     });
-    return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, input.occurredAt, commandHash), false, undefined);
   }
 
   async submitWsfexAdjustment(input: Readonly<{
@@ -664,7 +673,8 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): Promise<AgentMutationResult> {
     if (!this.wsfex) throw new Error('WSFEX_CONFIGURATION_REQUIRED');
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('submit_wsfex_adjustment', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const current = this.getRun(input.runId);
     const adjustment = current.adjustments.find(candidate => candidate.adjustmentId === input.adjustmentId);
@@ -681,7 +691,7 @@ export class FacturaEAgentService {
       documentNumber: authority.invoiceNumber,
       payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
     });
-    return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, input.occurredAt, commandHash), false, undefined);
   }
 
   async recoverWsfexAdjustment(input: Readonly<{
@@ -694,7 +704,8 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): Promise<AgentMutationResult> {
     if (!this.wsfex) throw new Error('WSFEX_CONFIGURATION_REQUIRED');
-    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey);
+    const commandHash = facturaEAgentCommandHash('recover_wsfex_adjustment', input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const current = this.getRun(input.runId);
     const adjustment = current.adjustments.find(candidate => candidate.adjustmentId === input.adjustmentId);
@@ -713,7 +724,7 @@ export class FacturaEAgentService {
       documentNumber: authority.invoiceNumber,
       payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
     });
-    return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, input.occurredAt, commandHash), false, undefined);
   }
 
   recordSettlement(input: Readonly<{
@@ -723,10 +734,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('record_settlement', input, current => {
       const applied = recordFacturaESettlement(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   verifyFxIngress(input: Readonly<{
@@ -736,10 +747,10 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('verify_fx_ingress', input, current => {
       const applied = verifyFacturaEFxIngress(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
   markTaxDeclared(input: Readonly<{
@@ -749,31 +760,32 @@ export class FacturaEAgentService {
     idempotencyKey: string;
     occurredAt: string;
   }>): AgentMutationResult {
-    return this.mutate(input.runId, input.idempotencyKey, current => {
+    return this.mutate('mark_tax_declared', input, current => {
       const applied = markFacturaETaxDeclared(current, input);
       return { ...applied, output: undefined };
-    }, input.occurredAt);
+    });
   }
 
-  private mutate<T>(
-    runId: string,
-    idempotencyKey: string,
+  private mutate<T, Input extends Readonly<{ runId: string; idempotencyKey: string; occurredAt: string }>>(
+    operation: string,
+    input: Input,
     change: (run: FacturaEAgentRunV1) => Readonly<{ run: FacturaEAgentRunV1; event: Parameters<TaxProfileStore['appendFacturaEAgentRevision']>[0]['event']; output: T }>,
-    occurredAt: string
   ): AgentMutationResult<T> {
-    const replay = this.store.getFacturaEAgentRunByIdempotency(runId, idempotencyKey);
+    const commandHash = facturaEAgentCommandHash(operation, input);
+    const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined as T);
-    const current = this.getRun(runId);
+    const current = this.getRun(input.runId);
     const changed = change(current);
-    return result(this.persist(changed.run, changed.event, occurredAt), false, changed.output);
+    return result(this.persist(changed.run, changed.event, input.occurredAt, commandHash), false, changed.output);
   }
 
   private persist(
     run: FacturaEAgentRunV1,
     event: Parameters<TaxProfileStore['appendFacturaEAgentRevision']>[0]['event'],
-    appendedAt: string
+    appendedAt: string,
+    commandHash: string
   ): FacturaEAgentRunV1 {
-    return this.store.appendFacturaEAgentRevision({ run, event, stateHash: hashCanonical(run), appendedAt });
+    return this.store.appendFacturaEAgentRevision({ run, event, stateHash: hashCanonical(run), commandHash, appendedAt });
   }
 
   private assertProfileMatchesReadiness(run: FacturaEAgentRunV1): void {
@@ -789,6 +801,14 @@ export class FacturaEAgentService {
     if (!proof || !('regime' in proof.claims)) throw new Error('ARCA_READINESS_PROOF_REQUIRED');
     if (proof.claims.regime !== expectedRegime) throw new Error('ARCA_READINESS_PROFILE_MISMATCH');
   }
+}
+
+function facturaEAgentCommandHash(operation: string, input: object): string {
+  const command = { ...input } as Record<string, unknown>;
+  // These fields identify/re-time a retry; neither changes the requested mutation.
+  delete command.idempotencyKey;
+  delete command.occurredAt;
+  return hashCanonical({ operation, command });
 }
 
 function result<T>(run: FacturaEAgentRunV1, replayed: boolean, output: T): AgentMutationResult<T> {

@@ -88,6 +88,13 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS factura_e_agent_workspace
         ON factura_e_agent_revisions (workspace_id, run_id, revision);
+      CREATE TABLE IF NOT EXISTS factura_e_agent_idempotency_commands (
+        run_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        command_hash TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, idempotency_key)
+      );
       CREATE TABLE IF NOT EXISTS arca_onboarding_revisions (
         onboarding_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
@@ -224,14 +231,23 @@ export class TaxProfileStore {
     run: FacturaEAgentRunV1;
     event: FacturaEAgentEventV1;
     stateHash: string;
+    commandHash: string;
     appendedAt: string;
   }>): FacturaEAgentRunV1 {
     if (input.event.runId !== input.run.runId || input.event.workspaceId !== input.run.workspaceId) throw new Error('AGENT_EVENT_RUN_MISMATCH');
+    if (!/^[a-f0-9]{64}$/.test(input.commandHash)) throw new Error('AGENT_COMMAND_HASH_INVALID');
     const transaction = this.#db.transaction(() => {
-      const existing = this.#db.query<{ state_json: string }, [string, string]>(
-        'SELECT state_json FROM factura_e_agent_revisions WHERE run_id = ? AND idempotency_key = ?'
-      ).get(input.run.runId, input.event.idempotencyKey);
-      if (existing) return JSON.parse(existing.state_json) as FacturaEAgentRunV1;
+      const existing = this.#db.query<{ state_json: string; command_hash: string | null }, [string, string]>(`
+        SELECT revisions.state_json, commands.command_hash
+        FROM factura_e_agent_revisions AS revisions
+        LEFT JOIN factura_e_agent_idempotency_commands AS commands
+          ON commands.run_id = revisions.run_id AND commands.idempotency_key = revisions.idempotency_key
+        WHERE revisions.run_id = ? AND revisions.idempotency_key = ?
+      `).get(input.run.runId, input.event.idempotencyKey);
+      if (existing) {
+        if (existing.command_hash && existing.command_hash !== input.commandHash) throw new Error('AGENT_IDEMPOTENCY_CONFLICT');
+        return JSON.parse(existing.state_json) as FacturaEAgentRunV1;
+      }
 
       const latest = this.#db.query<{ revision: number }, [string]>(
         'SELECT COALESCE(MAX(revision), 0) AS revision FROM factura_e_agent_revisions WHERE run_id = ?'
@@ -252,6 +268,10 @@ export class TaxProfileStore {
         JSON.stringify(input.event),
         input.appendedAt
       );
+      this.#db.query(`
+        INSERT INTO factura_e_agent_idempotency_commands (run_id, idempotency_key, command_hash, recorded_at)
+        VALUES (?, ?, ?, ?)
+      `).run(input.run.runId, input.event.idempotencyKey, input.commandHash, input.appendedAt);
       return input.run;
     });
     return transaction();
@@ -264,10 +284,16 @@ export class TaxProfileStore {
     return row ? JSON.parse(row.state_json) as FacturaEAgentRunV1 : null;
   }
 
-  getFacturaEAgentRunByIdempotency(runId: string, idempotencyKey: string): FacturaEAgentRunV1 | null {
-    const row = this.#db.query<{ state_json: string }, [string, string]>(
-      'SELECT state_json FROM factura_e_agent_revisions WHERE run_id = ? AND idempotency_key = ?'
-    ).get(runId, idempotencyKey);
+  getFacturaEAgentRunByIdempotency(runId: string, idempotencyKey: string, expectedCommandHash?: string): FacturaEAgentRunV1 | null {
+    if (expectedCommandHash !== undefined && !/^[a-f0-9]{64}$/.test(expectedCommandHash)) throw new Error('AGENT_COMMAND_HASH_INVALID');
+    const row = this.#db.query<{ state_json: string; command_hash: string | null }, [string, string]>(`
+      SELECT revisions.state_json, commands.command_hash
+      FROM factura_e_agent_revisions AS revisions
+      LEFT JOIN factura_e_agent_idempotency_commands AS commands
+        ON commands.run_id = revisions.run_id AND commands.idempotency_key = revisions.idempotency_key
+      WHERE revisions.run_id = ? AND revisions.idempotency_key = ?
+    `).get(runId, idempotencyKey);
+    if (row?.command_hash && expectedCommandHash && row.command_hash !== expectedCommandHash) throw new Error('AGENT_IDEMPOTENCY_CONFLICT');
     return row ? JSON.parse(row.state_json) as FacturaEAgentRunV1 : null;
   }
 

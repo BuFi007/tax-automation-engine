@@ -105,6 +105,60 @@ export type ReclaimProofCustodyReceiptV1 = Readonly<{
   storedAt: IsoDateTime;
 }>;
 
+export type FacturaESettlementSourceKind =
+  | 'circle_transfer'
+  | 'circle_memo'
+  | 'bridge_liquidation'
+  | 'external_wallet_receipt'
+  | 'reviewed_bank_match'
+  | 'reviewed_accounting_match'
+  | 'approved_manual_evidence'
+  | 'recibu_payment'
+  | 'provider_reversal';
+
+export type FacturaESettlementVerificationMethod =
+  | 'provider_webhook'
+  | 'onchain_receipt'
+  | 'reviewed_financial_match'
+  | 'approved_manual_review';
+
+/**
+ * Privacy-safe projection of the source settlement event. Raw provider
+ * event/transaction IDs, account/wallet references, evidence references, and
+ * tax identifiers stay in their access-controlled source systems; this
+ * boundary carries only exact money, normalized metadata, and SHA-256
+ * commitments.
+ */
+export type FacturaESettlementEvidenceV1 = Readonly<{
+  version: 'factura-e-settlement-evidence-v1';
+  source: Readonly<{
+    kind: FacturaESettlementSourceKind;
+    provider: string;
+    identityHash: string;
+    revision: number;
+  }>;
+  sourceMoney: Readonly<{
+    currency: string;
+    grossAmount: string;
+    feeAmount: string;
+    netAmount: string;
+  }>;
+  sourceEquivalentAmount: string;
+  allocationBasis: 'gross' | 'net';
+  fx: Readonly<{
+    rate: string;
+    sourceCurrency: string;
+    allocationCurrency: string;
+    evidenceHash: string;
+    verifiedAt: IsoDateTime;
+  }> | null;
+  verification: Readonly<{
+    method: FacturaESettlementVerificationMethod;
+    evidenceHash: string;
+    verifiedAt: IsoDateTime;
+  }>;
+}>;
+
 export type FacturaESettlementV1 = Readonly<{
   settlementReferenceHash: string;
   asset: string;
@@ -114,6 +168,40 @@ export type FacturaESettlementV1 = Readonly<{
   finalityState: 'observed' | 'final' | 'reversed' | 'disputed';
   fees: FacturaEMoney | null;
   reversesSettlementReferenceHash: string | null;
+  evidence?: FacturaESettlementEvidenceV1 | null | undefined;
+}>;
+
+export type FacturaESettlementEvidenceLedgerV1 = Readonly<{
+  version: 'factura-e-settlement-evidence-ledger-v1';
+  completeness: 'complete' | 'partial' | 'legacy_narrow';
+  feeSemantics: Readonly<{
+    sourceFeeScope: 'source_receipt';
+    sourceFeeDedupeKey: 'sourceIdentityHash';
+    allocationFeeScope: 'settlement_allocation';
+  }>;
+  sources: readonly Readonly<{
+    sourceIdentityHash: string;
+    sourceKind: FacturaESettlementSourceKind;
+    provider: string;
+    sourceRevision: number;
+    asset: string;
+    network: string;
+    money: FacturaESettlementEvidenceV1['sourceMoney'];
+  }>[];
+  allocations: readonly Readonly<{
+    settlementReferenceHash: string;
+    finalityState: FacturaESettlementV1['finalityState'];
+    amount: FacturaEMoney;
+    observedAt: IsoDateTime;
+    reversesSettlementReferenceHash: string | null;
+    allocationFees: FacturaEMoney | null;
+    sourceIdentityHash: string | null;
+    sourceRevision: number | null;
+    sourceEquivalentAmount: string | null;
+    allocationBasis: 'gross' | 'net' | null;
+    fx: FacturaESettlementEvidenceV1['fx'];
+    verification: FacturaESettlementEvidenceV1['verification'] | null;
+  }>[];
 }>;
 
 export type FacturaEAdjustmentV1 = Readonly<{
@@ -765,6 +853,7 @@ export function recordFacturaESettlement(run: FacturaEAgentRunV1, input: Readonl
     if (input.settlement.fees.currency !== input.settlement.amount.currency) throw new Error('SETTLEMENT_FEE_CURRENCY_MISMATCH');
     if (fee.isNegative()) throw new Error('SETTLEMENT_FEE_NEGATIVE');
   }
+  assertSettlementEvidence(run, input.settlement);
   if (input.settlement.finalityState === 'reversed') {
     if (!input.settlement.reversesSettlementReferenceHash) throw new Error('REVERSED_SETTLEMENT_REFERENCE_REQUIRED');
     const reversedSettlement = run.settlements.find(settlement => settlement.settlementReferenceHash === input.settlement.reversesSettlementReferenceHash);
@@ -786,7 +875,11 @@ export function recordFacturaESettlement(run: FacturaEAgentRunV1, input: Readonl
   });
   const settlements = [...run.settlements, input.settlement];
   const settlementState = deriveSettlementState(run, settlements, run.adjustments);
-  const taxDeclarationState = deriveTaxDeclarationState(run, settlementState, false);
+  const taxDeclarationState = deriveTaxDeclarationState(
+    run,
+    settlementState,
+    run.settlementState === 'final' && settlementState !== 'final'
+  );
   return {
     run: nextRun(run, input.occurredAt, event, {
       settlements,
@@ -902,6 +995,149 @@ export function deriveFacturaEAdjustmentLedger(
   };
 }
 
+export function deriveFacturaESettlementEvidenceLedger(
+  settlements: readonly FacturaESettlementV1[]
+): FacturaESettlementEvidenceLedgerV1 {
+  const evidenceCount = settlements.filter(settlement => Boolean(settlement.evidence)).length;
+  const completeness: FacturaESettlementEvidenceLedgerV1['completeness'] = evidenceCount === 0
+    ? 'legacy_narrow'
+    : evidenceCount === settlements.length
+      ? 'complete'
+      : 'partial';
+  const sources = new Map<string, FacturaESettlementEvidenceLedgerV1['sources'][number]>();
+  for (const settlement of settlements) {
+    const evidence = settlement.evidence;
+    if (!evidence) continue;
+    const existing = sources.get(evidence.source.identityHash);
+    if (!existing || evidence.source.revision > existing.sourceRevision) {
+      sources.set(evidence.source.identityHash, {
+        sourceIdentityHash: evidence.source.identityHash,
+        sourceKind: evidence.source.kind,
+        provider: evidence.source.provider,
+        sourceRevision: evidence.source.revision,
+        asset: settlement.asset,
+        network: settlement.network,
+        money: evidence.sourceMoney,
+      });
+    }
+  }
+  return {
+    version: 'factura-e-settlement-evidence-ledger-v1',
+    completeness,
+    feeSemantics: {
+      sourceFeeScope: 'source_receipt',
+      sourceFeeDedupeKey: 'sourceIdentityHash',
+      allocationFeeScope: 'settlement_allocation',
+    },
+    sources: [...sources.values()],
+    allocations: settlements.map(settlement => ({
+      settlementReferenceHash: settlement.settlementReferenceHash,
+      finalityState: settlement.finalityState,
+      amount: settlement.amount,
+      observedAt: settlement.observedAt,
+      reversesSettlementReferenceHash: settlement.reversesSettlementReferenceHash,
+      allocationFees: settlement.fees,
+      sourceIdentityHash: settlement.evidence?.source.identityHash ?? null,
+      sourceRevision: settlement.evidence?.source.revision ?? null,
+      sourceEquivalentAmount: settlement.evidence?.sourceEquivalentAmount ?? null,
+      allocationBasis: settlement.evidence?.allocationBasis ?? null,
+      fx: settlement.evidence?.fx ?? null,
+      verification: settlement.evidence?.verification ?? null,
+    })),
+  };
+}
+
+function assertSettlementEvidence(run: FacturaEAgentRunV1, settlement: FacturaESettlementV1): void {
+  const evidence = settlement.evidence;
+  if (!evidence) return;
+  if (!/^[a-f0-9]{64}$/.test(evidence.source.identityHash)) throw new Error('SETTLEMENT_SOURCE_IDENTITY_HASH_INVALID');
+  if (!/^[a-z][a-z0-9._-]{1,62}[a-z0-9]$/.test(evidence.source.provider)) throw new Error('SETTLEMENT_SOURCE_PROVIDER_INVALID');
+  if (!Number.isSafeInteger(evidence.source.revision) || evidence.source.revision <= 0) throw new Error('SETTLEMENT_SOURCE_REVISION_INVALID');
+  if (!/^[A-Z][A-Z0-9]{2,11}$/.test(evidence.sourceMoney.currency)) throw new Error('SETTLEMENT_SOURCE_CURRENCY_INVALID');
+  if (evidence.sourceMoney.currency !== settlement.asset) throw new Error('SETTLEMENT_SOURCE_ASSET_MISMATCH');
+
+  const gross = decimalOrThrow(evidence.sourceMoney.grossAmount, 'SETTLEMENT_SOURCE_GROSS_INVALID');
+  const fee = decimalOrThrow(evidence.sourceMoney.feeAmount, 'SETTLEMENT_SOURCE_FEE_INVALID');
+  const net = decimalOrThrow(evidence.sourceMoney.netAmount, 'SETTLEMENT_SOURCE_NET_INVALID');
+  if (!gross.isPositive()) throw new Error('SETTLEMENT_SOURCE_GROSS_NOT_POSITIVE');
+  if (fee.isNegative()) throw new Error('SETTLEMENT_SOURCE_FEE_NEGATIVE');
+  if (!net.isPositive()) throw new Error('SETTLEMENT_SOURCE_NET_NOT_POSITIVE');
+  if (!gross.eq(fee.add(net))) throw new Error('SETTLEMENT_SOURCE_MONEY_MISMATCH');
+
+  const sourceEquivalent = decimalOrThrow(evidence.sourceEquivalentAmount, 'SETTLEMENT_SOURCE_EQUIVALENT_INVALID');
+  if (!sourceEquivalent.isPositive()) throw new Error('SETTLEMENT_SOURCE_EQUIVALENT_NOT_POSITIVE');
+  const selectedBasis = evidence.allocationBasis === 'gross' ? gross : net;
+  if (sourceEquivalent.gt(selectedBasis)) throw new Error('SETTLEMENT_SOURCE_EQUIVALENT_EXCEEDED');
+
+  const sameCurrency = evidence.sourceMoney.currency === settlement.amount.currency;
+  if (sameCurrency) {
+    if (evidence.fx) throw new Error('SETTLEMENT_SAME_CURRENCY_FX_FORBIDDEN');
+    if (!sourceEquivalent.eq(settlement.amount.decimal)) throw new Error('SETTLEMENT_SOURCE_EQUIVALENT_AMOUNT_MISMATCH');
+  } else {
+    if (!evidence.fx) throw new Error('SETTLEMENT_FX_EVIDENCE_REQUIRED');
+    if (
+      evidence.fx.sourceCurrency !== evidence.sourceMoney.currency
+      || evidence.fx.allocationCurrency !== settlement.amount.currency
+    ) throw new Error('SETTLEMENT_FX_CURRENCY_MISMATCH');
+    if (!decimalOrThrow(evidence.fx.rate, 'SETTLEMENT_FX_RATE_INVALID').isPositive()) throw new Error('SETTLEMENT_FX_RATE_NOT_POSITIVE');
+    if (!/^[a-f0-9]{64}$/.test(evidence.fx.evidenceHash)) throw new Error('SETTLEMENT_FX_EVIDENCE_HASH_INVALID');
+  }
+  if (!/^[a-f0-9]{64}$/.test(evidence.verification.evidenceHash)) throw new Error('SETTLEMENT_VERIFICATION_HASH_INVALID');
+  const expectedMethod = SETTLEMENT_VERIFICATION_METHOD_BY_SOURCE[evidence.source.kind];
+  if (expectedMethod && evidence.verification.method !== expectedMethod) throw new Error('SETTLEMENT_VERIFICATION_METHOD_MISMATCH');
+
+  if (settlement.finalityState === 'reversed') {
+    if (evidence.source.kind !== 'provider_reversal') throw new Error('SETTLEMENT_REVERSAL_SOURCE_KIND_REQUIRED');
+    if (settlement.fees) throw new Error('SETTLEMENT_REVERSAL_FEE_FORBIDDEN');
+  } else if (evidence.source.kind === 'provider_reversal') {
+    throw new Error('SETTLEMENT_REVERSAL_SOURCE_KIND_FORBIDDEN');
+  }
+
+  const sameSourceSettlements = run.settlements.filter(candidate => candidate.evidence?.source.identityHash === evidence.source.identityHash);
+  for (const candidate of sameSourceSettlements) {
+    const candidateEvidence = candidate.evidence!;
+    if (hashCanonical({
+      provider: candidateEvidence.source.provider,
+      sourceMoney: candidateEvidence.sourceMoney,
+      asset: candidate.asset,
+      network: candidate.network,
+    }) !== hashCanonical({
+      provider: evidence.source.provider,
+      sourceMoney: evidence.sourceMoney,
+      asset: settlement.asset,
+      network: settlement.network,
+    })) throw new Error('SETTLEMENT_SOURCE_IDENTITY_CONFLICT');
+    if (candidateEvidence.source.revision > evidence.source.revision) throw new Error('SETTLEMENT_SOURCE_REVISION_STALE');
+    if (
+      candidateEvidence.source.kind !== evidence.source.kind
+      && candidateEvidence.source.revision >= evidence.source.revision
+    ) throw new Error('SETTLEMENT_SOURCE_KIND_REVISION_CONFLICT');
+  }
+
+  if (settlement.fees) {
+    if (!sameCurrency) throw new Error('SETTLEMENT_ALLOCATION_FEE_CROSS_CURRENCY_FORBIDDEN');
+    if (!new Decimal(settlement.fees.decimal).eq(fee)) throw new Error('SETTLEMENT_ALLOCATION_FEE_SOURCE_MISMATCH');
+    if (fee.isPositive() && !sourceEquivalent.eq(selectedBasis)) throw new Error('SETTLEMENT_PARTIAL_ALLOCATION_FEE_FORBIDDEN');
+    if (fee.isPositive() && sameSourceSettlements.some(candidate => candidate.fees && new Decimal(candidate.fees.decimal).isPositive())) {
+      throw new Error('SETTLEMENT_SOURCE_FEE_DUPLICATE');
+    }
+  }
+}
+
+const SETTLEMENT_VERIFICATION_METHOD_BY_SOURCE: Readonly<Partial<Record<
+  FacturaESettlementSourceKind,
+  FacturaESettlementVerificationMethod
+>>> = {
+  circle_transfer: 'provider_webhook',
+  circle_memo: 'onchain_receipt',
+  bridge_liquidation: 'provider_webhook',
+  external_wallet_receipt: 'onchain_receipt',
+  reviewed_bank_match: 'reviewed_financial_match',
+  reviewed_accounting_match: 'reviewed_financial_match',
+  approved_manual_evidence: 'approved_manual_review',
+  recibu_payment: 'onchain_receipt',
+};
+
 function assertCaeMatchesIntent(claims: ArcaCaeClaimsV1, run: FacturaEAgentRunV1): void {
   if (!run.intent) throw new Error('INVOICE_INTENT_REQUIRED');
   if (claims.documentType !== 19 || claims.pointOfSale !== run.intent.pointOfSale) throw new Error('CAE_PROOF_INVOICE_MISMATCH');
@@ -959,9 +1195,9 @@ function deriveSettlementState(
 function deriveTaxDeclarationState(
   run: FacturaEAgentRunV1,
   settlementState: FacturaEAgentRunV1['settlementState'],
-  adjustmentAuthorized: boolean
+  requiresAmendment: boolean
 ): FacturaEAgentRunV1['taxDeclarationState'] {
-  if (adjustmentAuthorized && run.taxDeclarationState === 'declared') return 'amendment_required';
+  if (requiresAmendment && run.taxDeclarationState === 'declared') return 'amendment_required';
   if (run.taxDeclarationState === 'declared' || run.taxDeclarationState === 'amendment_required') return run.taxDeclarationState;
   return settlementState === 'final' && run.issuanceState === 'arca_authorized' && run.fxIngressState === 'verified'
     ? 'ready_for_accountant'
