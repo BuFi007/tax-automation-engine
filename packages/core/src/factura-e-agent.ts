@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import Decimal from 'decimal.js';
+import type DecimalJs from 'decimal.js';
 
 import type { IsoDate, IsoDateTime } from './types';
 import { ARGENTINA_FACTURA_E_RULE_IDS } from './catalogue/argentina';
+import { FinancialDecimal as Decimal } from './financial-decimal';
 
 export type FacturaEIssuancePath = 'reclaim_copilot' | 'wsfex_delegated';
 export type FacturaEProofPurpose = 'arca_taxpayer_readiness' | 'arca_cae_constatement' | 'arca_adjustment_constatement';
@@ -227,6 +228,9 @@ export type FacturaEAdjustmentV1 = Readonly<{
     payloadReferenceHash: string | null;
     documentNumber: string | null;
     cae: string | null;
+    caeExpiry: IsoDate | null;
+    currencyId: string | null;
+    currencyQuote: string | null;
     receiptHash: string | null;
     reprocessed: boolean | null;
   }>;
@@ -293,6 +297,9 @@ export type FacturaEAgentRunV1 = Readonly<{
     payloadReferenceHash: string | null;
     invoiceNumber: string | null;
     cae: string | null;
+    caeExpiry: IsoDate | null;
+    currencyId: string | null;
+    currencyQuote: string | null;
     authorizedAt: IsoDateTime | null;
     receiptHash: string | null;
     reprocessed: boolean | null;
@@ -349,6 +356,9 @@ export function createFacturaEAgentRun(input: Readonly<{
         payloadReferenceHash: null,
         invoiceNumber: null,
         cae: null,
+        caeExpiry: null,
+        currencyId: null,
+        currencyQuote: null,
         authorizedAt: null,
         receiptHash: null,
         reprocessed: null,
@@ -628,6 +638,9 @@ export function recordWsfexAuthorityResult(run: FacturaEAgentRunV1, input: Reado
   status: 'accepted' | 'rejected' | 'ambiguous';
   invoiceNumber: string | null;
   cae: string | null;
+  caeExpiry: IsoDate | null;
+  currencyId: string | null;
+  currencyQuote: string | null;
   receiptHash: string;
   reprocessed: boolean | null;
   occurredAt: IsoDateTime;
@@ -639,7 +652,9 @@ export function recordWsfexAuthorityResult(run: FacturaEAgentRunV1, input: Reado
   if (run.authority.requestId && run.authority.requestId !== input.requestId) throw new Error('WSFEX_RECOVERY_REQUEST_ID_MISMATCH');
   if (run.authority.payloadReferenceHash && run.authority.payloadReferenceHash !== input.payloadReferenceHash) throw new Error('WSFEX_RECOVERY_PAYLOAD_MISMATCH');
   if (input.invoiceNumber && !/^[1-9]\d{0,7}$/.test(input.invoiceNumber)) throw new Error('WSFEX_INVOICE_NUMBER_INVALID');
-  if (input.status === 'accepted' && (!input.cae || !input.invoiceNumber)) throw new Error('ACCEPTED_WSFEX_RESULT_INCOMPLETE');
+  if (input.status === 'accepted' && (!input.cae || !input.caeExpiry || !input.currencyId || !input.currencyQuote || !input.invoiceNumber)) {
+    throw new Error('ACCEPTED_WSFEX_RESULT_INCOMPLETE');
+  }
   const issuanceState = input.status === 'accepted' ? 'arca_authorized' : input.status;
   const event = eventFor(run.runId, run.workspaceId, input.actorId, 'wsfex', `wsfex_${input.status}`, input.occurredAt, input.idempotencyKey, {
     requestId: input.requestId,
@@ -654,6 +669,9 @@ export function recordWsfexAuthorityResult(run: FacturaEAgentRunV1, input: Reado
         payloadReferenceHash: input.payloadReferenceHash,
         invoiceNumber: input.invoiceNumber,
         cae: input.cae,
+        caeExpiry: input.caeExpiry,
+        currencyId: input.currencyId,
+        currencyQuote: input.currencyQuote,
         authorizedAt: input.status === 'accepted' ? input.occurredAt : null,
         receiptHash: input.receiptHash,
         reprocessed: input.reprocessed,
@@ -671,6 +689,9 @@ export function recordWsfexAdjustmentAuthorityResult(run: FacturaEAgentRunV1, in
   status: 'accepted' | 'rejected' | 'ambiguous';
   documentNumber: string | null;
   cae: string | null;
+  caeExpiry: IsoDate | null;
+  currencyId: string | null;
+  currencyQuote: string | null;
   receiptHash: string;
   reprocessed: boolean | null;
   occurredAt: IsoDateTime;
@@ -686,7 +707,9 @@ export function recordWsfexAdjustmentAuthorityResult(run: FacturaEAgentRunV1, in
     throw new Error('ADJUSTMENT_WSFEX_RECOVERY_PAYLOAD_MISMATCH');
   }
   if (input.documentNumber && !/^[1-9]\d{0,7}$/.test(input.documentNumber)) throw new Error('WSFEX_INVOICE_NUMBER_INVALID');
-  if (input.status === 'accepted' && (!input.cae || !input.documentNumber)) throw new Error('ACCEPTED_ADJUSTMENT_WSFEX_RESULT_INCOMPLETE');
+  if (input.status === 'accepted' && (!input.cae || !input.caeExpiry || !input.currencyId || !input.currencyQuote || !input.documentNumber)) {
+    throw new Error('ACCEPTED_ADJUSTMENT_WSFEX_RESULT_INCOMPLETE');
+  }
   const issuanceState = input.status === 'accepted' ? 'arca_authorized' as const : input.status;
   const adjustments = run.adjustments.map(candidate => candidate.adjustmentId === adjustment.adjustmentId
     ? {
@@ -697,6 +720,9 @@ export function recordWsfexAdjustmentAuthorityResult(run: FacturaEAgentRunV1, in
           payloadReferenceHash: input.payloadReferenceHash,
           documentNumber: input.documentNumber,
           cae: input.cae,
+          caeExpiry: input.caeExpiry,
+          currencyId: input.currencyId,
+          currencyQuote: input.currencyQuote,
           receiptHash: input.receiptHash,
           reprocessed: input.reprocessed,
         },
@@ -766,7 +792,17 @@ export function prepareFacturaEAdjustment(run: FacturaEAgentRunV1, input: Readon
     intentHash: hashCanonical(base),
     approvalState: 'pending',
     issuanceState: 'not_ready',
-    authority: { requestId: null, payloadReferenceHash: null, documentNumber: null, cae: null, receiptHash: null, reprocessed: null },
+    authority: {
+      requestId: null,
+      payloadReferenceHash: null,
+      documentNumber: null,
+      cae: null,
+      caeExpiry: null,
+      currencyId: null,
+      currencyQuote: null,
+      receiptHash: null,
+      reprocessed: null,
+    },
   };
   const event = eventFor(run.runId, run.workspaceId, input.actorId, 'tax_agent', 'factura_e_adjustment_prepared', input.occurredAt, input.idempotencyKey, {
     adjustmentId: adjustment.adjustmentId,
@@ -1161,7 +1197,7 @@ function assertCaeMatchesAdjustment(claims: ArcaCaeClaimsV1, run: FacturaEAgentR
   ) throw new Error('ADJUSTMENT_PROOF_ASSOCIATION_MISMATCH');
 }
 
-function finalSettlementAmount(settlements: readonly FacturaESettlementV1[]): Decimal {
+function finalSettlementAmount(settlements: readonly FacturaESettlementV1[]): DecimalJs {
   const reversedAmountsByReference = settlements
     .filter((settlement): settlement is FacturaESettlementV1 & { reversesSettlementReferenceHash: string } => (
       settlement.finalityState === 'reversed' && Boolean(settlement.reversesSettlementReferenceHash)
@@ -1170,7 +1206,7 @@ function finalSettlementAmount(settlements: readonly FacturaESettlementV1[]): De
       const previous = amounts.get(settlement.reversesSettlementReferenceHash) ?? new Decimal(0);
       amounts.set(settlement.reversesSettlementReferenceHash, previous.add(settlement.amount.decimal));
       return amounts;
-    }, new Map<string, Decimal>());
+    }, new Map<string, DecimalJs>());
   return settlements
     .filter(settlement => settlement.finalityState === 'final')
     .reduce((sum, settlement) => sum
@@ -1237,7 +1273,7 @@ function eventFor(
   return { eventId: randomUUID(), runId, workspaceId, actorId, actorKind, action, occurredAt, idempotencyKey, safeMetadata };
 }
 
-function decimalOrError(value: string, code: string, errors: string[]): Decimal | null {
+function decimalOrError(value: string, code: string, errors: string[]): DecimalJs | null {
   try {
     if (!/^-?\d+(?:\.\d+)?$/.test(value)) throw new Error(code);
     return new Decimal(value);
@@ -1247,7 +1283,7 @@ function decimalOrError(value: string, code: string, errors: string[]): Decimal 
   }
 }
 
-function decimalOrThrow(value: string, code: string): Decimal {
+function decimalOrThrow(value: string, code: string): DecimalJs {
   if (!/^-?\d+(?:\.\d+)?$/.test(value)) throw new Error(code);
   return new Decimal(value);
 }

@@ -118,6 +118,9 @@ function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticA
   const sourceKind = sourceId === 'quickbooks' ? 'accounting' : sourceId === 'magic-inbox' ? 'magic_inbox' : sourceId === 'knowledge-graph' ? 'knowledge_graph' : sourceId === 'financial-analytics' ? 'financial_analytics' : 'bank';
   const records = sourceId === 'bufi-ledger' ? [
     record('invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'invoice', 'revenue', 'inflow', '10000', currency),
+    ...(jurisdiction === 'US'
+      ? [record('settlement-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'settlement', 'none', 'neutral', '10000', currency)]
+      : []),
     record('expense-1', sourceId, sourceKind, jurisdiction, 'event:expense-1', 'expense', 'expense', 'outflow', '2500', currency),
   ] : sourceId === 'quickbooks' ? [
     record('accounting-invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'accounting_entry', 'none', 'neutral', '10000', currency),
@@ -161,6 +164,8 @@ function record(
     expiresAt: null,
     economicEventId,
     economicRole,
+    invoiceAdjustmentKind: null,
+    adjustsEconomicEventId: null,
     countingDimension,
     direction,
     money: { decimal, currency },

@@ -9,7 +9,7 @@ export type StaticAdapterInput = Readonly<{
   canonicalProviderId: string | null;
   displaySourceId: string;
   capabilities: readonly TaxSourceCapability[];
-  records: readonly Omit<TaxEvidenceRecord, 'workspaceId' | 'consentVersion' | 'idempotencyKey'>[];
+  records: readonly Omit<TaxEvidenceRecord, 'workspaceId' | 'consentVersion' | 'idempotencyKey' | 'supersedesIdempotencyKey' | 'validityState' | 'invoiceDocumentKind'>[];
 }>;
 
 /** Fixture and import-boundary adapter. Production providers implement the same paginated contract. */
@@ -40,8 +40,11 @@ export class StaticEvidenceAdapter implements TaxEvidenceSourceAdapter {
       workspaceId: context.workspaceId,
       consentVersion: consent.version,
       idempotencyKey: createHash('sha256')
-        .update([context.workspaceId, this.#input.displaySourceId, record.externalReferenceHash, record.revision, record.artifactHash].join(':'))
+        .update([context.workspaceId, this.#input.displaySourceId, record.externalReferenceHash, record.revision, record.artifactHash, consent.version].join(':'))
         .digest('hex'),
+      supersedesIdempotencyKey: null,
+      validityState: 'active' as const,
+      invoiceDocumentKind: null,
     }));
     const nextOffset = offset + records.length;
     return {

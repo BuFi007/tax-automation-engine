@@ -163,17 +163,29 @@ describe('Factura E agent domain', () => {
     const payloadHash = hashCanonical('vault://payload/1');
     run = recordWsfexAuthorityResult(run, {
       actorId: 'agent:tax', requestId: '1001', payloadReferenceHash: payloadHash, status: 'ambiguous', invoiceNumber: null, cae: null,
+      caeExpiry: null, currencyId: null, currencyQuote: null,
       receiptHash: hash('timeout'), reprocessed: null, occurredAt: now, idempotencyKey: 'wsfex-submit-1',
     }).run;
     expect(() => recordWsfexAuthorityResult(run, {
       actorId: 'agent:tax', requestId: '1002', payloadReferenceHash: payloadHash, status: 'accepted', invoiceNumber: '2', cae: '12345678901234',
+      caeExpiry: '2026-07-21', currencyId: 'DOL', currencyQuote: '1200.25',
       receiptHash: hash('receipt'), reprocessed: true, occurredAt: now, idempotencyKey: 'wsfex-recover-bad',
     })).toThrow('WSFEX_RECOVERY_REQUEST_ID_MISMATCH');
     run = recordWsfexAuthorityResult(run, {
       actorId: 'agent:tax', requestId: '1001', payloadReferenceHash: payloadHash, status: 'accepted', invoiceNumber: '2', cae: '12345678901234',
+      caeExpiry: '2026-07-21', currencyId: 'DOL', currencyQuote: '1200.25',
       receiptHash: hash('receipt'), reprocessed: true, occurredAt: now, idempotencyKey: 'wsfex-recover-good',
     }).run;
-    expect(run).toEqual(expect.objectContaining({ issuanceState: 'arca_authorized', authority: expect.objectContaining({ reprocessed: true, requestId: '1001' }) }));
+    expect(run).toEqual(expect.objectContaining({
+      issuanceState: 'arca_authorized',
+      authority: expect.objectContaining({
+        reprocessed: true,
+        requestId: '1001',
+        caeExpiry: '2026-07-21',
+        currencyId: 'DOL',
+        currencyQuote: '1200.25',
+      }),
+    }));
   });
 
   test('preserves full reversal behavior for one of multiple final settlements', () => {
@@ -486,6 +498,7 @@ describe('Factura E agent domain', () => {
       financeEligibility: 'reviewable',
       authority: {
         requestId: null, payloadReferenceHash: null, invoiceNumber: '91', cae: '12345678901234', authorizedAt: now,
+        caeExpiry: null, currencyId: null, currencyQuote: null,
         receiptHash: hash('original-cae'), reprocessed: null,
       },
       settlements: [originalSettlement],

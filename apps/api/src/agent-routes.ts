@@ -1,12 +1,17 @@
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
+import { readBoundedBody } from './bounded-body';
+import {
+  verifyTaxAgentPrincipal,
+  type TaxAgentPrincipalV1,
+} from './agent-principal';
+
 import type { FacturaEAgentService } from './factura-e-agent';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const decimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
 const signedDecimalSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/);
-const wsfexRequestIdSchema = z.string().regex(/^[1-9]\d{0,14}$/);
 const moneySchema = z.object({ decimal: decimalSchema, currency: z.string().regex(/^[A-Z]{3,10}$/) }).strict();
 const exchangeRateSchema = z.object({
   decimal: decimalSchema,
@@ -66,25 +71,6 @@ const adjustmentSchema = z.object({
   amount: moneySchema,
   reason: z.string().min(1).max(4_000),
 }).strict();
-const authorityPayloadInputSchema = z.object({
-  actorId: z.string().min(1),
-  idempotencyKey: z.string().min(8),
-  requestId: wsfexRequestIdSchema,
-  invoiceNumber: z.string().regex(/^[1-9]\d{0,7}$/),
-  issuerProfileRef: z.string().min(1).max(500),
-  customer: z.object({
-    name: z.string().min(1).max(200),
-    address: z.string().min(1).max(300),
-    countryCuit: z.string().regex(/^\d{11}$/),
-    foreignTaxId: z.string().min(1).max(50).nullable(),
-  }).strict(),
-  currencyArcaId: z.string().min(1).max(3),
-  language: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-  commercialObservation: z.string().max(4000).nullable(),
-  generalObservation: z.string().max(1000).nullable(),
-  expiresAt: z.iso.datetime({ offset: true }),
-}).strict();
-
 const settlementCurrencySchema = z.string().regex(/^[A-Z][A-Z0-9]{2,11}$/);
 const settlementEvidenceSchema = z.object({
   version: z.literal('factura-e-settlement-evidence-v1'),
@@ -163,17 +149,22 @@ const evidenceRecordSchema = z.object({
   expiresAt: z.iso.datetime({ offset: true }).nullable(),
   economicEventId: z.string().min(1),
   economicRole: z.enum(['invoice', 'payment', 'settlement', 'expense', 'receipt', 'accounting_entry', 'payroll_obligation', 'payroll_settlement', 'fee', 'tax', 'cash_movement']),
+  invoiceDocumentKind: z.enum(['arca_factura_e', 'arca_factura_a', 'arca_factura_b', 'arca_factura_c', 'arca_fce', 'arca_nota_debito_e', 'arca_nota_credito_e', 'commercial_invoice', 'unknown']).nullable().default(null),
+  invoiceAdjustmentKind: z.enum(['debit', 'credit']).nullable().default(null),
+  adjustsEconomicEventId: z.string().min(1).nullable().default(null),
   countingDimension: z.enum(['revenue', 'expense', 'cash', 'fee', 'tax', 'withholding', 'none']),
   direction: z.enum(['inflow', 'outflow', 'neutral']),
   money: evidenceMoneySchema.nullable(),
   normalizedMoney: evidenceMoneySchema.nullable(),
-  fxReferenceId: z.string().nullable(),
+  fxReferenceId: sha256Schema.nullable(),
   partyClaimHash: z.string().nullable(),
   accountReferenceHash: z.string().nullable(),
   confidence: z.object({ extraction: z.string().nullable(), classification: z.string().nullable(), matching: z.string().nullable() }).strict(),
   reviewState: z.enum(['unreviewed', 'accepted', 'rejected', 'disputed']),
+  validityState: z.enum(['active', 'withdrawn', 'disputed']).default('active'),
   consentVersion: z.string().min(1),
   idempotencyKey: z.string().min(1),
+  supersedesIdempotencyKey: z.string().min(1).nullable().default(null),
 }).strict();
 
 export const FACTURA_E_AGENT_TOOLS = [
@@ -212,28 +203,6 @@ export const FACTURA_E_AGENT_TOOLS = [
   tool('tax_ar_factura_e_request_approval', 'Freeze the validated intent candidate and request a separate human approval. This tool cannot approve it.', {
     type: 'object', required: ['runId'], additionalProperties: false, properties: { runId: { type: 'string', format: 'uuid' } },
   }, 'user_interaction_required'),
-  tool('tax_ar_factura_e_submit_wsfex', 'Submit the exact approved Path A intent through the isolated WSFEX signer boundary. Never invent a retry.', {
-    type: 'object', required: ['runId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' } },
-  }, 'prior_human_approval_required'),
-  tool('tax_ar_factura_e_recover_wsfex', 'Recover an ambiguous WSFEX outcome using the same request ID and payload reference.', {
-    type: 'object', required: ['runId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' } },
-  }, 'automatic_after_ambiguity'),
-  tool('tax_ar_factura_e_submit_adjustment_wsfex', 'Submit one exact approved export debit/credit note through the isolated WSFEX signer boundary.', {
-    type: 'object', required: ['runId', 'adjustmentId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: {
-      runId: { type: 'string', format: 'uuid' }, adjustmentId: { type: 'string' },
-      requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' },
-    },
-  }, 'prior_human_approval_required'),
-  tool('tax_ar_factura_e_recover_adjustment_wsfex', 'Recover an ambiguous export adjustment using the same adjustment, request ID, and payload reference.', {
-    type: 'object', required: ['runId', 'adjustmentId', 'requestId', 'authorityPayloadRef'], additionalProperties: false,
-    properties: {
-      runId: { type: 'string', format: 'uuid' }, adjustmentId: { type: 'string' },
-      requestId: { type: 'string', pattern: '^[1-9]\\d{0,14}$' }, authorityPayloadRef: { type: 'string' },
-    },
-  }, 'automatic_after_ambiguity'),
   tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence, including an optional privacy-safe source/fee/FX proof envelope. This does not mark FX ingress or tax declaration verified.', {
     type: 'object', required: ['runId', 'settlement'], additionalProperties: false,
     properties: { runId: { type: 'string', format: 'uuid' }, settlement: settlementJsonSchema },
@@ -249,17 +218,37 @@ export async function handleAgentRoute(
   request: Request,
   url: URL,
   service: FacturaEAgentService,
-  options: Readonly<{ userApprovalToken: string | null; accountantApprovalToken: string | null; evidenceIngestToken: string | null; authorityPayloadToken?: string | null }>
+  options: Readonly<{
+    userApprovalToken: string | null;
+    accountantApprovalToken: string | null;
+    evidenceIngestToken: string | null;
+    agentPrincipalSecret: string | null;
+    /** Retired compatibility input; never authorizes an ARCA effect. */
+    authorityPayloadToken?: string | null;
+    legacyEvidenceAppendEnabled?: boolean;
+  }>
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/callback') {
     const sessionId = request.headers.get('x-reclaim-session-id');
     if (!sessionId) return json({ error: 'RECLAIM_SESSION_HEADER_REQUIRED' }, 400);
     const maxBytes = Number(process.env.RECLAIM_CALLBACK_MAX_BYTES ?? 52_428_800);
-    const declaredBytes = Number(request.headers.get('content-length') ?? 0);
-    if (declaredBytes > maxBytes) return json({ error: 'RECLAIM_PROOF_PAYLOAD_TOO_LARGE' }, 413);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 52_428_800) {
+      throw new Error('RECLAIM_CALLBACK_LIMIT_CONFIGURATION_INVALID');
+    }
     const contentType = request.headers.get('content-type') ?? '';
-    const rawPayload = await request.text();
-    if (Buffer.byteLength(rawPayload) > maxBytes) return json({ error: 'RECLAIM_PROOF_PAYLOAD_TOO_LARGE' }, 413);
+    let rawPayload: string;
+    try {
+      rawPayload = await readBoundedBody(
+        request,
+        maxBytes,
+        'RECLAIM_PROOF_PAYLOAD_TOO_LARGE',
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === 'RECLAIM_PROOF_PAYLOAD_TOO_LARGE') {
+        return json({ error: error.message }, 413);
+      }
+      throw error;
+    }
     const payload = contentType.includes('application/json') ? JSON.parse(rawPayload) as unknown : rawPayload;
     const result = await service.ingestReclaimCallback(sessionId, payload, new Date().toISOString());
     return json({ data: { runId: result.run.runId, replayed: result.replayed, state: result.run.issuanceState } });
@@ -271,14 +260,32 @@ export async function handleAgentRoute(
 
   if (request.method === 'POST' && url.pathname === '/v1/evidence/append') {
     requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
-    const body = z.object({ records: z.array(evidenceRecordSchema).min(1) }).strict().parse(await request.json());
+    if (process.env.NODE_ENV === 'production' || !options.legacyEvidenceAppendEnabled) {
+      throw new Error('EVIDENCE_LEGACY_APPEND_DISABLED');
+    }
+    const body = z.object({ records: z.array(evidenceRecordSchema).min(1) }).strict().parse(await boundedJson(request));
     return json({ data: service.appendEvidence(body.records, new Date().toISOString()) });
   }
 
   const invocationMatch = url.pathname.match(/^\/v1\/agent\/tools\/([a-z0-9_]+)\/invoke$/);
   if (request.method === 'POST' && invocationMatch) {
-    const body = invocationSchema.parse(await request.json());
-    return json({ data: await invokeTool(invocationMatch[1]!, body, service) });
+    const rawBody = await readBoundedBody(
+      request,
+      1024 * 1024,
+      'TAX_AGENT_REQUEST_TOO_LARGE',
+    );
+    const body = invocationSchema.parse(JSON.parse(rawBody) as unknown);
+    const toolId = invocationMatch[1]!;
+    const principal = verifyTaxAgentPrincipal({
+      request,
+      rawBody,
+      toolId,
+      actorId: body.actorId,
+      idempotencyKey: body.idempotencyKey,
+      secret: options.agentPrincipalSecret,
+    });
+    assertAgentInvocationScope(toolId, body, principal, service);
+    return json({ data: await invokeTool(toolId, body, service) });
   }
 
   const runEventsMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/events$/);
@@ -304,21 +311,21 @@ export async function handleAgentRoute(
     requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
     const body = z.object({
       actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8),
-    }).strict().parse(await request.json());
+    }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.approveIntent({ ...body, runId: decodeURIComponent(approvalMatch[1]!), occurredAt: new Date().toISOString() }) });
   }
 
   const accountantApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/accountant-approval$/);
   if (request.method === 'POST' && accountantApprovalMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.approveIntentByAccountant({ ...body, runId: decodeURIComponent(accountantApprovalMatch[1]!), occurredAt: new Date().toISOString() }) });
   }
 
   const adjustmentUserApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/user-approval$/);
   if (request.method === 'POST' && adjustmentUserApprovalMatch) {
     requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.approveAdjustment({
       ...body,
       runId: decodeURIComponent(adjustmentUserApprovalMatch[1]!),
@@ -330,7 +337,7 @@ export async function handleAgentRoute(
   const adjustmentAccountantApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/accountant-approval$/);
   if (request.method === 'POST' && adjustmentAccountantApprovalMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.approveAdjustmentByAccountant({
       ...body,
       runId: decodeURIComponent(adjustmentAccountantApprovalMatch[1]!),
@@ -341,29 +348,18 @@ export async function handleAgentRoute(
 
   const authorityPayloadMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/wsfex-payload$/);
   if (request.method === 'POST' && authorityPayloadMatch) {
-    requireTrustedToken(request, 'x-tax-authority-payload-token', options.authorityPayloadToken ?? null, 'AUTHORITY_PAYLOAD');
-    const body = authorityPayloadInputSchema.parse(await boundedJson(request, 65_536, 'AUTHORITY_PAYLOAD_REQUEST_TOO_LARGE'));
-    return json({ data: await service.prepareAndSubmitWsfex({
-      ...body, runId: decodeURIComponent(authorityPayloadMatch[1]!), adjustmentId: null, occurredAt: new Date().toISOString(),
-    }) });
+    return json({ error: 'TAX_AUTHORITY_CORRIDOR_REQUIRED' }, 410);
   }
 
   const adjustmentAuthorityPayloadMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/wsfex-payload$/);
   if (request.method === 'POST' && adjustmentAuthorityPayloadMatch) {
-    requireTrustedToken(request, 'x-tax-authority-payload-token', options.authorityPayloadToken ?? null, 'AUTHORITY_PAYLOAD');
-    const body = authorityPayloadInputSchema.parse(await boundedJson(request, 65_536, 'AUTHORITY_PAYLOAD_REQUEST_TOO_LARGE'));
-    return json({ data: await service.prepareAndSubmitWsfex({
-      ...body,
-      runId: decodeURIComponent(adjustmentAuthorityPayloadMatch[1]!),
-      adjustmentId: decodeURIComponent(adjustmentAuthorityPayloadMatch[2]!),
-      occurredAt: new Date().toISOString(),
-    }) });
+    return json({ error: 'TAX_AUTHORITY_CORRIDOR_REQUIRED' }, 410);
   }
 
   const reclaimCancellationMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/reclaim-sessions\/([^/]+)\/cancel$/);
   if (request.method === 'POST' && reclaimCancellationMatch) {
     requireTrustedToken(request, 'x-tax-user-approval-token', options.userApprovalToken, 'USER_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.cancelReclaimSession({
       ...body,
       runId: decodeURIComponent(reclaimCancellationMatch[1]!),
@@ -375,18 +371,53 @@ export async function handleAgentRoute(
   const fxMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/fx-ingress-verification$/);
   if (request.method === 'POST' && fxMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.verifyFxIngress({ ...body, runId: decodeURIComponent(fxMatch[1]!), occurredAt: new Date().toISOString() }) });
   }
 
   const taxMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/tax-declaration$/);
   if (request.method === 'POST' && taxMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await request.json());
+    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
     return json({ data: service.markTaxDeclared({ ...body, runId: decodeURIComponent(taxMatch[1]!), occurredAt: new Date().toISOString() }) });
   }
 
   return null;
+}
+
+function assertAgentInvocationScope(
+  toolId: string,
+  body: z.infer<typeof invocationSchema>,
+  principal: TaxAgentPrincipalV1,
+  service: FacturaEAgentService,
+): void {
+  if (toolId === 'tax_ar_homologation_get_preflight') return;
+  const workspaceId = body.input.workspaceId;
+  if (typeof workspaceId === 'string') {
+    if (workspaceId !== principal.workspaceId) {
+      throw new Error('TAX_AGENT_PRINCIPAL_WORKSPACE_UNAUTHORIZED');
+    }
+    if (
+      toolId === 'tax_ar_factura_e_create_case'
+      || toolId === 'tax_ar_factura_e_list_cases'
+    ) return;
+  }
+  const runId = body.input.runId;
+  if (typeof runId !== 'string') {
+    throw new Error('TAX_AGENT_PRINCIPAL_WORKSPACE_BINDING_REQUIRED');
+  }
+  const run = service.getRun(runId);
+  if (run.workspaceId !== principal.workspaceId) {
+    throw new Error('TAX_AGENT_PRINCIPAL_WORKSPACE_UNAUTHORIZED');
+  }
+}
+
+async function boundedJson(request: Request, maximumBytes = 1024 * 1024): Promise<unknown> {
+  return JSON.parse(await readBoundedBody(
+    request,
+    maximumBytes,
+    'TAX_AGENT_REQUEST_TOO_LARGE',
+  )) as unknown;
 }
 
 async function invokeTool(
@@ -443,17 +474,11 @@ async function invokeTool(
     }
     case 'tax_ar_factura_e_submit_wsfex':
     case 'tax_ar_factura_e_recover_wsfex': {
-      const input = z.object({ runId: z.uuid(), requestId: wsfexRequestIdSchema, authorityPayloadRef: z.string().min(1) }).strict().parse(body.input);
-      const command = { ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt };
-      return toolId.endsWith('recover_wsfex') ? service.recoverWsfex(command) : service.submitWsfex(command);
+      throw new Error('TAX_AUTHORITY_CORRIDOR_REQUIRED');
     }
     case 'tax_ar_factura_e_submit_adjustment_wsfex':
     case 'tax_ar_factura_e_recover_adjustment_wsfex': {
-      const input = z.object({
-        runId: z.uuid(), adjustmentId: z.string().min(1), requestId: wsfexRequestIdSchema, authorityPayloadRef: z.string().min(1),
-      }).strict().parse(body.input);
-      const command = { ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt };
-      return toolId.includes('recover_adjustment') ? service.recoverWsfexAdjustment(command) : service.submitWsfexAdjustment(command);
+      throw new Error('TAX_AUTHORITY_CORRIDOR_REQUIRED');
     }
     case 'tax_ar_factura_e_record_settlement': {
       const input = z.object({ runId: z.uuid(), settlement: settlementSchema }).strict().parse(body.input);
@@ -486,14 +511,6 @@ function constantTimeEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
-}
-
-async function boundedJson(request: Request, maximumBytes: number, errorCode: string): Promise<unknown> {
-  const declaredBytes = Number(request.headers.get('content-length') ?? 0);
-  if (declaredBytes > maximumBytes) throw new Error(errorCode);
-  const raw = await request.text();
-  if (Buffer.byteLength(raw) > maximumBytes) throw new Error(errorCode);
-  return JSON.parse(raw) as unknown;
 }
 
 function json(value: unknown, status = 200): Response {
