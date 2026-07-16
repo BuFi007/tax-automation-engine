@@ -79,8 +79,7 @@ describe('browser tax snapshot production boundary', () => {
         planningOnly: true,
       });
       expect(first.result.data.snapshot.supplementalEvidenceQuality).toMatchObject({
-        state: 'unavailable',
-        band: null,
+        state: 'not_consented',
         use: 'tax_evidence_only',
         affectsCredit: false,
         affectsFactoring: false,
@@ -317,6 +316,53 @@ describe('browser tax snapshot production boundary', () => {
     store.close();
   });
 
+  test('projects ready quality without exposing consent or source commitments', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const rawConsentVersion = 'quality-consent-private-v1';
+    const rawConsentScopeHash = 'd'.repeat(64);
+    const qualitySnapshot: TaxWidgetSnapshotV1 = {
+      ...snapshot,
+      evidenceQuality: {
+        version: 'tax-evidence-quality-v1',
+        purpose: 'tax_evidence_quality',
+        state: 'ready',
+        value: 100,
+        band: 'strong',
+        dimensions: [
+          { id: 'subject_workspace_binding', score: 25, weight: 25 },
+          { id: 'source_provenance_verification', score: 25, weight: 25 },
+          { id: 'freshness_expiry', score: 20, weight: 20 },
+          { id: 'required_evidence_coverage', score: 20, weight: 20 },
+          { id: 'reviewed_reconciliation', score: 10, weight: 10 },
+        ],
+        asOf: GENERATED_AT,
+        validUntil: VALID_UNTIL,
+        safeSourceReferenceIds: snapshot.sourceCoverage.map(source => `source:${source.sourceId}`),
+        consentVersion: rawConsentVersion,
+        consentScopeHash: rawConsentScopeHash,
+        limitationCodes: [],
+        affectsCredit: false,
+        affectsFactoring: false,
+      },
+    };
+    const receipt = persistCoreSnapshot(store, qualitySnapshot, GENERATED_AT, GENERATED_AT);
+    const projector = new TaxBrowserSnapshotProjector(SECRET);
+    const projected = projector.project(receipt, {
+      caseRef: projector.caseReference(snapshot.workspaceId, PROJECTION_KEY),
+      caseRevision: 1,
+      sourceFingerprint: projector.sourceFingerprint(receipt),
+    });
+    const serialized = JSON.stringify(projected.supplementalEvidenceQuality);
+    expect(projected.supplementalEvidenceQuality).toMatchObject({
+      state: 'ready', value: 100, band: 'strong', affectsCredit: false, affectsFactoring: false,
+    });
+    expect(serialized).not.toContain(rawConsentVersion);
+    expect(serialized).not.toContain(rawConsentScopeHash);
+    for (const source of snapshot.sourceCoverage) expect(serialized).not.toContain(source.sourceId);
+    store.close();
+  });
+
   test('keeps raw source IDs distinct from canonical source-reference wrappers', async () => {
     const snapshot = await demoSnapshot('AR');
     const source = snapshot.sourceCoverage[0];
@@ -345,6 +391,25 @@ describe('browser tax snapshot production boundary', () => {
     expect(projected.sourceHealth.sources).toHaveLength(2);
     expect(projected.sourceHealth.sources[0]?.sourceRef)
       .not.toBe(projected.sourceHealth.sources[1]?.sourceRef);
+    store.close();
+  });
+
+  test('keeps pre-BU-238 durable snapshots readable as unknown quality', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const coreReceipt = persistCoreSnapshot(store, snapshot, GENERATED_AT, GENERATED_AT);
+    const legacyReceipt = structuredClone(coreReceipt) as any;
+    delete legacyReceipt.snapshot.evidenceQuality;
+    const projector = new TaxBrowserSnapshotProjector(SECRET);
+    const projected = projector.project(legacyReceipt, {
+      caseRef: projector.caseReference(snapshot.workspaceId, PROJECTION_KEY),
+      caseRevision: 1,
+      sourceFingerprint: projector.sourceFingerprint(legacyReceipt),
+    });
+    expect(projected.supplementalEvidenceQuality).toMatchObject({
+      state: 'unknown',
+      limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+    });
     store.close();
   });
 

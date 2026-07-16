@@ -107,7 +107,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== '961fd3133f757f183cc30b8ee3e6bf4435396f1105113a67d66200ba8e1c7dac' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

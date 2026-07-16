@@ -130,8 +130,7 @@ describe('browser-safe Tax V1 contracts', () => {
       generatedAt: null,
     });
     expect(argentinaTaxWidgetSnapshotV1Fixture.supplementalEvidenceQuality).toMatchObject({
-      state: 'unavailable',
-      band: null,
+      state: 'not_consented',
       use: 'tax_evidence_only',
       affectsCredit: false,
       affectsFactoring: false,
@@ -149,6 +148,32 @@ describe('browser-safe Tax V1 contracts', () => {
     const scoringLeak = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
     scoringLeak.supplementalEvidenceQuality.affectsFactoring = true;
     expect(taxWidgetSnapshotV1Schema.safeParse(scoringLeak).success).toBe(false);
+
+    const numericWithoutConsent = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    numericWithoutConsent.supplementalEvidenceQuality.value = 100;
+    numericWithoutConsent.supplementalEvidenceQuality.band = 'strong';
+    expect(taxWidgetSnapshotV1Schema.safeParse(numericWithoutConsent).success).toBe(false);
+
+    const readyQuality = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    readyQuality.supplementalEvidenceQuality = {
+      ...readyQuality.supplementalEvidenceQuality,
+      state: 'ready',
+      value: 100,
+      band: 'strong',
+      dimensions: [
+        { id: 'subject_workspace_binding', score: 25, weight: 25 },
+        { id: 'source_provenance_verification', score: 25, weight: 25 },
+        { id: 'freshness_expiry', score: 20, weight: 20 },
+        { id: 'required_evidence_coverage', score: 20, weight: 20 },
+        { id: 'reviewed_reconciliation', score: 10, weight: 10 },
+      ],
+      consentVersion: 'consent:quality-v1',
+      consentScopeRevision: 'consent:quality-scope-v1',
+      limitationCodes: [],
+    };
+    expect(taxWidgetSnapshotV1Schema.safeParse(readyQuality).success).toBe(true);
+    readyQuality.supplementalEvidenceQuality.dimensions[0].score = 24;
+    expect(taxWidgetSnapshotV1Schema.safeParse(readyQuality).success).toBe(false);
 
     const preMinorSnapshot = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
     delete preMinorSnapshot.filingReadiness;
@@ -203,6 +228,16 @@ describe('browser-safe Tax V1 contracts', () => {
         projection: facturaENeedsConsentProjectionV1Fixture,
       },
     }).success).toBe(true);
+  });
+
+  test('keeps evidence quality outside Payment Score, factoring, pricing, ACE, and exposure', () => {
+    const factoringBytes = JSON.stringify(facturaENeedsConsentProjectionV1Fixture);
+    for (const forbidden of ['paymentScore', 'pricing', 'ace', 'exposure']) {
+      const leaked = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+      leaked.supplementalEvidenceQuality[forbidden] = { value: 'forbidden' };
+      expect(taxWidgetSnapshotV1Schema.safeParse(leaked).success).toBe(false);
+      expect(JSON.stringify(facturaENeedsConsentProjectionV1Fixture)).toBe(factoringBytes);
+    }
   });
 
   test('rejects impossible Factura E score, authority, and offer combinations', () => {

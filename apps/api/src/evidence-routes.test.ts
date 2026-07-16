@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   argentinaProfile,
+  hashTaxConsentScope,
   hashTaxEvidenceBatch,
   hashTaxEvidenceConsentScope,
   type TaxEvidenceBatchV1,
@@ -73,6 +74,9 @@ describe('tax evidence workspace routes', () => {
       action: 'grant',
       replayed: false,
     }) });
+    await route(service, authorityOptions, 'POST', '/v1/evidence/consent-events', qualityConsentEvent(2), {
+      'x-tax-consent-event-token': 'consent-event-token',
+    });
     await expect(route(service, publisherOptions, 'POST', '/v1/evidence/batches', evidenceBatch())).rejects.toThrow(
       'EVIDENCE_INGEST_UNAUTHORIZED',
     );
@@ -150,7 +154,7 @@ describe('tax evidence workspace routes', () => {
       snapshotHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       inputHash: projected.data.snapshot.inputHash,
       configHash: configuredBody.data.configHash,
-      evidenceGeneration: 3,
+      evidenceGeneration: 4,
       generatedAt: '2026-07-10T12:00:00.000Z',
       asOf: snapshotRequest.asOf,
       expiresAt: '2026-07-11T00:00:00.000Z',
@@ -159,6 +163,14 @@ describe('tax evidence workspace routes', () => {
     }));
     expect(projected.data.snapshot.metrics.grossIncome).toEqual({ decimal: '1000.000001', currency: 'USD' });
     expect(projected.data.snapshot.metrics.taxPaid).toBeNull();
+    expect(projected.data.snapshot.evidenceQuality).toMatchObject({
+      state: 'ready',
+      value: 88,
+      band: 'strong',
+      purpose: 'tax_evidence_quality',
+      affectsCredit: false,
+      affectsFactoring: false,
+    });
 
     await expect(route(
       service,
@@ -463,6 +475,27 @@ function consentEvent(action: 'grant' | 'revoke', sequence: number) {
       sourceIds,
     },
     occurredAt: action === 'grant' ? '2026-07-09T00:00:00.000Z' : '2026-07-11T00:00:00.000Z',
+  };
+}
+
+function qualityConsentEvent(sequence: number) {
+  const sourceIds = ['bufi-invoice', 'fx-provider'];
+  return {
+    version: 'tax-evidence-consent-event-v1' as const,
+    eventId: '30000000-0000-4000-8000-000000000003',
+    workspaceId: '00000000-0000-4000-8000-000000000001',
+    sequence,
+    action: 'grant' as const,
+    authoritySource: 'desk_subscription' as const,
+    actorReferenceHash: hash('actor:user:owner'),
+    consent: {
+      purpose: 'tax_evidence_quality' as const,
+      version: 'quality-consent-v1',
+      scopeHash: hashTaxConsentScope('tax_evidence_quality', 'quality-consent-v1', sourceIds),
+      sourceIds,
+      expiresAt: '2026-08-10T00:00:00.000Z',
+    },
+    occurredAt: '2026-07-09T00:01:00.000Z',
   };
 }
 

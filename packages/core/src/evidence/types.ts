@@ -146,10 +146,11 @@ export type TaxEvidenceConsentEventV1 = Readonly<{
   authoritySource: 'desk_subscription';
   actorReferenceHash: string;
   consent: Readonly<{
-    purpose: 'tax_workspace_processing';
+    purpose: Extract<TaxConsentGrant['purpose'], 'tax_workspace_processing' | 'tax_evidence_quality'>;
     version: string;
     scopeHash: string;
     sourceIds: readonly string[];
+    expiresAt?: IsoDateTime | null;
   }>;
   occurredAt: IsoDateTime;
 }>;
@@ -272,6 +273,53 @@ export type SafeFact = TaxConclusionEnvelopeV1<Readonly<{
   unit: string | null;
 }>>;
 
+export type TaxEvidenceQualityDimensionIdV1 =
+  | 'subject_workspace_binding'
+  | 'source_provenance_verification'
+  | 'freshness_expiry'
+  | 'required_evidence_coverage'
+  | 'reviewed_reconciliation';
+
+export type TaxEvidenceQualityBandV1 = 'limited' | 'developing' | 'strong';
+
+export type TaxEvidenceQualityUnavailableStateV1 =
+  | 'unknown'
+  | 'not_subject'
+  | 'unsupported'
+  | 'disputed'
+  | 'stale'
+  | 'expired'
+  | 'revoked'
+  | 'not_consented';
+
+type TaxEvidenceQualityBaseV1 = Readonly<{
+  version: 'tax-evidence-quality-v1';
+  purpose: 'tax_evidence_quality';
+  asOf: IsoDateTime;
+  validUntil: IsoDateTime | null;
+  safeSourceReferenceIds: readonly string[];
+  limitationCodes: readonly string[];
+  affectsCredit: false;
+  affectsFactoring: false;
+}>;
+
+export type TaxEvidenceQualityV1 =
+  | (TaxEvidenceQualityBaseV1 & Readonly<{
+      state: 'ready';
+      value: number;
+      band: TaxEvidenceQualityBandV1;
+      dimensions: readonly Readonly<{
+        id: TaxEvidenceQualityDimensionIdV1;
+        score: number;
+        weight: number;
+      }>[];
+      consentVersion: string;
+      consentScopeHash: string;
+    }>)
+  | (TaxEvidenceQualityBaseV1 & Readonly<{
+      state: TaxEvidenceQualityUnavailableStateV1;
+    }>);
+
 export type TaxEvidencePresentationProjectionV1 = Readonly<{
   version: 'tax-evidence-presentation-v1';
   upstreamBundleHash: string;
@@ -289,6 +337,7 @@ export type TaxEvidencePresentationProjectionV1 = Readonly<{
     obligations: Readonly<{ applicable: number; mapped: number }>;
     gaps: readonly EvidenceGap[];
   }>;
+  evidenceQuality?: TaxEvidenceQualityV1;
   limitations: readonly string[];
 }>;
 

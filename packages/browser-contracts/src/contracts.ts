@@ -321,23 +321,78 @@ const planningForecastV1Schema = z.object({
   }
 });
 
-const supplementalEvidenceQualityV1Schema = z.object({
-  state: z.enum(['unavailable', 'available']),
-  band: z.enum(['limited', 'developing', 'strong']).nullable(),
+const evidenceQualityBaseShape = {
+  version: z.literal('tax-evidence-quality-v1'),
+  purpose: z.literal('tax_evidence_quality'),
   asOf: isoDateTimeSchema,
+  validUntil: isoDateTimeSchema.nullable(),
   safeSourceRefs: z.array(safeReferenceSchema).max(100),
   limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
   use: z.literal('tax_evidence_only'),
   affectsCredit: z.literal(false),
   affectsFactoring: z.literal(false),
+};
+const evidenceQualityDimensionWeights = {
+  subject_workspace_binding: 25,
+  source_provenance_verification: 25,
+  freshness_expiry: 20,
+  required_evidence_coverage: 20,
+  reviewed_reconciliation: 10,
+} as const;
+const readyEvidenceQualityV1Schema = z.object({
+  ...evidenceQualityBaseShape,
+  state: z.literal('ready'),
+  value: z.number().int().min(0).max(100),
+  band: z.enum(['limited', 'developing', 'strong']),
+  dimensions: z.array(z.object({
+    id: z.enum([
+      'subject_workspace_binding',
+      'source_provenance_verification',
+      'freshness_expiry',
+      'required_evidence_coverage',
+      'reviewed_reconciliation',
+    ]),
+    score: z.number().int().nonnegative(),
+    weight: z.number().int().positive(),
+  }).strict()).length(5),
+  consentVersion: safeReferenceSchema,
+  consentScopeRevision: opaqueRevisionSchema,
 }).strict().superRefine((quality, context) => {
-  if (quality.state === 'unavailable' && quality.band !== null) {
-    context.addIssue({ code: 'custom', message: 'Unavailable evidence quality cannot carry a band' });
+  const seen = new Set<string>();
+  let total = 0;
+  for (const [index, dimension] of quality.dimensions.entries()) {
+    const expectedWeight = evidenceQualityDimensionWeights[dimension.id];
+    if (seen.has(dimension.id)) {
+      context.addIssue({ code: 'custom', message: 'Evidence quality dimensions must be unique', path: ['dimensions', index, 'id'] });
+    }
+    seen.add(dimension.id);
+    if (dimension.weight !== expectedWeight || dimension.score > dimension.weight) {
+      context.addIssue({ code: 'custom', message: 'Evidence quality dimension weight or score is invalid', path: ['dimensions', index] });
+    }
+    total += dimension.score;
   }
-  if (quality.state === 'available' && quality.band === null) {
-    context.addIssue({ code: 'custom', message: 'Available evidence quality requires a band' });
+  if (total !== quality.value) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality must equal its dimension sum', path: ['value'] });
   }
-  if (quality.state === 'unavailable' && quality.limitationCodes.length === 0) {
+  const expectedBand = quality.value <= 39 ? 'limited' : quality.value <= 74 ? 'developing' : 'strong';
+  if (quality.band !== expectedBand) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality band does not match its value', path: ['band'] });
+  }
+});
+const unavailableEvidenceQualityV1Schema = z.object({
+  ...evidenceQualityBaseShape,
+  state: z.enum([
+    'unknown',
+    'not_subject',
+    'unsupported',
+    'disputed',
+    'stale',
+    'expired',
+    'revoked',
+    'not_consented',
+  ]),
+}).strict().superRefine((quality, context) => {
+  if (quality.limitationCodes.length === 0) {
     context.addIssue({
       code: 'custom',
       message: 'Unavailable evidence quality requires a named limitation',
@@ -345,6 +400,10 @@ const supplementalEvidenceQualityV1Schema = z.object({
     });
   }
 });
+const supplementalEvidenceQualityV1Schema = z.discriminatedUnion('state', [
+  readyEvidenceQualityV1Schema,
+  unavailableEvidenceQualityV1Schema,
+]);
 
 export const taxCacheIdentityV1Schema = z.object({
   version: z.literal('tax-cache-identity-v1'),
