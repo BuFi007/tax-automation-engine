@@ -10,7 +10,9 @@ const RULES = {
   recategorization: 'ar-monotributo-recat-v1',
   monotributoPayment: 'ar-monotributo-payment-2026-v1',
   iibbCaba: 'ar-caba-iibb-2026-v1',
+  iibbCabaUnifiedPayment: 'ar-caba-iibb-unified-payment-2026-v1',
   iibbBuenosAires: 'ar-ba-iibb-2026-v1',
+  iibbBuenosAiresUnifiedPayment: 'ar-ba-iibb-unified-payment-2026-v1',
   ivaSimple: 'ar-iva-simple-2026-v1',
   individualAnnual2025: 'ar-individual-annual-2025-v1',
   mipyme: 'ar-mipyme-v1',
@@ -32,6 +34,13 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       { value: 'buenos_aires_local', label: 'Buenos Aires · Local' },
       { value: 'convenio_multilateral', label: 'Convenio Multilateral' },
       { value: 'needs_classification', label: 'Needs classification' },
+    ] },
+    { id: 'cuit_due_group', label: 'CUIT due-date group', kind: 'enum', required: false, options: [
+      { value: '0_1', label: 'Ends in 0 or 1' },
+      { value: '2_3', label: 'Ends in 2 or 3' },
+      { value: '4_5', label: 'Ends in 4 or 5' },
+      { value: '6_7', label: 'Ends in 6 or 7' },
+      { value: '8_9', label: 'Ends in 8 or 9' },
     ] },
     { id: 'exports_services', label: 'Exports services', kind: 'boolean', required: true },
     { id: 'export_pos_ready', label: 'Export point of sale configured', kind: 'boolean', required: true },
@@ -113,6 +122,26 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       effectiveTo: '2026-12-31',
       sourceUrl: 'https://www.arba.gov.ar/archivos/Tramites/RN%206-2026.pdf',
       title: 'ARBA · calendar 2026 (excludes simplified and Convenio Multilateral)',
+      reviewedByAccountant: false,
+      version: '2026.1',
+    },
+    {
+      id: RULES.iibbCabaUnifiedPayment,
+      jurisdiction: 'AR',
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      sourceUrl: 'https://imagenes.agip.gob.ar/impuestos/ingresos-brutos',
+      title: 'AGIP CABA · Monotributo Unificado payment deadline',
+      reviewedByAccountant: false,
+      version: '2026.1',
+    },
+    {
+      id: RULES.iibbBuenosAiresUnifiedPayment,
+      jurisdiction: 'AR',
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      sourceUrl: 'https://web.arba.gov.ar/preguntas-frecuentes/cuando-y-como-se-realizan-los-pagos-cuales-son-los-medios-de-pago-habilitados',
+      title: 'ARBA · Monotributo Unificado payment deadline',
       reviewedByAccountant: false,
       version: '2026.1',
     },
@@ -217,7 +246,11 @@ export class ArgentinaJurisdictionProvider implements TaxJurisdictionProvider {
     };
     const answerMap = new Map(profile.answers.map(answer => [answer.questionId, answer.value]));
     const exportsServices = answerMap.get('exports_services') === true;
+    const iibbRegime = answerMap.get('iibb_regime');
+    const cuitDueGroup = answerMap.get('cuit_due_group');
     const year = taxYear(period);
+    const paymentMonth = nextMonth(period);
+    const iibb = iibbProjection(iibbRegime, cuitDueGroup, paymentMonth);
     const obligations: TaxObligation[] = [
       {
         ...shared,
@@ -235,13 +268,13 @@ export class ArgentinaJurisdictionProvider implements TaxJurisdictionProvider {
         id: 'ar:iibb-review',
         category: 'monthly_regime',
         title: 'Ingresos Brutos regime and filing review',
-        description: 'Resolve local, simplified, or Convenio Multilateral treatment. No due date is inferred without the taxpayer-specific provincial calendar.',
+        description: iibb.description,
         evidenceRequirementIds: ['ar:req:income-ledger', 'ar:req:province', 'ar:req:iibb-regime'],
-        ruleVersionIds: [RULES.iibbCaba, RULES.iibbBuenosAires],
+        ruleVersionIds: iibb.ruleVersionIds,
         actionId: 'action:review-iibb',
-        dueAt: null,
-        applicability: unknown ? 'unknown' : 'needs_professional_review',
-        preparationState: 'unknown',
+        dueAt: iibb.dueDate ? localEndOfDay(iibb.dueDate, '-03:00') : null,
+        applicability: unknown ? 'unknown' : iibb.applicability,
+        preparationState: unknown || iibb.applicability === 'needs_professional_review' ? 'unknown' : 'not_started',
       },
     ];
 
@@ -262,7 +295,6 @@ export class ArgentinaJurisdictionProvider implements TaxJurisdictionProvider {
     }
 
     if (profile.regimeId === 'monotributo_exportador') {
-      const paymentMonth = nextMonth(period);
       const monthlyDue = paymentMonth.year === 2026
         ? MONOTRIBUTO_2026_DUE_DATES[paymentMonth.month]
         : undefined;
@@ -351,3 +383,107 @@ const MONOTRIBUTO_2026_DUE_DATES: Readonly<Record<number, string>> = {
   11: isoDate(2026, 11, 20),
   12: isoDate(2026, 12, 21),
 };
+
+type IibbRegime =
+  | 'caba_simplified'
+  | 'caba_local'
+  | 'buenos_aires_simplified'
+  | 'buenos_aires_local'
+  | 'convenio_multilateral'
+  | 'needs_classification';
+type CuitDueGroup = '0_1' | '2_3' | '4_5' | '6_7' | '8_9';
+
+function iibbProjection(
+  regimeValue: TaxProfile['answers'][number]['value'] | undefined,
+  dueGroupValue: TaxProfile['answers'][number]['value'] | undefined,
+  paymentMonth: Readonly<{ year: number; month: number }>
+): Readonly<{
+  dueDate: string | null;
+  applicability: TaxObligation['applicability'];
+  description: string;
+  ruleVersionIds: readonly string[];
+}> {
+  const regime = isIibbRegime(regimeValue) ? regimeValue : 'needs_classification';
+  const dueGroup = isCuitDueGroup(dueGroupValue) ? dueGroupValue : null;
+  const simplifiedDue = paymentMonth.year === 2026
+    ? MONOTRIBUTO_2026_DUE_DATES[paymentMonth.month] ?? null
+    : null;
+
+  if (regime === 'caba_simplified') {
+    return {
+      dueDate: simplifiedDue,
+      applicability: 'applicable',
+      description: 'CABA Régimen Simplificado is paid with Monotributo Unificado through ARCA. The official monthly deadline is bound; category and payment evidence remain separate.',
+      ruleVersionIds: [RULES.iibbCaba, RULES.iibbCabaUnifiedPayment],
+    };
+  }
+  if (regime === 'buenos_aires_simplified') {
+    return {
+      dueDate: simplifiedDue,
+      applicability: 'applicable',
+      description: 'Buenos Aires Régimen Simplificado is paid with Monotributo Unificado through ARCA. The official monthly deadline is bound; category and payment evidence remain separate.',
+      ruleVersionIds: [RULES.iibbBuenosAiresUnifiedPayment],
+    };
+  }
+  if (regime === 'buenos_aires_local') {
+    const anticipo = paymentMonth.year === 2027 && paymentMonth.month === 1
+      ? 12
+      : paymentMonth.year === 2026
+        ? paymentMonth.month - 1
+        : null;
+    const dueDate = anticipo && dueGroup
+      ? BUENOS_AIRES_LOCAL_2026_DUE_DATES[dueGroup]?.[anticipo] ?? null
+      : null;
+    return {
+      dueDate,
+      applicability: 'needs_professional_review',
+      description: dueGroup
+        ? 'ARBA local monthly declaration deadline is bound to the confirmed CUIT due-date group. Activity treatment, rate, deductions, submission, and payment still require review.'
+        : 'Select the minimized CUIT due-date group before ARBA local deadlines can be calculated. The full CUIT is not required for this calendar.',
+      ruleVersionIds: [RULES.iibbBuenosAires],
+    };
+  }
+  return {
+    dueDate: null,
+    applicability: 'needs_professional_review',
+    description: regime === 'convenio_multilateral'
+      ? 'Convenio Multilateral requires its separate SIFERE/COMARB calendar and professional jurisdiction allocation; no provincial local deadline is substituted.'
+      : 'Resolve the local or multilateral regime before applying a taxpayer-specific IIBB calendar.',
+    ruleVersionIds: [RULES.iibbCaba, RULES.iibbBuenosAires],
+  };
+}
+
+function isIibbRegime(value: unknown): value is IibbRegime {
+  return [
+    'caba_simplified',
+    'caba_local',
+    'buenos_aires_simplified',
+    'buenos_aires_local',
+    'convenio_multilateral',
+    'needs_classification',
+  ].includes(value as IibbRegime);
+}
+
+function isCuitDueGroup(value: unknown): value is CuitDueGroup {
+  return ['0_1', '2_3', '4_5', '6_7', '8_9'].includes(value as CuitDueGroup);
+}
+
+const BUENOS_AIRES_LOCAL_2026_DUE_DATES: Readonly<
+  Record<CuitDueGroup, Readonly<Record<number, string>>>
+> = {
+  '0_1': localDates([23, 25, 20, 18, 22, 20, 24, 21, 19, 24, 21, 18]),
+  '2_3': localDates([24, 26, 21, 19, 23, 21, 25, 22, 20, 25, 22, 19]),
+  '4_5': localDates([25, 27, 22, 20, 24, 22, 26, 23, 21, 26, 23, 20]),
+  '6_7': localDates([26, 30, 23, 21, 25, 23, 27, 24, 22, 27, 28, 21]),
+  '8_9': localDates([27, 31, 24, 22, 26, 24, 28, 25, 23, 30, 29, 22]),
+};
+
+function localDates(days: readonly number[]): Readonly<Record<number, string>> {
+  if (days.length !== 12) throw new Error('IIBB_CALENDAR_INVALID');
+  return Object.fromEntries(days.map((day, index) => {
+    const paymentMonth = index + 2;
+    return paymentMonth <= 12
+      ? [index + 1, isoDate(2026, paymentMonth, day)]
+      : [index + 1, isoDate(2027, 1, day)];
+  }));
+}

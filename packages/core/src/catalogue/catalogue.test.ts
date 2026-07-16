@@ -8,7 +8,7 @@ import { UnitedStatesJurisdictionProvider } from './united-states';
 const TAX_YEAR_2025 = { start: '2025-01-01', end: '2025-12-31' } as const;
 
 describe('Argentina deterministic obligation catalogue', () => {
-  test('publishes bounded 2026 Monotributo deadlines and fails IIBB closed', () => {
+  test('publishes bounded 2026 Monotributo and CABA unified IIBB deadlines', () => {
     const obligations = new ArgentinaJurisdictionProvider().buildObligations({
       profile: argentinaProfile(),
       period: { start: '2026-01-01', end: '2026-01-31' },
@@ -18,9 +18,64 @@ describe('Argentina deterministic obligation catalogue', () => {
     expect(find(obligations, 'ar:recategorization:02').dueAt).toBe('2026-02-05T23:59:59-03:00');
     expect(find(obligations, 'ar:recategorization:08').dueAt).toBe('2026-08-05T23:59:59-03:00');
     expect(find(obligations, 'ar:iibb-review')).toMatchObject({
-      dueAt: null,
-      applicability: 'needs_professional_review',
+      dueAt: '2026-02-20T23:59:59-03:00',
+      applicability: 'applicable',
     });
+  });
+
+  test('binds ARBA local deadlines only to the minimized confirmed CUIT group', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    const period = { start: '2026-01-01', end: '2026-01-31' } as const;
+    const dueDates = ['0_1', '2_3', '4_5', '6_7', '8_9'].map(group =>
+      find(provider.buildObligations({ profile: withIibb('buenos_aires_local', group), period }), 'ar:iibb-review').dueAt
+    );
+    expect(dueDates).toEqual([
+      '2026-02-23T23:59:59-03:00',
+      '2026-02-24T23:59:59-03:00',
+      '2026-02-25T23:59:59-03:00',
+      '2026-02-26T23:59:59-03:00',
+      '2026-02-27T23:59:59-03:00',
+    ]);
+
+    expect(
+      find(
+        provider.buildObligations({ profile: withIibb('buenos_aires_local'), period }),
+        'ar:iibb-review'
+      )
+    ).toMatchObject({ dueAt: null, applicability: 'needs_professional_review' });
+  });
+
+  test('uses the ARCA day-20 calendar for Buenos Aires simplified IIBB', () => {
+    const obligations = new ArgentinaJurisdictionProvider().buildObligations({
+      profile: withIibb('buenos_aires_simplified'),
+      period: { start: '2026-05-01', end: '2026-05-31' },
+    });
+    expect(find(obligations, 'ar:iibb-review')).toMatchObject({
+      dueAt: '2026-06-22T23:59:59-03:00',
+      applicability: 'applicable',
+    });
+  });
+
+  test('bounds the ARBA local calendar to the official 2026 advance table', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    expect(
+      find(
+        provider.buildObligations({
+          profile: withIibb('buenos_aires_local', '0_1'),
+          period: { start: '2026-12-01', end: '2026-12-31' },
+        }),
+        'ar:iibb-review'
+      ).dueAt
+    ).toBe('2027-01-18T23:59:59-03:00');
+    expect(
+      find(
+        provider.buildObligations({
+          profile: withIibb('caba_local', '0_1'),
+          period: { start: '2026-01-01', end: '2026-01-31' },
+        }),
+        'ar:iibb-review'
+      ).dueAt
+    ).toBeNull();
   });
 
   test('dates the 2025 individual annual review without inferring applicability', () => {
@@ -96,5 +151,20 @@ function withUsRegime(regimeId: string, classification: string, residency: 'loca
       if (answer.questionId === 'member_count' && memberCount !== undefined) return { ...answer, value: memberCount };
       return answer;
     }),
+  };
+}
+
+function withIibb(regime: string, dueGroup?: string): TaxProfile {
+  const base = argentinaProfile();
+  return {
+    ...base,
+    answers: [
+      ...base.answers.map(answer =>
+        answer.questionId === 'iibb_regime' ? { ...answer, value: regime } : answer
+      ),
+      ...(dueGroup
+        ? [{ questionId: 'cuit_due_group', value: dueGroup, confirmationState: 'user_confirmed' as const }]
+        : []),
+    ],
   };
 }
