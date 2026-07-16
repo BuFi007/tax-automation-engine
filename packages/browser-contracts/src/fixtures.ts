@@ -36,7 +36,7 @@ export const argentinaTaxCaseV1Fixture = taxCaseV1Schema.parse({
     entityType: 'individual',
     regimeId: 'monotributo_exportador',
     confirmationState: 'user_confirmed',
-    catalogueVersion: 'ar-catalogue-2026-07-11',
+    catalogueVersion: 'ar-catalogue-2026-07-15',
   },
   period,
   displayCurrency: 'ARS',
@@ -219,7 +219,7 @@ export const unitedStatesTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.
     entityType: 'llc',
     regimeId: 'llc_single_member_foreign_owned',
     confirmationState: 'accountant_confirmed',
-    catalogueVersion: 'us-catalogue-2026-07-10',
+    catalogueVersion: 'us-catalogue-2026-07-15',
   },
   displayCurrency: 'USD',
   activity: {
@@ -318,4 +318,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '4042a7cbddaec9729854e4be9f99b1120eb0f608fa056ffaadb175928f9af2c9';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = 'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d';
