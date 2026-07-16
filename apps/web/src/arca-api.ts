@@ -1,4 +1,5 @@
 import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core/human-auth';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4100';
 
@@ -53,6 +54,24 @@ export class ArcaOnboardingApiClient {
       nonce: crypto.randomUUID(),
     });
     return this.applyStep(run, 'login_handoff', { browserSessionReferenceHash });
+  }
+
+  async completeHumanAuth(run: ArcaOnboardingRunV1): Promise<ArcaOnboardingRunV1> {
+    this.assertRunScope(run);
+    const completedAt = new Date().toISOString();
+    const completionReceiptHash = await hashBrowserAssertion({
+      purpose: 'arca_human_auth_completion',
+      onboardingId: run.onboardingId,
+      workspaceId: run.workspaceId,
+      revision: run.revision,
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      nonce: crypto.randomUUID(),
+    });
+    return this.applyStep(run, 'human_auth', {
+      completionReceiptHash,
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      completedAt,
+    });
   }
 
   async confirmServiceAdherence(run: ArcaOnboardingRunV1): Promise<ArcaOnboardingRunV1> {

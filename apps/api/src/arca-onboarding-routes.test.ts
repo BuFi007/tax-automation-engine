@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core';
 
 import { ArcaOnboardingService } from './arca-onboarding';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
@@ -92,6 +93,40 @@ describe('ARCA onboarding HTTP boundary', () => {
     const response = await handle(request);
     expect(response?.status).toBe(400);
     expect(await response?.json()).toEqual({ error: 'RECLAIM_SESSION_HEADER_REQUIRED' });
+  });
+
+  test('advances through human_auth only on the tenant-signed, strict no-capture receipt', async () => {
+    const service = new ArcaOnboardingService(new TaxProfileStore(':memory:'), null, null, false);
+    const onboardingId = '60000000-0000-4000-8000-000000000013';
+    const tenantPrincipal = {
+      version: 'tax-tenant-principal-v2' as const,
+      workspaceId: 'workspace-1', actorId: 'user:owner', capability: 'arca:onboard' as const,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    };
+    const options = { userApprovalToken: null, evidenceIngestToken: null, tenantPrincipal };
+    await handleArcaOnboardingRoute(jsonRequest('/v1/arca-onboarding/runs', {
+      onboardingId, workspaceId: 'workspace-1', taxpayerReferenceHash: 'c'.repeat(64), environment: 'homologation',
+      requestedServices: ['wsfex'], actorId: 'user:owner', idempotencyKey: 'create-human-auth-run',
+    }), new URL('https://tax.example.test/v1/arca-onboarding/runs'), service, options);
+    const loginPath = `/v1/arca-onboarding/runs/${onboardingId}/steps/login_handoff`;
+    await handleArcaOnboardingRoute(jsonRequest(loginPath, {
+      actorId: 'user:owner', idempotencyKey: 'complete-login-handoff', browserSessionReferenceHash: 'd'.repeat(64),
+    }), new URL(`https://tax.example.test${loginPath}`), service, options);
+    expect(service.getRun(onboardingId).currentStep).toBe('human_auth');
+
+    const humanPath = `/v1/arca-onboarding/runs/${onboardingId}/steps/human_auth`;
+    await expect(handleArcaOnboardingRoute(jsonRequest(humanPath, {
+      actorId: 'user:owner', idempotencyKey: 'credential-canary-attempt', completionReceiptHash: 'e'.repeat(64),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: new Date().toISOString(), cookies: 'spooky-canary',
+    }), new URL(`https://tax.example.test${humanPath}`), service, options)).rejects.toThrow();
+    expect(service.getRun(onboardingId).currentStep).toBe('human_auth');
+
+    const response = await handleArcaOnboardingRoute(jsonRequest(humanPath, {
+      actorId: 'user:owner', idempotencyKey: 'complete-private-human-auth', completionReceiptHash: 'e'.repeat(64),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: new Date().toISOString(),
+    }), new URL(`https://tax.example.test${humanPath}`), service, options);
+    expect(response?.status).toBe(200);
+    expect(service.getRun(onboardingId).currentStep).toBe('service_adherence');
   });
 });
 

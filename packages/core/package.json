@@ -6,7 +6,8 @@
     ".": "./src/index.ts",
     "./catalogue": "./src/catalogue/index.ts",
     "./evidence": "./src/evidence/index.ts",
-    "./fixtures": "./src/fixtures.ts"
+    "./fixtures": "./src/fixtures.ts",
+    "./human-auth": "./src/human-auth.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

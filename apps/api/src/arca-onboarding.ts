@@ -39,6 +39,7 @@ export class ArcaOnboardingService {
       version: 'arca-onboarding-capabilities-v1',
       deterministicSteps: [
         'login_handoff',
+        'human_auth',
         'service_adherence',
         'point_of_sale_discovery',
         'point_of_sale_creation',
@@ -198,9 +199,7 @@ export class ArcaOnboardingService {
     if (!this.reclaim) throw new Error('RECLAIM_ARCA_ONBOARDING_CONFIGURATION_REQUIRED');
     const replay = this.store.getArcaOnboardingRunByIdempotency(input.onboardingId, input.idempotencyKey);
     if (replay) {
-      const replayEvent = this.store.getArcaOnboardingEventByIdempotency(input.onboardingId, input.idempotencyKey);
-      const sessionId = replayEvent?.safeMetadata.sessionId;
-      const session = typeof sessionId === 'string' && replay.reclaimSession?.sessionId === sessionId ? replay.reclaimSession : null;
+      const session = replay.reclaimSession?.state === 'pending' ? replay.reclaimSession : null;
       if (!session) throw new Error('RECLAIM_REPLAY_SESSION_MISSING');
       const artifact = this.store.getReclaimRequestArtifact(session.sessionId);
       if (!artifact) throw new Error('RECLAIM_REPLAY_ARTIFACT_MISSING');
