@@ -18,4 +18,6 @@ Package `0.4.0` adds the durable `FacturaEFactoringProjectionReceiptV1` and its 
 
 Package `0.5.0` adds the deterministic ARCA onboarding browser corridor. It projects only user-action state, safe event summaries, bounded next actions, and short-lived Reclaim capability URLs. Internal evidence hashes, represented-CUIT commitments, raw Reclaim configuration, command keys, and authority receipts are intentionally not part of the browser contract.
 
+Package `0.5.1` also publishes the same contract at `@tax-engine/browser-contracts/arca-onboarding`. Consumers with bounded typecheck graphs should prefer that feature entrypoint; it does not change the 0.5.0 wire format.
+
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for versioning and rollout rules.
