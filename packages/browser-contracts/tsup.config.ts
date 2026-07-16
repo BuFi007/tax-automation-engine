@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     fixtures: 'src/fixtures.ts',
+    'scenario-fixtures': 'src/scenario-fixtures.ts',
   },
   outDir: 'dist',
   format: ['esm'],

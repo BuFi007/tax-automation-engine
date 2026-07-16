@@ -17,8 +17,8 @@ const packageJson = JSON.parse(
 };
 
 describe('published browser-contract package', () => {
-  test('exposes only the frozen root and fixtures entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.2.0');
+  test('exposes only the frozen root, golden fixtures, and scenario entrypoints from dist', () => {
+    expect(packageJson.version).toBe('0.3.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -30,6 +30,10 @@ describe('published browser-contract package', () => {
       './fixtures': {
         types: './dist/fixtures.d.ts',
         import: './dist/fixtures.js',
+      },
+      './scenarios': {
+        types: './dist/scenario-fixtures.d.ts',
+        import: './dist/scenario-fixtures.js',
       },
     });
   });
@@ -43,6 +47,8 @@ describe('published browser-contract package', () => {
       'dist/fixtures.js',
       'dist/index.d.ts',
       'dist/index.js',
+      'dist/scenario-fixtures.d.ts',
+      'dist/scenario-fixtures.js',
       'package.json',
     ]);
     expect(
@@ -61,12 +67,18 @@ describe('published browser-contract package', () => {
   test('loads in Node and preserves the built golden-fixture digest', async () => {
     const rootUrl = pathToFileURL(resolve(packageRoot, 'dist/index.js')).href;
     const fixturesUrl = pathToFileURL(resolve(packageRoot, 'dist/fixtures.js')).href;
+    const scenariosUrl = pathToFileURL(resolve(packageRoot, 'dist/scenario-fixtures.js')).href;
     const rootModule = (await import(rootUrl)) as Record<string, unknown>;
     const fixturesModule = (await import(fixturesUrl)) as Record<string, unknown>;
+    const scenariosModule = (await import(scenariosUrl)) as Record<string, unknown>;
     const goldenDigest = fixturesModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256;
 
     expect(rootModule.taxWidgetSnapshotReceiptV1Schema).toBeDefined();
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
+    expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1).toBeDefined();
+    expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256).toBe(
+      'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0',
+    );
     expect(goldenDigest).toBe(
       '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c',
     );
@@ -80,7 +92,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== 'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

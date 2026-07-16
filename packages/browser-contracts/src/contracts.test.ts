@@ -192,4 +192,25 @@ describe('browser-safe Tax V1 contracts', () => {
     const leaked = { ...facturaENeedsConsentProjectionV1Fixture, authorityInvoiceId: 'global-hash' };
     expect(facturaEFactoringProjectionV1Schema.safeParse(leaked).success).toBe(false);
   });
+
+  test('rejects impossible Factura E score, authority, and offer combinations', () => {
+    const prematureOffer = structuredClone(facturaENeedsConsentProjectionV1Fixture) as any;
+    prematureOffer.offer = { state: 'ready', offerRef: 'offer:premature' };
+    expect(facturaEFactoringProjectionV1Schema.safeParse(prematureOffer).success).toBe(false);
+
+    const fakeActive = structuredClone(facturaENeedsConsentProjectionV1Fixture) as any;
+    fakeActive.state = 'active';
+    fakeActive.consentState = 'active';
+    fakeActive.authorityEvidenceState = 'verified';
+    fakeActive.kybState = 'verified';
+    fakeActive.receivableRef = 'receivable:active';
+    fakeActive.expiresAt = '2026-07-16T10:00:00.000Z';
+    expect(facturaEFactoringProjectionV1Schema.safeParse(fakeActive).success).toBe(false);
+
+    fakeActive.score = {
+      basePaymentScore: '72', facturaEContribution: '11', compositePaymentScore: '83',
+      contributionCap: '10', feedsLimit: false, policyVersion: 'factoring-policy:v1',
+    };
+    expect(facturaEFactoringProjectionV1Schema.safeParse(fakeActive).success).toBe(false);
+  });
 });

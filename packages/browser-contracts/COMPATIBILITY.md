@@ -22,3 +22,13 @@ Removing or renaming a field, changing a field from optional to required, changi
 4. Remove the old parser only after replay and rollback windows close.
 
 Production must fail closed on an unknown wire version. Fixture/demo fallback is never permitted in production.
+
+## Frozen acceptance catalogue
+
+Package `0.3.0` adds the `./scenarios` entrypoint and command problem envelope.
+Consumers must pin both `TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256` and
+`TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256` during an upgrade. Scenario fixtures
+are test inputs only: they are never a production fallback, and their action IDs
+do not grant authority. The strengthened Factura E projection rejects partial
+scores, contribution-cap drift, unverified scored states, and offer/state
+mismatches that earlier prerelease packages could parse.

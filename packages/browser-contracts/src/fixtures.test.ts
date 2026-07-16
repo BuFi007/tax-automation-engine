@@ -14,6 +14,7 @@ import {
   unitedStatesTaxWidgetSnapshotV1Fixture,
 } from './fixtures';
 import { taxSnapshotProblemV1Schema } from './problems';
+import { TAX_BROWSER_SCENARIO_FIXTURES_V1 } from './scenario-fixtures';
 
 describe('Tax browser golden fixtures', () => {
   test('validate through the same runtime schemas consumers import', () => {
@@ -26,7 +27,10 @@ describe('Tax browser golden fixtures', () => {
   });
 
   test('serialized fixtures contain no forbidden browser fields', () => {
-    const keys = collectKeys(TAX_BROWSER_GOLDEN_FIXTURES_V1).map(key => key.toLowerCase());
+    const keys = collectKeys({
+      golden: TAX_BROWSER_GOLDEN_FIXTURES_V1,
+      scenarios: TAX_BROWSER_SCENARIO_FIXTURES_V1,
+    }).map(key => key.toLowerCase());
     for (const forbidden of ['cuit', 'tin', 'cae', 'privatekey', 'credential', 'providertoken', 'storagepath', 'rawevidence']) {
       expect(keys).not.toContain(forbidden);
     }

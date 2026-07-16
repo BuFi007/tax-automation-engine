@@ -515,11 +515,54 @@ export const facturaEFactoringProjectionV1Schema = z.object({
     && scoreValues.some(value => value !== null)) {
     context.addIssue({ code: 'custom', message: 'Unavailable or unconsented factoring states cannot expose scores', path: ['score'] });
   }
+  const scoredState = ['active', 'offer_ready', 'approval_required', 'funded'].includes(projection.state);
+  if (scoredState !== scoreValues.every(value => value !== null)) {
+    context.addIssue({ code: 'custom', message: 'Only a fully eligible factoring state can expose a complete score', path: ['score'] });
+  }
+  if (scoreValues.every(value => value !== null)) {
+    const base = new DecimalJs(projection.score.basePaymentScore!);
+    const contribution = new DecimalJs(projection.score.facturaEContribution!);
+    const composite = new DecimalJs(projection.score.compositePaymentScore!);
+    const cap = new DecimalJs(projection.score.contributionCap);
+    if (contribution.greaterThan(cap)) {
+      context.addIssue({ code: 'custom', message: 'Factura E contribution cannot exceed its policy cap', path: ['score', 'facturaEContribution'] });
+    }
+    if (!DecimalJs.min(new DecimalJs(100), base.plus(contribution)).equals(composite)) {
+      context.addIssue({ code: 'custom', message: 'Composite score must equal the capped base plus contribution', path: ['score', 'compositePaymentScore'] });
+    }
+  }
   if (projection.state === 'needs_consent' && projection.consentState !== 'missing') {
     context.addIssue({ code: 'custom', message: 'needs_consent requires missing consent', path: ['consentState'] });
   }
-  if (projection.state === 'funded' && projection.offer.state !== 'funded') {
-    context.addIssue({ code: 'custom', message: 'Funded projection requires a funded offer state', path: ['offer', 'state'] });
+  if (projection.state === 'ambiguous' && projection.authorityEvidenceState !== 'ambiguous') {
+    context.addIssue({ code: 'custom', message: 'Ambiguous projection requires ambiguous authority evidence', path: ['authorityEvidenceState'] });
+  }
+  if (projection.state === 'stale' && projection.authorityEvidenceState !== 'stale') {
+    context.addIssue({ code: 'custom', message: 'Stale projection requires stale authority evidence', path: ['authorityEvidenceState'] });
+  }
+  if (projection.state === 'disputed' && projection.collectionState !== 'disputed') {
+    context.addIssue({ code: 'custom', message: 'Disputed projection requires a disputed collection', path: ['collectionState'] });
+  }
+  if (projection.state === 'ineligible' && projection.kybState !== 'rejected') {
+    context.addIssue({ code: 'custom', message: 'Ineligible projection fixture requires rejected KYB', path: ['kybState'] });
+  }
+  if (scoredState && (
+    projection.consentState !== 'active'
+    || projection.authorityEvidenceState !== 'verified'
+    || projection.kybState !== 'verified'
+    || projection.receivableRef === null
+    || projection.expiresAt === null
+  )) {
+    context.addIssue({ code: 'custom', message: 'Scored factoring requires active consent, verified authority/KYB, a receivable, and expiry' });
+  }
+  const expectedOfferState = projection.state === 'offer_ready' ? 'ready'
+    : projection.state === 'approval_required' ? 'approval_required'
+      : projection.state === 'funded' ? 'funded' : 'unavailable';
+  if (projection.offer.state !== expectedOfferState) {
+    context.addIssue({ code: 'custom', message: 'Offer state must match the factoring presentation state', path: ['offer', 'state'] });
+  }
+  if ((projection.offer.state === 'unavailable') !== (projection.offer.offerRef === null)) {
+    context.addIssue({ code: 'custom', message: 'Only an available offer state carries an offer reference', path: ['offer', 'offerRef'] });
   }
 });
 

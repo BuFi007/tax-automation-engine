@@ -12,4 +12,6 @@ Command replay receipts preserve the original `previousCaseRevision -> caseRevis
 
 Package `0.2.0` adds optional, fail-closed workflow presentation fields for filing readiness, evidence tasks, accountant packets, planning-only forecasts, and supplemental Tax evidence quality. Their absence means the producer has not projected that capability; it is never permission for a browser consumer to calculate or infer the missing value.
 
+Package `0.3.0` freezes the cross-repository acceptance catalogue at `@tax-engine/browser-contracts/scenarios`. It covers AR Monotributo/RI, US domestic and foreign-owned LLC/C-Corp, provider health, accountant changes, ARCA rejection/ambiguity/reconciliation, every Factura E factoring presentation state, cross-tenant denial, optimistic concurrency, idempotency conflict, and ambiguous authority effects. It also adds a stable command-problem envelope. Fixtures authorize no command; server-projected action IDs and human gates remain authoritative.
+
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for versioning and rollout rules.

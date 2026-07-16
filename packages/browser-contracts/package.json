@@ -1,6 +1,6 @@
 {
   "name": "@tax-engine/browser-contracts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser-safe runtime contracts shared by the Tax Engine, Open Agents, and Desk.",
   "license": "UNLICENSED",
   "repository": {
@@ -25,6 +25,10 @@
     "./fixtures": {
       "types": "./dist/fixtures.d.ts",
       "import": "./dist/fixtures.js"
+    },
+    "./scenarios": {
+      "types": "./dist/scenario-fixtures.d.ts",
+      "import": "./dist/scenario-fixtures.js"
     }
   },
   "files": [
