@@ -10,6 +10,7 @@
     "test": "bun test src"
   },
   "dependencies": {
+    "@tax-engine/browser-contracts": "workspace:*",
     "@tax-engine/core": "workspace:*",
     "lucide-react": "^0.562.0",
     "react": "^19.1.0",

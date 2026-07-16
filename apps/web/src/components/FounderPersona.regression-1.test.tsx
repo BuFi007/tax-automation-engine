@@ -1,35 +1,19 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { demoSnapshot } from '@tax-engine/core';
+import { unitedStatesTaxWidgetSnapshotV1Fixture } from '@tax-engine/browser-contracts/fixtures';
 
 import { ProfileSelector } from './ProfileSelector';
 
 // Regression: ISSUE-006 — local and foreign U.S. founder personas were not selectable
 // Found by /qa on 2026-07-10
 // Report: .gstack/qa-reports/qa-report-localhost-2026-07-10.md
-test('shows the U.S. founder persona and routes foreign S-Corp ownership to review', async () => {
+test('shows the persisted foreign-founder U.S. entity without creating a client-side tax profile', () => {
   const selector = renderToStaticMarkup(
-    <ProfileSelector
-      jurisdiction="US"
-      selectedRegime="s_corp"
-      founderResidency="foreign"
-      onJurisdictionChange={() => undefined}
-      onRegimeChange={() => undefined}
-      onFounderResidencyChange={() => undefined}
-    />
+    <ProfileSelector profile={unitedStatesTaxWidgetSnapshotV1Fixture.profile} />
   );
-  expect(selector).toContain('Founder domicile');
-  expect(selector).toContain('Foreign-domiciled founder');
-  expect(selector).toContain('U.S.-resident founder');
-
-  const foreignFounder = await demoSnapshot('US', 's_corp', 'foreign');
-  expect(foreignFounder.estimate.state).toBe('unavailable');
-  expect(foreignFounder.obligations.every(obligation => obligation.applicability === 'needs_professional_review')).toBe(true);
-
-  const localFounder = await demoSnapshot('US', 's_corp', 'local');
-  expect(localFounder.estimate.state).toBe('review_ready');
-  expect(localFounder.obligations.find(obligation => obligation.id === 'us:form-1120-s')?.applicability).toBe('applicable');
-  expect(localFounder.obligations.find(obligation => obligation.id === 'us:state-review')?.applicability).toBe('needs_professional_review');
-  expect(localFounder.obligations.find(obligation => obligation.id === 'us:sales-tax')?.applicability).toBe('needs_professional_review');
+  expect(selector).toContain('United States');
+  expect(selector).toContain('llc single member foreign owned');
+  expect(selector).toContain('accountant_confirmed');
+  expect(selector).not.toContain('<select');
 });
