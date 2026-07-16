@@ -10,6 +10,8 @@ const RULES = {
   recategorization: 'ar-monotributo-recat-v1',
   monotributoPayment: 'ar-monotributo-payment-2026-v1',
   iibbCaba: 'ar-caba-iibb-2026-v1',
+  iibbCabaLocal: 'ar-caba-iibb-local-calendar-2026-v1',
+  iibbConvenio: 'ar-convenio-multilateral-sifere-2026-v1',
   iibbCabaUnifiedPayment: 'ar-caba-iibb-unified-payment-2026-v1',
   iibbBuenosAires: 'ar-ba-iibb-2026-v1',
   iibbBuenosAiresUnifiedPayment: 'ar-ba-iibb-unified-payment-2026-v1',
@@ -23,7 +25,7 @@ export const ARGENTINA_FACTURA_E_RULE_IDS = [RULES.facturaE, RULES.wsfex, RULES.
 
 export const argentinaCatalogue: JurisdictionCatalogue = {
   jurisdiction: 'AR',
-  version: 'ar-catalogue-2026-07-15',
+  version: 'ar-catalogue-2026-07-16',
   displayName: 'Argentina',
   questions: [
     { id: 'province', label: 'Fiscal province', kind: 'subdivision', required: true },
@@ -42,6 +44,18 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       { value: '6_7', label: 'Ends in 6 or 7' },
       { value: '8_9', label: 'Ends in 8 or 9' },
     ] },
+    { id: 'cuit_verifier_digit', label: 'CUIT verifier digit (only the last digit)', kind: 'enum', required: false, options: [
+      { value: '0', label: 'Ends in 0' },
+      { value: '1', label: 'Ends in 1' },
+      { value: '2', label: 'Ends in 2' },
+      { value: '3', label: 'Ends in 3' },
+      { value: '4', label: 'Ends in 4' },
+      { value: '5', label: 'Ends in 5' },
+      { value: '6', label: 'Ends in 6' },
+      { value: '7', label: 'Ends in 7' },
+      { value: '8', label: 'Ends in 8' },
+      { value: '9', label: 'Ends in 9' },
+    ] },
     { id: 'exports_services', label: 'Exports services', kind: 'boolean', required: true },
     { id: 'export_pos_ready', label: 'Export point of sale configured', kind: 'boolean', required: true },
     { id: 'mipyme_certificate', label: 'Current MiPyME certificate', kind: 'boolean', required: false },
@@ -55,7 +69,7 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       label: 'Monotributo · service exporter',
       description: 'Manual readiness for Factura E, collections evidence, recategorization, and annual review.',
       requiredQuestions: ['province', 'iibb_regime', 'exports_services', 'export_pos_ready'],
-      ruleVersionIds: [RULES.monotributo, RULES.monotributoPayment, RULES.recategorization, RULES.iibbCaba, RULES.iibbBuenosAires, ...ARGENTINA_FACTURA_E_RULE_IDS],
+      ruleVersionIds: [RULES.monotributo, RULES.monotributoPayment, RULES.recategorization, RULES.iibbCaba, RULES.iibbCabaLocal, RULES.iibbConvenio, RULES.iibbBuenosAires, ...ARGENTINA_FACTURA_E_RULE_IDS],
     },
     {
       id: 'responsable_inscripto',
@@ -63,7 +77,7 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       label: 'Responsable Inscripto',
       description: 'IVA, income-tax, provincial, invoice, and annual evidence workflow.',
       requiredQuestions: ['province', 'iibb_regime', 'exports_services', 'export_pos_ready'],
-      ruleVersionIds: [RULES.ivaSimple, RULES.individualAnnual2025, RULES.iibbCaba, RULES.iibbBuenosAires, ...ARGENTINA_FACTURA_E_RULE_IDS],
+      ruleVersionIds: [RULES.ivaSimple, RULES.individualAnnual2025, RULES.iibbCaba, RULES.iibbCabaLocal, RULES.iibbConvenio, RULES.iibbBuenosAires, ...ARGENTINA_FACTURA_E_RULE_IDS],
     },
     {
       id: 'sociedad_mipyme',
@@ -112,6 +126,26 @@ export const argentinaCatalogue: JurisdictionCatalogue = {
       effectiveTo: '2026-12-31',
       sourceUrl: 'https://imagenes.agip.gob.ar/normativa/resoluciones/2026/resolucion-n-24agip2026',
       title: 'AGIP CABA · Régimen Simplificado IIBB 2026',
+      reviewedByAccountant: false,
+      version: '2026.1',
+    },
+    {
+      id: RULES.iibbCabaLocal,
+      jurisdiction: 'AR',
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      sourceUrl: 'https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf',
+      title: 'AGIP Resolution 557/2025 · CABA local IIBB calendar 2026',
+      reviewedByAccountant: false,
+      version: '2026.1',
+    },
+    {
+      id: RULES.iibbConvenio,
+      jurisdiction: 'AR',
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      sourceUrl: 'https://ed.comarb.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send',
+      title: 'COMARB General Resolution 20/2025 · SIFERE calendar 2026',
       reviewedByAccountant: false,
       version: '2026.1',
     },
@@ -248,9 +282,10 @@ export class ArgentinaJurisdictionProvider implements TaxJurisdictionProvider {
     const exportsServices = answerMap.get('exports_services') === true;
     const iibbRegime = answerMap.get('iibb_regime');
     const cuitDueGroup = answerMap.get('cuit_due_group');
+    const cuitVerifierDigit = answerMap.get('cuit_verifier_digit');
     const year = taxYear(period);
     const paymentMonth = nextMonth(period);
-    const iibb = iibbProjection(iibbRegime, cuitDueGroup, paymentMonth);
+    const iibb = iibbProjection(iibbRegime, cuitDueGroup, cuitVerifierDigit, paymentMonth);
     const obligations: TaxObligation[] = [
       {
         ...shared,
@@ -392,10 +427,13 @@ type IibbRegime =
   | 'convenio_multilateral'
   | 'needs_classification';
 type CuitDueGroup = '0_1' | '2_3' | '4_5' | '6_7' | '8_9';
+type CuitVerifierDigit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
+type ConvenioDueGroup = '0_2' | '3_5' | '6_7' | '8_9';
 
 function iibbProjection(
   regimeValue: TaxProfile['answers'][number]['value'] | undefined,
   dueGroupValue: TaxProfile['answers'][number]['value'] | undefined,
+  verifierDigitValue: TaxProfile['answers'][number]['value'] | undefined,
   paymentMonth: Readonly<{ year: number; month: number }>
 ): Readonly<{
   dueDate: string | null;
@@ -404,7 +442,9 @@ function iibbProjection(
   ruleVersionIds: readonly string[];
 }> {
   const regime = isIibbRegime(regimeValue) ? regimeValue : 'needs_classification';
-  const dueGroup = isCuitDueGroup(dueGroupValue) ? dueGroupValue : null;
+  const verifierDigit = isCuitVerifierDigit(verifierDigitValue) ? verifierDigitValue : null;
+  const dueGroup = verifierDigit ? localDueGroupFromDigit(verifierDigit) : isCuitDueGroup(dueGroupValue) ? dueGroupValue : null;
+  const advance = iibbAdvance(paymentMonth);
   const simplifiedDue = paymentMonth.year === 2026
     ? MONOTRIBUTO_2026_DUE_DATES[paymentMonth.month] ?? null
     : null;
@@ -426,13 +466,8 @@ function iibbProjection(
     };
   }
   if (regime === 'buenos_aires_local') {
-    const anticipo = paymentMonth.year === 2027 && paymentMonth.month === 1
-      ? 12
-      : paymentMonth.year === 2026
-        ? paymentMonth.month - 1
-        : null;
-    const dueDate = anticipo && dueGroup
-      ? BUENOS_AIRES_LOCAL_2026_DUE_DATES[dueGroup]?.[anticipo] ?? null
+    const dueDate = advance && dueGroup
+      ? BUENOS_AIRES_LOCAL_2026_DUE_DATES[dueGroup]?.[advance] ?? null
       : null;
     return {
       dueDate,
@@ -443,13 +478,41 @@ function iibbProjection(
       ruleVersionIds: [RULES.iibbBuenosAires],
     };
   }
+  if (regime === 'caba_local') {
+    const dueDate = advance && dueGroup
+      ? CABA_LOCAL_2026_DUE_DATES[dueGroup]?.[advance] ?? null
+      : null;
+    const sourceHasInvalidYear = advance === 9;
+    return {
+      dueDate,
+      applicability: 'needs_professional_review',
+      description: sourceHasInvalidYear
+        ? 'The official AGIP annex prints the 9th advance dates with year 2025 inside the 2026 calendar. BUFI will not silently repair an authority source; confirm the corrected October 2026 deadline with AGIP or a qualified professional.'
+        : dueGroup
+          ? 'CABA local monthly declaration deadline is bound to the minimized CUIT verifier group. Activity treatment, rate, deductions, submission, and payment still require review.'
+          : 'Select only the CUIT verifier digit (or its local due-date group) before CABA local deadlines can be calculated. The full CUIT is not required.',
+      ruleVersionIds: [RULES.iibbCabaLocal],
+    };
+  }
+  if (regime === 'convenio_multilateral') {
+    const convenioGroup = verifierDigit ? convenioDueGroupFromDigit(verifierDigit) : null;
+    const dueDate = advance && convenioGroup
+      ? CONVENIO_MULTILATERAL_2026_DUE_DATES[convenioGroup]?.[advance] ?? null
+      : null;
+    return {
+      dueDate,
+      applicability: 'needs_professional_review',
+      description: convenioGroup
+        ? 'The SIFERE CM03/CM04 deadline is bound to the minimum disclosed CUIT verifier digit. Jurisdiction allocation, coefficients, bases, submission, and payment remain under professional review.'
+        : 'Select only the CUIT verifier digit before the SIFERE calendar can be applied. Existing two-digit local groups are insufficient because COMARB uses 0–2, 3–5, 6–7, and 8–9.',
+      ruleVersionIds: [RULES.iibbConvenio],
+    };
+  }
   return {
     dueDate: null,
     applicability: 'needs_professional_review',
-    description: regime === 'convenio_multilateral'
-      ? 'Convenio Multilateral requires its separate SIFERE/COMARB calendar and professional jurisdiction allocation; no provincial local deadline is substituted.'
-      : 'Resolve the local or multilateral regime before applying a taxpayer-specific IIBB calendar.',
-    ruleVersionIds: [RULES.iibbCaba, RULES.iibbBuenosAires],
+    description: 'Resolve the local or multilateral regime before applying a taxpayer-specific IIBB calendar.',
+    ruleVersionIds: [RULES.iibbCabaLocal, RULES.iibbConvenio, RULES.iibbBuenosAires],
   };
 }
 
@@ -468,6 +531,31 @@ function isCuitDueGroup(value: unknown): value is CuitDueGroup {
   return ['0_1', '2_3', '4_5', '6_7', '8_9'].includes(value as CuitDueGroup);
 }
 
+function isCuitVerifierDigit(value: unknown): value is CuitVerifierDigit {
+  return typeof value === 'string' && /^[0-9]$/.test(value);
+}
+
+function localDueGroupFromDigit(digit: CuitVerifierDigit): CuitDueGroup {
+  if (digit === '0' || digit === '1') return '0_1';
+  if (digit === '2' || digit === '3') return '2_3';
+  if (digit === '4' || digit === '5') return '4_5';
+  if (digit === '6' || digit === '7') return '6_7';
+  return '8_9';
+}
+
+function convenioDueGroupFromDigit(digit: CuitVerifierDigit): ConvenioDueGroup {
+  if (digit === '0' || digit === '1' || digit === '2') return '0_2';
+  if (digit === '3' || digit === '4' || digit === '5') return '3_5';
+  if (digit === '6' || digit === '7') return '6_7';
+  return '8_9';
+}
+
+function iibbAdvance(paymentMonth: Readonly<{ year: number; month: number }>): number | null {
+  if (paymentMonth.year === 2027 && paymentMonth.month === 1) return 12;
+  if (paymentMonth.year === 2026 && paymentMonth.month >= 2) return paymentMonth.month - 1;
+  return null;
+}
+
 const BUENOS_AIRES_LOCAL_2026_DUE_DATES: Readonly<
   Record<CuitDueGroup, Readonly<Record<number, string>>>
 > = {
@@ -478,6 +566,25 @@ const BUENOS_AIRES_LOCAL_2026_DUE_DATES: Readonly<
   '8_9': localDates([27, 31, 24, 22, 26, 24, 28, 25, 23, 30, 29, 22]),
 };
 
+const CABA_LOCAL_2026_DUE_DATES: Readonly<
+  Record<CuitDueGroup, Readonly<Record<number, string | null>>>
+> = {
+  '0_1': calendarDates(['2026-02-18', '2026-03-11', '2026-04-13', '2026-05-11', '2026-06-11', '2026-07-13', '2026-08-11', '2026-09-11', null, '2026-11-11', '2026-12-11', '2027-01-11']),
+  '2_3': calendarDates(['2026-02-19', '2026-03-12', '2026-04-14', '2026-05-12', '2026-06-12', '2026-07-14', '2026-08-12', '2026-09-14', null, '2026-11-12', '2026-12-14', '2027-01-12']),
+  '4_5': calendarDates(['2026-02-20', '2026-03-13', '2026-04-15', '2026-05-13', '2026-06-16', '2026-07-15', '2026-08-13', '2026-09-15', null, '2026-11-13', '2026-12-15', '2027-01-13']),
+  '6_7': calendarDates(['2026-02-23', '2026-03-16', '2026-04-16', '2026-05-14', '2026-06-17', '2026-07-16', '2026-08-14', '2026-09-16', null, '2026-11-16', '2026-12-16', '2027-01-14']),
+  '8_9': calendarDates(['2026-02-24', '2026-03-17', '2026-04-17', '2026-05-15', '2026-06-18', '2026-07-17', '2026-08-18', '2026-09-17', null, '2026-11-17', '2026-12-17', '2027-01-15']),
+};
+
+const CONVENIO_MULTILATERAL_2026_DUE_DATES: Readonly<
+  Record<ConvenioDueGroup, Readonly<Record<number, string>>>
+> = {
+  '0_2': calendarDates(['2026-02-13', '2026-03-13', '2026-04-15', '2026-05-15', '2026-06-16', '2026-07-15', '2026-08-14', '2026-09-15', '2026-10-15', '2026-11-13', '2026-12-15', '2027-01-15']),
+  '3_5': calendarDates(['2026-02-18', '2026-03-16', '2026-04-16', '2026-05-18', '2026-06-17', '2026-07-16', '2026-08-18', '2026-09-16', '2026-10-16', '2026-11-16', '2026-12-16', '2027-01-18']),
+  '6_7': calendarDates(['2026-02-19', '2026-03-17', '2026-04-17', '2026-05-19', '2026-06-18', '2026-07-17', '2026-08-19', '2026-09-17', '2026-10-19', '2026-11-17', '2026-12-17', '2027-01-19']),
+  '8_9': calendarDates(['2026-02-20', '2026-03-18', '2026-04-20', '2026-05-20', '2026-06-19', '2026-07-20', '2026-08-20', '2026-09-18', '2026-10-20', '2026-11-18', '2026-12-18', '2027-01-20']),
+};
+
 function localDates(days: readonly number[]): Readonly<Record<number, string>> {
   if (days.length !== 12) throw new Error('IIBB_CALENDAR_INVALID');
   return Object.fromEntries(days.map((day, index) => {
@@ -486,4 +593,9 @@ function localDates(days: readonly number[]): Readonly<Record<number, string>> {
       ? [index + 1, isoDate(2026, paymentMonth, day)]
       : [index + 1, isoDate(2027, 1, day)];
   }));
+}
+
+function calendarDates<T extends string | null>(dates: readonly T[]): Readonly<Record<number, T>> {
+  if (dates.length !== 12) throw new Error('IIBB_CALENDAR_INVALID');
+  return Object.fromEntries(dates.map((date, index) => [index + 1, date])) as Readonly<Record<number, T>>;
 }

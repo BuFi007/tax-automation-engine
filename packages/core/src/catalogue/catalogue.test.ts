@@ -56,6 +56,47 @@ describe('Argentina deterministic obligation catalogue', () => {
     });
   });
 
+  test('binds CABA local deadlines to only the verifier digit and refuses to repair the authority typo', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    const january = find(provider.buildObligations({
+      profile: withIibb('caba_local', undefined, '0'),
+      period: { start: '2026-01-01', end: '2026-01-31' },
+    }), 'ar:iibb-review');
+    expect(january).toMatchObject({
+      dueAt: '2026-02-18T23:59:59-03:00',
+      applicability: 'needs_professional_review',
+    });
+
+    const september = find(provider.buildObligations({
+      profile: withIibb('caba_local', undefined, '0'),
+      period: { start: '2026-09-01', end: '2026-09-30' },
+    }), 'ar:iibb-review');
+    expect(september.dueAt).toBeNull();
+    expect(september.description).toContain('prints the 9th advance dates with year 2025');
+  });
+
+  test('uses COMARB verifier groups for Convenio Multilateral without collecting the full CUIT', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    const dueFor2 = find(provider.buildObligations({
+      profile: withIibb('convenio_multilateral', undefined, '2'),
+      period: { start: '2026-01-01', end: '2026-01-31' },
+    }), 'ar:iibb-review');
+    const dueFor3 = find(provider.buildObligations({
+      profile: withIibb('convenio_multilateral', undefined, '3'),
+      period: { start: '2026-01-01', end: '2026-01-31' },
+    }), 'ar:iibb-review');
+    expect(dueFor2.dueAt).toBe('2026-02-13T23:59:59-03:00');
+    expect(dueFor3.dueAt).toBe('2026-02-18T23:59:59-03:00');
+    expect(dueFor2.ruleVersionIds).toEqual(['ar-convenio-multilateral-sifere-2026-v1']);
+
+    const missingDigit = find(provider.buildObligations({
+      profile: withIibb('convenio_multilateral', '2_3'),
+      period: { start: '2026-01-01', end: '2026-01-31' },
+    }), 'ar:iibb-review');
+    expect(missingDigit.dueAt).toBeNull();
+    expect(missingDigit.description).toContain('Existing two-digit local groups are insufficient');
+  });
+
   test('bounds the ARBA local calendar to the official 2026 advance table', () => {
     const provider = new ArgentinaJurisdictionProvider();
     expect(
@@ -75,7 +116,7 @@ describe('Argentina deterministic obligation catalogue', () => {
         }),
         'ar:iibb-review'
       ).dueAt
-    ).toBeNull();
+    ).toBe('2026-02-18T23:59:59-03:00');
   });
 
   test('dates the 2025 individual annual review without inferring applicability', () => {
@@ -190,7 +231,7 @@ function withUsRegime(regimeId: string, classification: string, residency: 'loca
   };
 }
 
-function withIibb(regime: string, dueGroup?: string): TaxProfile {
+function withIibb(regime: string, dueGroup?: string, verifierDigit?: string): TaxProfile {
   const base = argentinaProfile();
   return {
     ...base,
@@ -200,6 +241,9 @@ function withIibb(regime: string, dueGroup?: string): TaxProfile {
       ),
       ...(dueGroup
         ? [{ questionId: 'cuit_due_group', value: dueGroup, confirmationState: 'user_confirmed' as const }]
+        : []),
+      ...(verifierDigit
+        ? [{ questionId: 'cuit_verifier_digit', value: verifierDigit, confirmationState: 'user_confirmed' as const }]
         : []),
     ],
   };

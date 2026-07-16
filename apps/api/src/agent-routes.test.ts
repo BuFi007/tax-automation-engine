@@ -600,7 +600,7 @@ function confirmArgentinaProfile(store: TaxProfileStore): void {
         { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
         { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
       ],
-      catalogueVersion: 'ar-catalogue-2026-07-15',
+      catalogueVersion: 'ar-catalogue-2026-07-16',
       version: 'profile-v0',
       confirmationState: 'user_confirmed',
     },
