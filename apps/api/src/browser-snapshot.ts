@@ -307,7 +307,16 @@ function projectEvidenceQuality(
     state: 'ready',
     value: quality.value,
     band: quality.band,
-    dimensions: quality.dimensions.map(dimension => ({ ...dimension })),
+    dimensions: quality.dimensions.map(dimension => ({
+      id: dimension.id,
+      score: dimension.score,
+      weight: dimension.weight,
+      safeSourceRefs: dimension.safeSourceReferenceIds.map(references.sourceRef),
+      limitationCodes: [...dimension.limitationCodes],
+      ruleVersion: references.ref('evidence-quality-rule-version', dimension.ruleVersion),
+    })),
+    reasonCodes: [...quality.reasonCodes],
+    authorizedActionIds: [...quality.authorizedActionIds],
     consentVersion: references.ref('evidence-quality-consent-version', quality.consentVersion),
     consentScopeRevision: references.revision(
       'consent',

@@ -312,7 +312,12 @@ export type TaxEvidenceQualityV1 =
         id: TaxEvidenceQualityDimensionIdV1;
         score: number;
         weight: number;
+        safeSourceReferenceIds: readonly string[];
+        limitationCodes: readonly string[];
+        ruleVersion: 'tax-evidence-quality-v1';
       }>[];
+      reasonCodes: readonly string[];
+      authorizedActionIds: readonly string[];
       consentVersion: string;
       consentScopeHash: string;
     }>)

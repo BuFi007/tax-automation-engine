@@ -354,7 +354,12 @@ const readyEvidenceQualityV1Schema = z.object({
     ]),
     score: z.number().int().nonnegative(),
     weight: z.number().int().positive(),
+    safeSourceRefs: z.array(safeReferenceSchema).max(100),
+    limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(20),
+    ruleVersion: safeReferenceSchema,
   }).strict()).length(5),
+  reasonCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  authorizedActionIds: z.array(safeReferenceSchema).max(20),
   consentVersion: safeReferenceSchema,
   consentScopeRevision: opaqueRevisionSchema,
 }).strict().superRefine((quality, context) => {
@@ -377,6 +382,10 @@ const readyEvidenceQualityV1Schema = z.object({
   const expectedBand = quality.value <= 39 ? 'limited' : quality.value <= 74 ? 'developing' : 'strong';
   if (quality.band !== expectedBand) {
     context.addIssue({ code: 'custom', message: 'Evidence quality band does not match its value', path: ['band'] });
+  }
+  const expectedReasons = quality.dimensions.flatMap(dimension => dimension.limitationCodes);
+  if (JSON.stringify(quality.reasonCodes) !== JSON.stringify(expectedReasons)) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality reason codes must match dimension limitations', path: ['reasonCodes'] });
   }
 });
 const unavailableEvidenceQualityV1Schema = z.object({

@@ -131,8 +131,14 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
         record.economicRole === 'settlement' || record.economicRole === 'receipt'
       )).length),
     ]))),
-  ] as const;
+  ].map(item => ({
+    ...item,
+    safeSourceReferenceIds,
+    limitationCodes: item.score === item.weight ? [] : [dimensionLimitationCode(item.id)],
+    ruleVersion: 'tax-evidence-quality-v1' as const,
+  }));
   const value = dimensions.reduce((total, item) => total + item.score, 0);
+  const reasonCodes = dimensions.flatMap(item => item.limitationCodes);
 
   return {
     ...base,
@@ -140,6 +146,8 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
     value,
     band: band(value),
     dimensions,
+    reasonCodes,
+    authorizedActionIds: [],
     consentVersion: activeGrant.version,
     consentScopeHash: activeGrant.scopeHash,
     limitationCodes: value === 100 ? [] : ['TAX_EVIDENCE_QUALITY_INCOMPLETE'],
@@ -170,9 +178,14 @@ function dimension(
   return { id, score: Math.max(0, Math.min(weight, score)), weight };
 }
 
+function dimensionLimitationCode(id: keyof typeof DIMENSION_WEIGHTS): string {
+  return `TAX_EVIDENCE_QUALITY_${id.toUpperCase()}_INCOMPLETE`;
+}
+
 function unavailable(
   base: Omit<Extract<TaxEvidenceQualityV1, { state: 'ready' }>,
-    'state' | 'value' | 'band' | 'dimensions' | 'consentVersion' | 'consentScopeHash' | 'limitationCodes'>,
+    'state' | 'value' | 'band' | 'dimensions' | 'reasonCodes' | 'authorizedActionIds'
+    | 'consentVersion' | 'consentScopeHash' | 'limitationCodes'>,
   state: TaxEvidenceQualityUnavailableStateV1,
   limitationCode: string,
 ): TaxEvidenceQualityV1 {
