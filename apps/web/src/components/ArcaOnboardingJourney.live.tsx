@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ArcaOnboardingRunV1, TaxWidgetSnapshotV1 } from '@tax-engine/core';
+import type { TaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
+import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
 
 import {
   ArcaOnboardingApiClient,
   type ArcaOnboardingBrowserAuthority,
-} from '../api';
+} from '../arca-api';
 import { ArcaOnboardingJourney } from './ArcaOnboardingJourney';
 
 export function LiveArcaOnboardingJourney({
@@ -36,7 +37,7 @@ export function LiveArcaOnboardingJourney({
           .filter(candidate => candidate.status === 'active')
           .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
           ?? await client.createRun({
-            taxpayerReference: snapshot.profile.profileId,
+            taxpayerReference: snapshot.profile.profileRef,
             environment,
             requestedServices,
           });
@@ -48,7 +49,7 @@ export function LiveArcaOnboardingJourney({
       }
     })();
     return () => { active = false; };
-  }, [client, environment, requestedServicesKey, snapshot.profile.profileId]);
+  }, [client, environment, requestedServicesKey, snapshot.profile.profileRef]);
 
   const mutate = async (operation: (current: ArcaOnboardingRunV1) => Promise<ArcaOnboardingRunV1>) => {
     if (!run || saving) return;

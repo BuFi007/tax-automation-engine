@@ -1,6 +1,6 @@
 import { AlertCircle, CheckCircle2, CircleDashed, PlugZap } from 'lucide-react';
 
-import type { TaxWidgetSnapshotV1 } from '@tax-engine/core';
+import type { TaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
 
 import { formatMoney, humanize } from './TaxWidget';
 
@@ -17,17 +17,17 @@ export function EvidenceCoverage({ snapshot }: { snapshot: TaxWidgetSnapshotV1 }
       </div>
 
       <div className="coverage-metrics">
-        <CoverageMetric label="Revenue reconciled" current={evidenceCoverage.revenue.reconciled} total={evidenceCoverage.revenue.invoiced} />
-        <CoverageMetric label="Expenses supported" current={evidenceCoverage.expenses.supported} total={evidenceCoverage.expenses.recorded} />
-        <div className="coverage-card"><span>Obligations mapped</span><strong>{evidenceCoverage.obligations.mapped}/{evidenceCoverage.obligations.applicable}</strong></div>
+        <CoverageMetric label="Revenue reconciled" current={evidenceCoverage.reconciledRevenue} total={evidenceCoverage.invoicedRevenue} />
+        <CoverageMetric label="Expenses supported" current={evidenceCoverage.supportedExpenses} total={evidenceCoverage.recordedExpenses} />
+        <div className="coverage-card"><span>Obligations mapped</span><strong>{evidenceCoverage.mappedObligations}/{evidenceCoverage.applicableObligations}</strong></div>
       </div>
 
       <div className="source-list" aria-label="Evidence sources">
-        {snapshot.sourceCoverage.map(source => (
-          <div className="source-row" key={source.sourceId}>
+        {snapshot.sourceHealth.sources.map(source => (
+          <div className="source-row" key={source.sourceRef}>
             <div className="source-icon"><PlugZap aria-hidden="true" /></div>
-            <div className="source-copy"><strong>{source.displayName}</strong><span>{source.recordsScanned} records · {source.acceptedEvidenceCount} accepted</span></div>
-            <span className={`source-state source-${source.connectionState}`}>{source.connectionState}</span>
+            <div className="source-copy"><strong>{source.providerDescriptor.displayName}</strong><span>{source.acceptedEvidenceCount} accepted · {source.needsReviewCount} review</span></div>
+            <span className={`source-state source-${source.state}`}>{source.state}</span>
           </div>
         ))}
       </div>
@@ -36,7 +36,7 @@ export function EvidenceCoverage({ snapshot }: { snapshot: TaxWidgetSnapshotV1 }
         <div className="gap-list">
           <h3>Missing links</h3>
           {evidenceCoverage.gaps.map(gap => (
-            <div className="gap-row" key={gap.id}>
+            <div className="gap-row" key={gap.gapRef}>
               {gap.severity === 'blocking' ? <AlertCircle aria-hidden="true" /> : <CircleDashed aria-hidden="true" />}
               <div><strong>{humanize(gap.kind)}</strong><span>{gap.severity} · manual review required</span></div>
             </div>
