@@ -14,7 +14,7 @@ import type { ManualArcaOnboardingCommand, ArcaOnboardingService } from './arca-
 import { readBoundedBody } from './bounded-body';
 import {
   assertTaxTenantPrincipalScope,
-  type TaxTenantPrincipalV2,
+  type TaxTenantPrincipalV3,
 } from './tenant-principal';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -33,7 +33,7 @@ export async function handleArcaOnboardingRoute(
   options: Readonly<{
     userApprovalToken: string | null;
     evidenceIngestToken: string | null;
-    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+    tenantPrincipal?: TaxTenantPrincipalV3 | null;
   }>,
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/arca-onboarding/callback') {
@@ -171,7 +171,7 @@ export async function handleArcaOnboardingRoute(
 }
 
 function requireWorkspaceAuthority(
-  options: Readonly<{ tenantPrincipal?: TaxTenantPrincipalV2 | null }>,
+  options: Readonly<{ tenantPrincipal?: TaxTenantPrincipalV3 | null }>,
   workspaceId: string,
 ): void {
   if (options.tenantPrincipal) assertTaxTenantPrincipalScope(options.tenantPrincipal, workspaceId);
@@ -181,7 +181,7 @@ function requireUserAuthority(
   request: Request,
   options: Readonly<{
     userApprovalToken: string | null;
-    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+    tenantPrincipal?: TaxTenantPrincipalV3 | null;
   }>,
   workspaceId: string,
   actorId: string,

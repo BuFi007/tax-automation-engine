@@ -31,6 +31,7 @@ import {
   assertTaxTenantPrincipalScope,
   requiredTaxTenantPrincipalCapability,
   taxTenantPrincipalSecretForCapability,
+  verifyBoundTaxTenantPrincipal,
   verifyTaxTenantPrincipal,
 } from './tenant-principal';
 import {
@@ -85,6 +86,8 @@ const evidenceIngestToken = process.env.TAX_ENGINE_EVIDENCE_INGEST_TOKEN ?? null
 const consentEventToken = process.env.TAX_ENGINE_CONSENT_EVENT_TOKEN ?? null;
 const snapshotProjectorToken = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN ?? null;
 const userPrincipalSecret = process.env.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET ?? null;
+const motoraOnboardingPrincipalSecret =
+  process.env.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
 const snapshotProjectorPrincipalSecret = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET ?? null;
 const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET ?? null;
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
@@ -155,26 +158,29 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !consentEventToken
   || !snapshotProjectorToken
   || !userPrincipalSecret
+  || !motoraOnboardingPrincipalSecret
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
   || !openAgentsAgentPrincipalSecret)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
+  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
 }
 if (process.env.NODE_ENV === 'production'
   && new Set([
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
-  ]).size !== 6) {
+  ]).size !== 7) {
   throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
 }
 if (authorityCorridorEnabled) {
   assertTaxAuthoritySecretsDistinct(authorityPrincipalSecrets, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -202,6 +208,7 @@ if (
 if (facturaEFeatureEnabled) {
   assertFacturaEFeatureSecretsDistinct(facturaEFeaturePrincipalSecrets, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -219,6 +226,7 @@ if (facturaEFeatureEnabled) {
   ]);
   assertFacturaETerminalReceiptVerifiers(facturaETerminalReceiptVerifiers, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -435,9 +443,9 @@ export const server = Bun.serve({
         /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
         && request.headers.has('x-tax-tenant-principal')
       ) {
-        const scopedPrincipal = verifyTaxTenantPrincipal(
+        const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
           request,
-          userPrincipalSecret,
+          motoraOnboardingPrincipalSecret,
           'arca:onboard',
         );
         const scopedResponse = await handleArcaOnboardingRoute(
@@ -486,7 +494,11 @@ export const server = Bun.serve({
         : null;
       const accountantMandateResponse = await handleAccountantMandateRoute(request, url, store, tenantPrincipal);
       if (accountantMandateResponse) return applyCors(accountantMandateResponse, request);
-      const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken, tenantPrincipal });
+      const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, {
+        userApprovalToken,
+        evidenceIngestToken,
+        tenantPrincipal: null,
+      });
       if (onboardingResponse) return applyCors(onboardingResponse, request);
       const browserSnapshotResponse = handleTaxBrowserSnapshotRoute(request, url, taxBrowserSnapshots, tenantPrincipal);
       if (browserSnapshotResponse) return applyCors(browserSnapshotResponse, request);

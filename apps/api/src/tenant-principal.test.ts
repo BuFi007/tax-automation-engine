@@ -1,9 +1,10 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, test } from 'bun:test';
 
 import {
   requiredTaxTenantPrincipalCapability,
   taxTenantPrincipalSecretForCapability,
+  verifyBoundTaxTenantPrincipal,
   verifyTaxTenantPrincipal,
   type TaxTenantCapability,
 } from './tenant-principal';
@@ -69,6 +70,50 @@ describe('tax tenant principal', () => {
     const request = signedRequest('workspace:1', 'user:1', 'snapshot:read', '2026-07-10T00:05:00.000Z');
     expect(verifyTaxTenantPrincipal(request, 'principal-secret', 'snapshot:read', new Date('2026-07-10T00:00:00.000Z')))
       .toMatchObject({ workspaceId: 'workspace:1', actorId: 'user:1', capability: 'snapshot:read' });
+  });
+
+  test('requires the V3 onboarding principal to bind method, path, query, and body', async () => {
+    const url = 'http://tax.test/v1/arca-onboarding/runs?workspaceId=workspace%3A1';
+    const body = JSON.stringify({ actorId: 'user:1', idempotencyKey: 'create-run-1' });
+    const valid = boundSignedRequest(url, 'POST', body, '2026-07-10T00:01:00.000Z');
+    await expect(verifyBoundTaxTenantPrincipal(
+      valid,
+      'principal-secret',
+      'arca:onboard',
+      new Date('2026-07-10T00:00:00.000Z'),
+    )).resolves.toMatchObject({
+      version: 'tax-tenant-principal-v3',
+      workspaceId: 'workspace:1',
+      actorId: 'user:1',
+      capability: 'arca:onboard',
+      method: 'POST',
+      path: '/v1/arca-onboarding/runs?workspaceId=workspace%3A1',
+    });
+
+    const headers = valid.headers;
+    const changedBody = new Request(url, { method: 'POST', headers, body: `${body} ` });
+    const changedPath = new Request('http://tax.test/v1/arca-onboarding/runs?workspaceId=workspace%3A2', {
+      method: 'POST', headers, body,
+    });
+    const changedMethod = new Request(url, { method: 'PUT', headers, body });
+    for (const replay of [changedBody, changedPath, changedMethod]) {
+      await expect(verifyBoundTaxTenantPrincipal(
+        replay,
+        'principal-secret',
+        'arca:onboard',
+        new Date('2026-07-10T00:00:00.000Z'),
+      )).rejects.toThrow('TAX_TENANT_PRINCIPAL_SCOPE_UNAUTHORIZED');
+    }
+  });
+
+  test('does not accept a legacy V2 principal on the onboarding corridor', async () => {
+    const legacy = signedRequest('workspace:1', 'user:1', 'arca:onboard', '2026-07-10T00:01:00.000Z');
+    await expect(verifyBoundTaxTenantPrincipal(
+      legacy,
+      'principal-secret',
+      'arca:onboard',
+      new Date('2026-07-10T00:00:00.000Z'),
+    )).rejects.toThrow('TAX_TENANT_PRINCIPAL_UNAUTHORIZED');
   });
 
   test('rejects tampering and expiry without trusting caller headers', () => {
@@ -157,4 +202,27 @@ function signedRequest(workspaceId: string, actorId: string, capability: TaxTena
     'x-tax-tenant-principal': encoded,
     'x-tax-tenant-signature': createHmac('sha256', 'principal-secret').update(encoded, 'utf8').digest('hex'),
   } });
+}
+
+function boundSignedRequest(url: string, method: 'GET' | 'POST', body: string, expiresAt: string): Request {
+  const target = new URL(url);
+  const encoded = Buffer.from(JSON.stringify({
+    version: 'tax-tenant-principal-v3',
+    workspaceId: 'workspace:1',
+    actorId: 'user:1',
+    capability: 'arca:onboard',
+    method,
+    path: `${target.pathname}${target.search}`,
+    bodyHash: createHash('sha256').update(body).digest('hex'),
+    expiresAt,
+  })).toString('base64url');
+  return new Request(url, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      'x-tax-tenant-principal': encoded,
+      'x-tax-tenant-signature': createHmac('sha256', 'principal-secret').update(encoded, 'utf8').digest('hex'),
+    },
+    ...(method === 'POST' ? { body } : {}),
+  });
 }

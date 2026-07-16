@@ -20,10 +20,13 @@ describe('ARCA onboarding HTTP boundary', () => {
       userApprovalToken: null,
       evidenceIngestToken: null,
       tenantPrincipal: {
-        version: 'tax-tenant-principal-v2',
+        version: 'tax-tenant-principal-v3',
         workspaceId: 'workspace-1',
         actorId: 'user:owner',
         capability: 'arca:onboard',
+        method: 'POST',
+        path: '/v1/arca-onboarding/runs',
+        bodyHash: '0'.repeat(64),
         expiresAt: '2099-01-01T00:00:00.000Z',
       },
     });
@@ -49,10 +52,13 @@ describe('ARCA onboarding HTTP boundary', () => {
       userApprovalToken: null,
       evidenceIngestToken: null,
       tenantPrincipal: {
-        version: 'tax-tenant-principal-v2',
+        version: 'tax-tenant-principal-v3',
         workspaceId: 'workspace-1',
         actorId: 'user:owner',
         capability: 'arca:onboard',
+        method: 'POST',
+        path: '/v1/arca-onboarding/runs',
+        bodyHash: '0'.repeat(64),
         expiresAt: '2099-01-01T00:00:00.000Z',
       },
     })).rejects.toThrow('TAX_TENANT_SCOPE_UNAUTHORIZED');
@@ -104,8 +110,9 @@ describe('ARCA onboarding HTTP boundary', () => {
     const service = new ArcaOnboardingService(new TaxProfileStore(':memory:'), null, null, false);
     const onboardingId = '60000000-0000-4000-8000-000000000013';
     const tenantPrincipal = {
-      version: 'tax-tenant-principal-v2' as const,
+      version: 'tax-tenant-principal-v3' as const,
       workspaceId: 'workspace-1', actorId: 'user:owner', capability: 'arca:onboard' as const,
+      method: 'POST' as const, path: '/v1/arca-onboarding/runs', bodyHash: '0'.repeat(64),
       expiresAt: '2099-01-01T00:00:00.000Z',
     };
     const options = { userApprovalToken: null, evidenceIngestToken: null, tenantPrincipal };
