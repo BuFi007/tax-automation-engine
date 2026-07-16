@@ -108,7 +108,11 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
     answers: base.answers.map(answer => {
       if (answer.questionId === 'member_count') return { ...answer, value: selectedRegimeId === 'llc_multi_member' ? 2 : 1 };
       if (answer.questionId === 'tax_classification') {
-        const classification = selectedRegimeId === 'llc_multi_member' ? 'partnership' : selectedRegimeId;
+        const classification = selectedRegimeId === 'llc_single_member'
+          ? 'disregarded_entity'
+          : selectedRegimeId === 'llc_multi_member'
+            ? 'partnership'
+            : selectedRegimeId;
         return { ...answer, value: classification };
       }
       if (answer.questionId === 'founder_residency') return { ...answer, value: founderResidency };
