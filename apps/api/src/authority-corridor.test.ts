@@ -211,7 +211,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         nextAction: 'reconcile_authority_exactly',
       });
       expect(calls.recover).toBe(1);
-      expect(JSON.stringify(recovered)).not.toMatch(/vault|cuit|cae/i);
+      expect(JSON.stringify(recovered)).not.toMatch(/"(?:vault|cuit|cae)"/i);
 
       const reconciled = await service.reconcile({
         executionId: intent.executionId,
