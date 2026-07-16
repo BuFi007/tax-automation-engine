@@ -24,6 +24,9 @@ export type StripeTaxRoutingDecisionV1 = Readonly<{
   version: 'stripe-tax-routing-decision-v1';
   matrixVersion: typeof STRIPE_TAX_SUPPORT_MATRIX_VERSION;
   matrixSourceUrl: typeof STRIPE_TAX_SUPPORT_SOURCE_URL;
+  issuerCountry: string;
+  customerCountry: string;
+  productType: StripeTaxRoutingInput['productType'];
   fiscalAuthority: FiscalAuthorityRoute;
   stripeRole: 'indirect_tax_calculation_evidence' | 'payment_evidence_only' | 'not_used';
   calculationState:
@@ -45,8 +48,12 @@ export function routeStripeTaxAuthority(input: StripeTaxRoutingInput): StripeTax
     version: 'stripe-tax-routing-decision-v1' as const,
     matrixVersion: STRIPE_TAX_SUPPORT_MATRIX_VERSION,
     matrixSourceUrl: STRIPE_TAX_SUPPORT_SOURCE_URL,
+    issuerCountry: input.issuerCountry,
+    customerCountry: input.customerCountry,
+    productType: input.productType,
   } as const;
   const arcaDocument = input.invoiceDocumentKind?.startsWith('arca_') ?? false;
+  if (arcaDocument && input.issuerCountry !== 'AR') throw new Error('STRIPE_TAX_ARCA_DOCUMENT_ISSUER_MISMATCH');
   if (input.issuerCountry === 'AR' || arcaDocument) {
     return {
       ...base,
@@ -103,7 +110,12 @@ export type StripeTaxTransactionEvidenceInput = Readonly<{
 }>;
 
 export function stripeTaxTransactionEvidence(input: StripeTaxTransactionEvidenceInput): TaxEvidenceRecord {
-  if (input.route.stripeRole !== 'indirect_tax_calculation_evidence') throw new Error('STRIPE_TAX_CALCULATION_EVIDENCE_NOT_AUTHORIZED');
+  if (
+    input.route.stripeRole !== 'indirect_tax_calculation_evidence'
+    || input.route.fiscalAuthority !== 'stripe_tax_supported_jurisdiction'
+    || !input.route.calculationState.startsWith('eligible_')
+  ) throw new Error('STRIPE_TAX_CALCULATION_EVIDENCE_NOT_AUTHORIZED');
+  if (input.route.issuerCountry !== input.issuerJurisdiction) throw new Error('STRIPE_TAX_EVIDENCE_JURISDICTION_MISMATCH');
   if (!/^[a-f0-9]{64}$/.test(input.providerTransactionHash)) throw new Error('STRIPE_TAX_PROVIDER_HASH_INVALID');
   const taxAmount = money(input.taxAmount.decimal, input.taxAmount.currency);
   const idempotencyKey = sha256({ sourceId: input.sourceId, transaction: input.providerTransactionHash, revision: input.providerRevision });
@@ -143,7 +155,7 @@ export function stripeTaxTransactionEvidence(input: StripeTaxTransactionEvidence
 }
 
 function unsupported(
-  base: Pick<StripeTaxRoutingDecisionV1, 'version' | 'matrixVersion' | 'matrixSourceUrl'>,
+  base: Pick<StripeTaxRoutingDecisionV1, 'version' | 'matrixVersion' | 'matrixSourceUrl' | 'issuerCountry' | 'customerCountry' | 'productType'>,
   calculationState: Extract<StripeTaxRoutingDecisionV1['calculationState'], `unsupported_${string}` | 'customer_location_unverified'>,
 ): StripeTaxRoutingDecisionV1 {
   return { ...base, fiscalAuthority: 'manual', stripeRole: 'payment_evidence_only', calculationState, filingState: 'provider_not_configured', warnings: ['STRIPE_TAX_ROUTE_UNSUPPORTED'] };
