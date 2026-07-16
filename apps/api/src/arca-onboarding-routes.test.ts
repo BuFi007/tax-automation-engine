@@ -28,6 +28,11 @@ describe('ARCA onboarding HTTP boundary', () => {
       },
     });
     expect(response?.status).toBe(201);
+    const payload = await response?.json();
+    expect(payload.data.version).toBe('arca-onboarding-browser-mutation-v1');
+    expect(JSON.stringify(payload)).not.toMatch(
+      /taxpayerReferenceHash|processedCommandKeys|eventIds|completionReceiptHash|contextHash|representedCuitCommitment/,
+    );
   });
 
   test('rejects a tenant principal that attempts to create another workspace run', async () => {
@@ -126,6 +131,9 @@ describe('ARCA onboarding HTTP boundary', () => {
       capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: new Date().toISOString(),
     }), new URL(`https://tax.example.test${humanPath}`), service, options);
     expect(response?.status).toBe(200);
+    const payload = await response?.json();
+    expect(payload.data.run.humanAuth.completionRecorded).toBe(true);
+    expect(JSON.stringify(payload)).not.toMatch(/completionReceiptHash|processedCommandKeys|eventIds/);
     expect(service.getRun(onboardingId).currentStep).toBe('service_adherence');
   });
 });
