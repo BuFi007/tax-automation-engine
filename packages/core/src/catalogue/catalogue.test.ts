@@ -131,6 +131,42 @@ describe('United States deterministic obligation catalogue', () => {
     expect(find(obligations, 'us:state-review').applicability).toBe('needs_professional_review');
     expect(find(obligations, 'us:sales-tax').applicability).toBe('needs_professional_review');
   });
+
+  test('publishes bounded Delaware entity and income-tax deadlines', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    const llc = provider.buildObligations({ profile: unitedStatesProfile(), period: TAX_YEAR_2025 });
+    expect(find(llc, 'us:de:llc-annual-tax')).toMatchObject({
+      dueAt: '2026-06-01T23:59:59-04:00',
+      applicability: 'applicable',
+    });
+
+    const corporation = provider.buildObligations({
+      profile: withUsRegime('c_corp', 'c_corp', 'local'),
+      period: TAX_YEAR_2025,
+    });
+    expect(find(corporation, 'us:de:corporation-franchise')).toMatchObject({
+      dueAt: '2026-03-01T23:59:59-05:00',
+      applicability: 'needs_professional_review',
+    });
+    expect(find(corporation, 'us:de:income-return').dueAt).toBe('2026-04-15T23:59:59-04:00');
+  });
+
+  test('routes LLC corporation elections to the elected federal return', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    const electedS = withUsRegime('llc_single_member', 's_corp', 'local', 1);
+    const electedC = withUsRegime('llc_multi_member', 'c_corp', 'foreign', 2);
+
+    expect(find(provider.buildObligations({ profile: electedS, period: TAX_YEAR_2025 }), 'us:form-1120-s')).toBeTruthy();
+    expect(find(provider.buildObligations({ profile: electedC, period: TAX_YEAR_2025 }), 'us:form-1120')).toBeTruthy();
+  });
+
+  test('rejects member-count and entity-classification contradictions', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    expect(provider.validateProfile(withUsRegime('llc_single_member', 'partnership', 'local', 2))).toEqual(
+      expect.arrayContaining(['LLC_MEMBER_COUNT_REGIME_MISMATCH', 'REGIME_CLASSIFICATION_MISMATCH'])
+    );
+    expect(provider.validateProfile(withUsRegime('c_corp', 's_corp', 'local'))).toContain('REGIME_CLASSIFICATION_MISMATCH');
+  });
 });
 
 function find(obligations: readonly { id: string }[], id: string) {

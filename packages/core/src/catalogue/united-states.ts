@@ -11,6 +11,9 @@ const RULES = {
   form1120: 'us-form-1120-2025-v1',
   form1120s: 'us-form-1120s-2025-v1',
   form5472: 'us-form-5472-2025-v1',
+  delawareLlcAnnualTax: 'us-de-llc-annual-tax-2026-v1',
+  delawareCorporationFranchise: 'us-de-corporation-franchise-2026-v1',
+  delawareIncomeTax: 'us-de-income-tax-2025-v1',
 } as const;
 
 export const unitedStatesCatalogue: JurisdictionCatalogue = {
@@ -50,6 +53,9 @@ export const unitedStatesCatalogue: JurisdictionCatalogue = {
     { id: RULES.form1120, jurisdiction: 'US', effectiveFrom: '2025-01-01', effectiveTo: '2025-12-31', sourceUrl: 'https://www.irs.gov/instructions/i1120', title: 'IRS Form 1120 instructions · 2025', reviewedByAccountant: false, version: '2025.1' },
     { id: RULES.form1120s, jurisdiction: 'US', effectiveFrom: '2025-01-01', effectiveTo: '2025-12-31', sourceUrl: 'https://www.irs.gov/instructions/i1120s', title: 'IRS Form 1120-S instructions · 2025', reviewedByAccountant: false, version: '2025.1' },
     { id: RULES.form5472, jurisdiction: 'US', effectiveFrom: '2025-01-01', effectiveTo: '2025-12-31', sourceUrl: 'https://www.irs.gov/instructions/i5472', title: 'IRS Form 5472 instructions · 2025', reviewedByAccountant: false, version: '2025.1' },
+    { id: RULES.delawareLlcAnnualTax, jurisdiction: 'US', effectiveFrom: '2026-01-01', effectiveTo: '2026-12-31', sourceUrl: 'https://corp.delaware.gov/alt-entitytaxinstructions/', title: 'Delaware alternative entity annual tax instructions · 2026', reviewedByAccountant: false, version: '2026.1' },
+    { id: RULES.delawareCorporationFranchise, jurisdiction: 'US', effectiveFrom: '2026-01-01', effectiveTo: '2026-12-31', sourceUrl: 'https://corp.delaware.gov/paytaxes/', title: 'Delaware corporation annual report and franchise tax · 2026', reviewedByAccountant: false, version: '2026.1' },
+    { id: RULES.delawareIncomeTax, jurisdiction: 'US', effectiveFrom: '2025-01-01', effectiveTo: '2025-12-31', sourceUrl: 'https://revenue.delaware.gov/frequently-asked-questions/corporate-income-tax-faqs/', title: 'Delaware corporate income tax FAQ · tax year 2025', reviewedByAccountant: false, version: '2025.1' },
   ],
 };
 
@@ -68,10 +74,15 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
       if (typeof memberCount !== 'number' || memberCount < 1) missing.push('member_count');
     }
     const errors = [...new Set(missing)].map(question => `MISSING_${question.toUpperCase()}`);
-    if (profile.regimeId === 's_corp' && answerMap.get('founder_residency') === 'foreign') {
+    const classification = answerMap.get('tax_classification');
+    const memberCount = answerMap.get('member_count');
+    if (profile.regimeId === 'llc_single_member' && typeof memberCount === 'number' && memberCount !== 1) errors.push('LLC_MEMBER_COUNT_REGIME_MISMATCH');
+    if (profile.regimeId === 'llc_multi_member' && typeof memberCount === 'number' && memberCount < 2) errors.push('LLC_MEMBER_COUNT_REGIME_MISMATCH');
+    if (!classificationMatchesRegime(profile.regimeId, classification)) errors.push('REGIME_CLASSIFICATION_MISMATCH');
+    if (classification === 's_corp' && answerMap.get('founder_residency') === 'foreign') {
       errors.push('S_CORP_FOREIGN_OWNER_NEEDS_PROFESSIONAL_REVIEW');
     }
-    if (answerMap.get('tax_classification') === 'needs_classification') errors.push('FEDERAL_CLASSIFICATION_NEEDS_PROFESSIONAL_REVIEW');
+    if (classification === 'needs_classification') errors.push('FEDERAL_CLASSIFICATION_NEEDS_PROFESSIONAL_REVIEW');
     return errors;
   }
 
@@ -81,6 +92,9 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
     const answerMap = new Map(profile.answers.map(answer => [answer.questionId, answer.value]));
     const year = taxYear(period);
     const founderIsForeign = answerMap.get('founder_residency') === 'foreign';
+    const classification = answerMap.get('tax_classification');
+    const formationState = answerMap.get('formation_state');
+    const operatingStates = answerMap.get('operating_states');
     const shared = {
       jurisdiction: 'US' as const,
       regimeId: profile.regimeId,
@@ -93,7 +107,7 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
       satisfactionState: 'outstanding' as const,
     };
     const obligations: TaxObligation[] = [
-      federalObligation(profile.regimeId, founderIsForeign, year, shared),
+      federalObligation(profile.regimeId, classification, founderIsForeign, year, shared),
       {
         ...shared,
         id: 'us:state-review',
@@ -119,7 +133,50 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
         preparationState: 'unknown',
       },
     ];
-    if (profile.regimeId === 'c_corp' && year === 2026) {
+    if (formationState === 'US-DE' && profile.regimeId.startsWith('llc_')) {
+      obligations.push({
+        ...shared,
+        id: 'us:de:llc-annual-tax',
+        category: 'state_income_franchise_return',
+        title: 'Delaware LLC annual tax',
+        description: 'Delaware LLCs owe a $300 annual tax and do not file an annual report. Payment amount remains outside this obligation projection.',
+        dueAt: year === 2025 ? localEndOfDay('2026-06-01', '-04:00') : null,
+        evidenceRequirementIds: ['us:req:formation-state', 'us:req:delaware-payment'],
+        ruleVersionIds: [RULES.delawareLlcAnnualTax],
+        actionId: 'action:prepare-delaware-llc-annual-tax',
+      });
+    }
+    if (formationState === 'US-DE' && !profile.regimeId.startsWith('llc_')) {
+      obligations.push({
+        ...shared,
+        id: 'us:de:corporation-franchise',
+        category: 'state_income_franchise_return',
+        title: 'Delaware corporation annual report and franchise tax',
+        description: 'Prepare the annual report and calculate franchise tax using the corporation\'s confirmed stock and asset facts.',
+        dueAt: year === 2025 ? localEndOfDay('2026-03-01', '-05:00') : null,
+        evidenceRequirementIds: ['us:req:formation-state', 'us:req:capitalization', 'us:req:delaware-payment'],
+        ruleVersionIds: [RULES.delawareCorporationFranchise],
+        actionId: 'action:prepare-delaware-corporation-franchise',
+        applicability: 'needs_professional_review',
+        preparationState: 'unknown',
+      });
+    }
+    if (Array.isArray(operatingStates) && operatingStates.includes('US-DE') && !profile.regimeId.startsWith('llc_')) {
+      obligations.push({
+        ...shared,
+        id: 'us:de:income-return',
+        category: 'state_income_franchise_return',
+        title: 'Delaware corporate income tax return',
+        description: 'A corporation doing business in Delaware must confirm taxable income and prepare the state return with a qualified professional.',
+        dueAt: year === 2025 ? localEndOfDay(classification === 's_corp' ? '2026-03-16' : '2026-04-15', '-04:00') : null,
+        evidenceRequirementIds: ['us:req:operating-states', 'us:req:income-ledger', 'us:req:expense-ledger'],
+        ruleVersionIds: [RULES.delawareIncomeTax],
+        actionId: 'action:prepare-delaware-income-return',
+        applicability: 'needs_professional_review',
+        preparationState: 'unknown',
+      });
+    }
+    if (classification === 'c_corp' && year === 2026) {
       for (const [quarter, date] of C_CORP_ESTIMATED_2026) {
         obligations.push({
           ...shared,
@@ -156,14 +213,14 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
 
 type SharedObligation = Omit<TaxObligation, 'id' | 'category' | 'title' | 'description' | 'evidenceRequirementIds' | 'ruleVersionIds' | 'actionId'>;
 
-function federalObligation(regimeId: string, founderIsForeign: boolean, year: number, shared: SharedObligation): TaxObligation {
+function federalObligation(regimeId: string, classification: unknown, founderIsForeign: boolean, year: number, shared: SharedObligation): TaxObligation {
   const base = {
     ...shared,
     category: 'federal_income_return' as const,
     evidenceRequirementIds: ['us:req:income-ledger', 'us:req:expense-ledger', 'us:req:entity-profile'],
     actionId: 'action:prepare-federal-packet',
   };
-  if (regimeId === 'llc_single_member' && founderIsForeign) {
+  if (regimeId === 'llc_single_member' && classification === 'disregarded_entity' && founderIsForeign) {
     return {
       ...base,
       id: 'us:form-5472-pro-forma-1120',
@@ -175,7 +232,7 @@ function federalObligation(regimeId: string, founderIsForeign: boolean, year: nu
       preparationState: 'unknown',
     };
   }
-  if (regimeId === 'llc_multi_member') {
+  if (classification === 'partnership') {
     return {
       ...base,
       id: 'us:form-1065',
@@ -185,7 +242,7 @@ function federalObligation(regimeId: string, founderIsForeign: boolean, year: nu
       ruleVersionIds: [RULES.form1065, RULES.filingCalendar],
     };
   }
-  if (regimeId === 's_corp') {
+  if (classification === 's_corp') {
     return {
       ...base,
       id: 'us:form-1120-s',
@@ -199,7 +256,7 @@ function federalObligation(regimeId: string, founderIsForeign: boolean, year: nu
       preparationState: founderIsForeign ? 'unknown' : shared.preparationState,
     };
   }
-  if (regimeId === 'c_corp') {
+  if (classification === 'c_corp') {
     return {
       ...base,
       id: 'us:form-1120',
@@ -219,6 +276,15 @@ function federalObligation(regimeId: string, founderIsForeign: boolean, year: nu
     applicability: 'needs_professional_review',
     preparationState: 'unknown',
   };
+}
+
+function classificationMatchesRegime(regimeId: string, classification: unknown): boolean {
+  if (classification === 'needs_classification') return true;
+  if (regimeId === 'llc_single_member') return classification === 'disregarded_entity' || classification === 's_corp' || classification === 'c_corp';
+  if (regimeId === 'llc_multi_member') return classification === 'partnership' || classification === 's_corp' || classification === 'c_corp';
+  if (regimeId === 's_corp') return classification === 's_corp';
+  if (regimeId === 'c_corp') return classification === 'c_corp';
+  return false;
 }
 
 const C_CORP_ESTIMATED_2026 = [
