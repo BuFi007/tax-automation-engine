@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { hashCanonical, type ArcaOnboardingRunV1 } from '@tax-engine/core';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH, hashCanonical, type ArcaOnboardingRunV1 } from '@tax-engine/core';
 
 import { ArcaOnboardingService } from './arca-onboarding';
 import type {
@@ -103,6 +103,14 @@ function advanceToApiVerificationStep(service: ArcaOnboardingService): ArcaOnboa
     onboardingId, command, actorId: 'user:owner', occurredAt: now,
   }).run;
   apply({ kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-handoff' });
+  apply({
+    kind: 'record_human_auth_completion',
+    completion: {
+      version: 'human-auth-completion-v1', completionReceiptHash: hash('human-auth'),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: now, signatureVerified: true,
+    },
+    idempotencyKey: 'human-auth-completion',
+  });
   apply({
     kind: 'record_service_adherence', pointOfSaleAdministrationActive: true, relationshipManagerActive: true,
     evidenceHash: hash('services'), idempotencyKey: 'service-adherence',

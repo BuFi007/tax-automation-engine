@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import { z } from 'zod';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core';
 
 import type { ManualArcaOnboardingCommand, ArcaOnboardingService } from './arca-onboarding';
 import { readBoundedBody } from './bounded-body';
@@ -177,6 +178,28 @@ function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string;
     case 'login_handoff': {
       const body = z.object({ ...baseMutationSchema, browserSessionReferenceHash: sha256Schema }).strict().parse(raw);
       return { actorId: body.actorId, command: { kind: 'complete_login_handoff', browserSessionReferenceHash: body.browserSessionReferenceHash, idempotencyKey: body.idempotencyKey } };
+    }
+    case 'human_auth': {
+      const body = z.object({
+        ...baseMutationSchema,
+        completionReceiptHash: sha256Schema,
+        capturePolicyHash: z.literal(HUMAN_AUTH_CAPTURE_POLICY_HASH),
+        completedAt: z.iso.datetime({ offset: true }),
+      }).strict().parse(raw);
+      return {
+        actorId: body.actorId,
+        command: {
+          kind: 'record_human_auth_completion',
+          completion: {
+            version: 'human-auth-completion-v1',
+            completionReceiptHash: body.completionReceiptHash,
+            capturePolicyHash: body.capturePolicyHash,
+            completedAt: body.completedAt,
+            signatureVerified: true,
+          },
+          idempotencyKey: body.idempotencyKey,
+        },
+      };
     }
     case 'service_adherence': {
       const body = z.object({

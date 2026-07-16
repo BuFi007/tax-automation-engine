@@ -74,6 +74,7 @@ export function LiveArcaOnboardingJourney({
       saving={saving}
       saveError={error}
       onConfirmLoginHandoff={() => mutate(current => client.completeLoginHandoff(current))}
+      onConfirmHumanAuth={() => mutate(current => client.completeHumanAuth(current))}
       onConfirmServiceAdherence={() => mutate(current => client.confirmServiceAdherence(current))}
       onRecordPointOfSale={point => mutate(current => client.recordPointOfSale(current, point))}
       onSelectExistingPoint={point => mutate(current => client.selectPointOfSale(current, point))}

@@ -6,6 +6,12 @@ export const ARCA_ONBOARDING_UI_STEPS = [
     owner: 'You',
   },
   {
+    id: 'human_auth',
+    title: 'Private ARCA authentication',
+    description: 'Motora pauses capture while you authenticate. It receives only a signed completion receipt after you leave the credential page.',
+    owner: 'You',
+  },
+  {
     id: 'service_adherence',
     title: 'Enable portal services',
     description: 'Add Point-of-Sale Administration and Relationship Manager only if missing. Every account change needs your confirmation.',
