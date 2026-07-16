@@ -108,7 +108,7 @@ describe('tax tenant principal', () => {
     expect(requiredTaxTenantPrincipalCapability('GET', '/v1/browser/snapshots/workspace:1')).toBe('snapshot:read');
     expect(requiredTaxTenantPrincipalCapability('GET', '/v1/browser/snapshots/workspace:1/annual:2026')).toBe('snapshot:read');
     expect(requiredTaxTenantPrincipalCapability('POST', '/v1/browser/factoring-projections/workspace:1/annual:2026')).toBe('snapshot:project');
-    expect(requiredTaxTenantPrincipalCapability('GET', '/v1/browser/factoring-projections/workspace:1/annual:2026')).toBe('snapshot:read');
+    expect(requiredTaxTenantPrincipalCapability('GET', '/v1/browser/factoring-projections/workspace:1/annual:2026')).toBe('tax.factoring.read');
     expect(requiredTaxTenantPrincipalCapability('PUT', '/v1/snapshot-configurations/workspace:1')).toBe('snapshot:configure');
     expect(requiredTaxTenantPrincipalCapability('PUT', '/v1/snapshot-configurations/workspace:1/annual:2026')).toBe('snapshot:configure');
     expect(requiredTaxTenantPrincipalCapability('GET', '/v1/profiles/workspace:1')).toBe('profile:read');
@@ -137,6 +137,7 @@ describe('tax tenant principal', () => {
       'projector-secret',
     );
     expect(taxTenantPrincipalSecretForCapability('snapshot:read', secrets)).toBe('user-secret');
+    expect(taxTenantPrincipalSecretForCapability('tax.factoring.read', secrets)).toBe('user-secret');
     expect(taxTenantPrincipalSecretForCapability('snapshot:configure', secrets)).toBe(
       'user-secret',
     );

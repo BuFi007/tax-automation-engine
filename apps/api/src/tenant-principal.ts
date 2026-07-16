@@ -10,6 +10,7 @@ const capabilitySchema = z.enum([
   'snapshot:configure',
   'snapshot:project',
   'snapshot:read',
+  'tax.factoring.read',
   'arca:onboard',
   'accountant:mandate',
 ]);
@@ -108,7 +109,7 @@ export function requiredTaxTenantPrincipalCapability(
   if (method === 'GET' && /^\/v1\/snapshot-configurations\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:configure';
   if (method === 'GET' && /^\/v1\/snapshots\/(?!demo(?:\/|$))[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (method === 'GET' && /^\/v1\/browser\/snapshots\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
-  if (method === 'GET' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
+  if (method === 'GET' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'tax.factoring.read';
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   return null;

@@ -84,7 +84,7 @@ describe('durable Factura E factoring browser projection', () => {
         url,
         store,
         projector,
-        principal(WORKSPACE_ID, 'snapshot:read'),
+        principal(WORKSPACE_ID, 'tax.factoring.read'),
       );
       expect(read?.status).toBe(200);
       expect(facturaEFactoringProjectionReadResultV1Schema.parse(await read?.json())).toMatchObject({
@@ -152,7 +152,7 @@ describe('durable Factura E factoring browser projection', () => {
         url,
         store,
         projector,
-        principal('workspace:other', 'snapshot:read'),
+        principal('workspace:other', 'tax.factoring.read'),
       )).rejects.toThrow('TAX_TENANT_SCOPE_UNAUTHORIZED');
 
       const missing = await handleFacturaEFactoringBrowserRoute(
@@ -160,7 +160,7 @@ describe('durable Factura E factoring browser projection', () => {
         url,
         store,
         projector,
-        principal(WORKSPACE_ID, 'snapshot:read'),
+        principal(WORKSPACE_ID, 'tax.factoring.read'),
       );
       expect(missing?.status).toBe(404);
       expect(await missing?.json()).toEqual({
