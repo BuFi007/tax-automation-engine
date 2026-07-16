@@ -13,3 +13,4 @@ export * from './factura-e-feature';
 export * from './factura-e-feature-head';
 export * from './arca-onboarding';
 export * from './accountant-mandate';
+export * from './digital-assets';
