@@ -15,3 +15,4 @@ export * from './arca-onboarding';
 export * from './accountant-mandate';
 export * from './digital-assets';
 export * from './stripe-tax';
+export * from './argentina-services';
