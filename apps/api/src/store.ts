@@ -1,6 +1,13 @@
 import { Database } from 'bun:sqlite';
+import { z } from 'zod';
 
-import type { TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
+import {
+  facturaEFactoringProjectionReceiptV1Schema,
+  facturaEFactoringProjectionV1Schema,
+  type FacturaEFactoringProjectionReceiptV1,
+  type FacturaEFactoringProjectionV1,
+  type TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1,
+} from '@tax-engine/browser-contracts';
 
 import type {
   ArcaOnboardingEventV1,
@@ -80,6 +87,13 @@ type StoredBrowserTaxSnapshotRow = Readonly<{
   source_fingerprint: string;
   browser_snapshot_hash: string;
   snapshot_json: string;
+}>;
+
+type StoredFacturaEFactoringProjectionRow = Readonly<{
+  revision: number;
+  source_revision: string;
+  projection_json: string;
+  projected_at: string;
 }>;
 
 export class TaxProfileStore {
@@ -245,6 +259,18 @@ export class TaxProfileStore {
         generated_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, projection_key, case_revision)
       );
+      CREATE TABLE IF NOT EXISTS factura_e_factoring_browser_projections (
+        workspace_id TEXT NOT NULL,
+        projection_key TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        source_revision TEXT NOT NULL,
+        projection_json TEXT NOT NULL,
+        projected_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, projection_key, revision),
+        UNIQUE (workspace_id, projection_key, source_revision)
+      );
+      CREATE INDEX IF NOT EXISTS factura_e_factoring_browser_projections_latest
+        ON factura_e_factoring_browser_projections (workspace_id, projection_key, revision DESC);
       CREATE TABLE IF NOT EXISTS workflow_revisions (
         workspace_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -564,10 +590,111 @@ export class TaxProfileStore {
       VALUES ('bu234-browser-tax-snapshot-case-v1', ?)
       ON CONFLICT(version) DO NOTHING
     `).run(new Date().toISOString());
+    this.#db.query(`
+      INSERT INTO schema_migrations (version, applied_at)
+      VALUES ('bu247-durable-factura-e-factoring-browser-projection-v1', ?)
+      ON CONFLICT(version) DO NOTHING
+    `).run(new Date().toISOString());
   }
 
   close(): void {
     this.#db.close();
+  }
+
+  projectFacturaEFactoringBrowserProjection(input: Readonly<{
+    workspaceId: string;
+    projectionKey?: string;
+    expectedWorkspaceRef: string;
+    expectedRevision: number | null;
+    projectedAt: string;
+    projection: FacturaEFactoringProjectionV1;
+  }>): Readonly<{ receipt: FacturaEFactoringProjectionReceiptV1; replayed: boolean }> {
+    const projectionKey = normalizeTaxSnapshotProjectionKey(input.projectionKey);
+    const projection = facturaEFactoringProjectionV1Schema.parse(input.projection);
+    if (projection.workspaceRef !== input.expectedWorkspaceRef) {
+      throw new Error('FACTURA_E_FACTORING_WORKSPACE_REF_MISMATCH');
+    }
+    if (projection.cacheIdentity.projectionKey !== projectionKey) {
+      throw new Error('FACTURA_E_FACTORING_PROJECTION_KEY_MISMATCH');
+    }
+    const projectedAtValue = z.iso.datetime({ offset: true }).parse(input.projectedAt);
+    const projectedAt = parseInstant(projectedAtValue);
+    const sourceRevision = projection.cacheIdentity.snapshotRevision;
+    const existingSource = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string, string]>(`
+      SELECT revision, source_revision, projection_json, projected_at
+      FROM factura_e_factoring_browser_projections
+      WHERE workspace_id = ? AND projection_key = ? AND source_revision = ?
+    `).get(input.workspaceId, projectionKey, sourceRevision);
+    if (existingSource) {
+      if (hashCanonical(JSON.parse(existingSource.projection_json)) !== hashCanonical(projection)
+        || parseInstant(existingSource.projected_at) !== projectedAt) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_IDEMPOTENCY_CONFLICT');
+      }
+      return { receipt: factoringProjectionReceipt(projectionKey, existingSource), replayed: true };
+    }
+
+    return this.#db.transaction(() => {
+      const current = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string]>(`
+        SELECT revision, source_revision, projection_json, projected_at
+        FROM factura_e_factoring_browser_projections
+        WHERE workspace_id = ? AND projection_key = ?
+        ORDER BY revision DESC
+        LIMIT 1
+      `).get(input.workspaceId, projectionKey);
+      const currentRevision = current?.revision ?? null;
+      if (currentRevision !== input.expectedRevision) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_VERSION_CONFLICT');
+      }
+      if (current && projectedAt < parseInstant(current.projected_at)) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_STALE');
+      }
+      if (current) {
+        const currentProjection = facturaEFactoringProjectionV1Schema.parse(
+          JSON.parse(current.projection_json),
+        );
+        if (projection.cacheIdentity.caseRevision < currentProjection.cacheIdentity.caseRevision) {
+          throw new Error('FACTURA_E_FACTORING_CASE_REVISION_STALE');
+        }
+      }
+      const revision = (current?.revision ?? 0) + 1;
+      this.#db.query(`
+        INSERT INTO factura_e_factoring_browser_projections (
+          workspace_id, projection_key, revision, source_revision, projection_json, projected_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        input.workspaceId,
+        projectionKey,
+        revision,
+        sourceRevision,
+        JSON.stringify(projection),
+        projectedAtValue,
+      );
+      return {
+        receipt: facturaEFactoringProjectionReceiptV1Schema.parse({
+          version: 'factura-e-factoring-projection-receipt-v1',
+          projectionKey,
+          revision,
+          projectedAt: projectedAtValue,
+          projection,
+        }),
+        replayed: false,
+      };
+    })();
+  }
+
+  latestFacturaEFactoringBrowserProjection(
+    workspaceId: string,
+    projectionKey?: string,
+  ): FacturaEFactoringProjectionReceiptV1 | null {
+    const normalizedProjectionKey = normalizeTaxSnapshotProjectionKey(projectionKey);
+    const row = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string]>(`
+      SELECT revision, source_revision, projection_json, projected_at
+      FROM factura_e_factoring_browser_projections
+      WHERE workspace_id = ? AND projection_key = ?
+      ORDER BY revision DESC
+      LIMIT 1
+    `).get(workspaceId, normalizedProjectionKey);
+    return row ? factoringProjectionReceipt(normalizedProjectionKey, row) : null;
   }
 
   get(workspaceId: string): TaxProfile | null {
@@ -1891,6 +2018,19 @@ function consentEventReceipt(
     action: event.action,
     replayed,
   };
+}
+
+function factoringProjectionReceipt(
+  projectionKey: string,
+  row: StoredFacturaEFactoringProjectionRow,
+): FacturaEFactoringProjectionReceiptV1 {
+  return facturaEFactoringProjectionReceiptV1Schema.parse({
+    version: 'factura-e-factoring-projection-receipt-v1',
+    projectionKey,
+    revision: row.revision,
+    projectedAt: row.projected_at,
+    projection: JSON.parse(row.projection_json),
+  });
 }
 
 function parseInstant(value: string): number {

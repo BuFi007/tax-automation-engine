@@ -103,10 +103,12 @@ export function requiredTaxTenantPrincipalCapability(
   if (method === 'GET' && /^\/v1\/profiles\/[^/]+$/.test(pathname)) return 'profile:read';
   if (method === 'POST' && pathname === '/v1/snapshots') return 'snapshot:project';
   if (method === 'POST' && /^\/v1\/snapshot-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:project';
+  if (method === 'POST' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:project';
   if (method === 'PUT' && /^\/v1\/snapshot-configurations\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:configure';
   if (method === 'GET' && /^\/v1\/snapshot-configurations\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:configure';
   if (method === 'GET' && /^\/v1\/snapshots\/(?!demo(?:\/|$))[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (method === 'GET' && /^\/v1\/browser\/snapshots\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
+  if (method === 'GET' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   return null;

@@ -566,7 +566,45 @@ export const facturaEFactoringProjectionV1Schema = z.object({
   }
 });
 
+export const facturaEFactoringProjectionReceiptV1Schema = z.object({
+  version: z.literal('factura-e-factoring-projection-receipt-v1'),
+  projectionKey: projectionKeySchema,
+  revision: z.number().int().positive(),
+  projectedAt: isoDateTimeSchema,
+  projection: facturaEFactoringProjectionV1Schema,
+}).strict().superRefine((receipt, context) => {
+  if (receipt.projectionKey !== receipt.projection.cacheIdentity.projectionKey) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Factoring receipt and projection identities must agree',
+      path: ['projectionKey'],
+    });
+  }
+  if (receipt.projection.expiresAt !== null
+    && Date.parse(receipt.projection.expiresAt) <= Date.parse(receipt.projectedAt)
+    && ['active', 'offer_ready', 'approval_required', 'funded'].includes(receipt.projection.state)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'A scored factoring projection must be current when persisted',
+      path: ['projection', 'expiresAt'],
+    });
+  }
+});
+
+export const facturaEFactoringProjectionReadResultV1Schema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('ready'),
+    receipt: facturaEFactoringProjectionReceiptV1Schema,
+  }).strict(),
+  z.object({
+    state: z.literal('unavailable'),
+    code: z.literal('FACTURA_E_FACTORING_PROJECTION_NOT_FOUND'),
+  }).strict(),
+]);
+
 export type TaxCaseV1 = z.infer<typeof taxCaseV1Schema>;
 export type TaxWidgetSnapshotV1 = z.infer<typeof taxWidgetSnapshotV1Schema>;
 export type TaxWidgetSnapshotReceiptV1 = z.infer<typeof taxWidgetSnapshotReceiptV1Schema>;
 export type FacturaEFactoringProjectionV1 = z.infer<typeof facturaEFactoringProjectionV1Schema>;
+export type FacturaEFactoringProjectionReceiptV1 = z.infer<typeof facturaEFactoringProjectionReceiptV1Schema>;
+export type FacturaEFactoringProjectionReadResultV1 = z.infer<typeof facturaEFactoringProjectionReadResultV1Schema>;

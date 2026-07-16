@@ -32,3 +32,7 @@ are test inputs only: they are never a production fallback, and their action IDs
 do not grant authority. The strengthened Factura E projection rejects partial
 scores, contribution-cap drift, unverified scored states, and offer/state
 mismatches that earlier prerelease packages could parse.
+
+Package `0.4.0` adds the factoring projection receipt/read-result schemas. This
+is an additive endpoint contract: existing Tax snapshot bytes and both frozen
+fixture digests remain unchanged.

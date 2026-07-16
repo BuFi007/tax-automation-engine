@@ -4,6 +4,7 @@ import {
   FACTURA_E_FACTORING_STATES_V1,
   deriveTaxSourceHealthStateV1,
   facturaEFactoringProjectionV1Schema,
+  facturaEFactoringProjectionReadResultV1Schema,
   taxCaseV1Schema,
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
@@ -191,6 +192,17 @@ describe('browser-safe Tax V1 contracts', () => {
 
     const leaked = { ...facturaENeedsConsentProjectionV1Fixture, authorityInvoiceId: 'global-hash' };
     expect(facturaEFactoringProjectionV1Schema.safeParse(leaked).success).toBe(false);
+
+    expect(facturaEFactoringProjectionReadResultV1Schema.safeParse({
+      state: 'ready',
+      receipt: {
+        version: 'factura-e-factoring-projection-receipt-v1',
+        projectionKey: facturaENeedsConsentProjectionV1Fixture.cacheIdentity.projectionKey,
+        revision: 1,
+        projectedAt: '2026-07-16T09:00:00.000Z',
+        projection: facturaENeedsConsentProjectionV1Fixture,
+      },
+    }).success).toBe(true);
   });
 
   test('rejects impossible Factura E score, authority, and offer combinations', () => {
