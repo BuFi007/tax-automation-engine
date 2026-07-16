@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes the frozen root and bounded feature entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.5.1');
+    expect(packageJson.version).toBe('0.6.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -92,10 +92,10 @@ describe('published browser-contract package', () => {
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1).toBeDefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256).toBe(
-      '961fd3133f757f183cc30b8ee3e6bf4435396f1105113a67d66200ba8e1c7dac',
+      '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415',
     );
     expect(goldenDigest).toBe(
-      '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425',
+      '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976',
     );
     if (typeof goldenDigest !== 'string') throw new Error('Built fixture digest is not a string');
 

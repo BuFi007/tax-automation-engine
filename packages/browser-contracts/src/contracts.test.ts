@@ -182,6 +182,19 @@ describe('browser-safe Tax V1 contracts', () => {
     delete preMinorSnapshot.planningForecast;
     delete preMinorSnapshot.supplementalEvidenceQuality;
     expect(taxWidgetSnapshotV1Schema.safeParse(preMinorSnapshot).success).toBe(true);
+
+    const legacyQuality = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    legacyQuality.supplementalEvidenceQuality = {
+      state: 'unavailable',
+      band: null,
+      asOf: legacyQuality.supplementalEvidenceQuality.asOf,
+      safeSourceRefs: [],
+      limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+      use: 'tax_evidence_only',
+      affectsCredit: false,
+      affectsFactoring: false,
+    };
+    expect(taxWidgetSnapshotV1Schema.safeParse(legacyQuality).success).toBe(true);
   });
 
   test('rejects restricted fiscal/evidence fields and incoherent durable steps', () => {

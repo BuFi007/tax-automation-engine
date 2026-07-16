@@ -400,9 +400,34 @@ const unavailableEvidenceQualityV1Schema = z.object({
     });
   }
 });
+const legacySupplementalEvidenceQualityV1Schema = z.object({
+  state: z.enum(['unavailable', 'available']),
+  band: z.enum(['limited', 'developing', 'strong']).nullable(),
+  asOf: isoDateTimeSchema,
+  safeSourceRefs: z.array(safeReferenceSchema).max(100),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  use: z.literal('tax_evidence_only'),
+  affectsCredit: z.literal(false),
+  affectsFactoring: z.literal(false),
+}).strict().superRefine((quality, context) => {
+  if (quality.state === 'unavailable' && quality.band !== null) {
+    context.addIssue({ code: 'custom', message: 'Unavailable legacy evidence quality cannot carry a band' });
+  }
+  if (quality.state === 'available' && quality.band === null) {
+    context.addIssue({ code: 'custom', message: 'Available legacy evidence quality requires a band' });
+  }
+  if (quality.state === 'unavailable' && quality.limitationCodes.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Unavailable legacy evidence quality requires a named limitation',
+      path: ['limitationCodes'],
+    });
+  }
+});
 const supplementalEvidenceQualityV1Schema = z.discriminatedUnion('state', [
   readyEvidenceQualityV1Schema,
   unavailableEvidenceQualityV1Schema,
+  legacySupplementalEvidenceQualityV1Schema,
 ]);
 
 export const taxCacheIdentityV1Schema = z.object({

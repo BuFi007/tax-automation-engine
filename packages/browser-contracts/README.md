@@ -20,4 +20,10 @@ Package `0.5.0` adds the deterministic ARCA onboarding browser corridor. It proj
 
 Package `0.5.1` also publishes the same contract at `@tax-engine/browser-contracts/arca-onboarding`. Consumers with bounded typecheck graphs should prefer that feature entrypoint; it does not change the 0.5.0 wire format.
 
+Package `0.6.0` adds the consented, non-scoring Tax evidence-quality union. Only
+`ready` carries the frozen 0–100 value, band, and five dimensions. Named
+no-value states remain fail-closed, while the 0.5.x supplemental shape stays
+parseable during the consumer-first rollout. New producers never emit the
+legacy shape.
+
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for versioning and rollout rules.
