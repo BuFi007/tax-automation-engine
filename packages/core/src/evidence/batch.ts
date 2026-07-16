@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import { FINANCIAL_DECIMAL_RE, FinancialDecimal } from '../financial-decimal';
+import type { TaxConsentPurpose } from '../types';
 import type { TaxEvidenceBatchV1, TaxEvidenceRecord } from './types';
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
@@ -145,8 +146,16 @@ export function parseTaxEvidenceBatchV1(value: unknown): TaxEvidenceBatchV1 {
 }
 
 export function hashTaxEvidenceConsentScope(version: string, sourceIds: readonly string[]): string {
+  return hashTaxConsentScope('tax_workspace_processing', version, sourceIds);
+}
+
+export function hashTaxConsentScope(
+  purpose: Extract<TaxConsentPurpose, 'tax_workspace_processing' | 'tax_evidence_quality'>,
+  version: string,
+  sourceIds: readonly string[],
+): string {
   const canonical = {
-    purpose: 'tax_workspace_processing' as const,
+    purpose,
     version,
     sourceIds: [...new Set(sourceIds)].sort(),
   };

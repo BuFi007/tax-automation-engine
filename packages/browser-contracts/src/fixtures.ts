@@ -212,11 +212,13 @@ export const argentinaTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.par
     planningOnly: true,
   },
   supplementalEvidenceQuality: {
-    state: 'unavailable',
-    band: null,
+    version: 'tax-evidence-quality-v1',
+    purpose: 'tax_evidence_quality',
+    state: 'not_consented',
     asOf: '2026-07-15T09:59:00.000Z',
+    validUntil: null,
     safeSourceRefs: [],
-    limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+    limitationCodes: ['TAX_EVIDENCE_QUALITY_CONSENT_REQUIRED'],
     use: 'tax_evidence_only',
     affectsCredit: false,
     affectsFactoring: false,
@@ -369,4 +371,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976';

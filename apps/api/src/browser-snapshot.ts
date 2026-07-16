@@ -251,14 +251,11 @@ export class TaxBrowserSnapshotProjector {
         planningOnly: true,
       },
       supplementalEvidenceQuality: {
-        state: 'unavailable',
-        band: null,
-        asOf: receipt.asOf,
-        safeSourceRefs: [],
-        limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
-        use: 'tax_evidence_only',
-        affectsCredit: false,
-        affectsFactoring: false,
+        ...projectEvidenceQuality(receipt.snapshot.evidenceQuality, {
+          ref,
+          revision,
+          sourceRef: sourceRefForWrappedReference,
+        }, receipt.asOf),
       },
       authorizedNextActions: [],
       conclusions,
@@ -268,6 +265,74 @@ export class TaxBrowserSnapshotProjector {
       cacheIdentity,
     });
   }
+}
+
+function projectEvidenceQuality(
+  quality: CoreTaxWidgetSnapshotReceiptV1['snapshot']['evidenceQuality'] | undefined,
+  references: Readonly<{
+    ref: (purpose: string, value: string) => string;
+    revision: (prefix: string, purpose: string, value: string) => string;
+    sourceRef: (value: string) => string;
+  }>,
+  fallbackAsOf: string,
+): NonNullable<BrowserTaxWidgetSnapshotV1['supplementalEvidenceQuality']> {
+  if (!quality) {
+    return {
+      version: 'tax-evidence-quality-v1',
+      purpose: 'tax_evidence_quality',
+      state: 'unknown',
+      asOf: fallbackAsOf,
+      validUntil: null,
+      safeSourceRefs: [],
+      limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+      use: 'tax_evidence_only',
+      affectsCredit: false,
+      affectsFactoring: false,
+    };
+  }
+  const base = {
+    version: quality.version,
+    purpose: quality.purpose,
+    asOf: quality.asOf,
+    validUntil: quality.validUntil,
+    safeSourceRefs: quality.safeSourceReferenceIds.map(references.sourceRef),
+    limitationCodes: [...quality.limitationCodes],
+    use: 'tax_evidence_only' as const,
+    affectsCredit: false as const,
+    affectsFactoring: false as const,
+  };
+  if (quality.state !== 'ready') return { ...base, state: quality.state };
+  return {
+    ...base,
+    state: 'ready',
+    value: quality.value,
+    band: quality.band,
+    dimensions: quality.dimensions.map(dimension => ({
+      id: dimension.id,
+      score: dimension.score,
+      weight: dimension.weight,
+      safeSourceRefs: dimension.safeSourceReferenceIds.map(references.sourceRef),
+      safeRevisionRefs: dimension.safeRevisionReferenceIds.map(value => references.revision(
+        'evidence',
+        'evidence-quality-source-revision',
+        value,
+      )),
+      bindingState: dimension.bindingState,
+      freshnessState: dimension.freshnessState,
+      reviewState: dimension.reviewState,
+      supersessionState: dimension.supersessionState,
+      limitationCodes: [...dimension.limitationCodes],
+      ruleVersion: references.ref('evidence-quality-rule-version', dimension.ruleVersion),
+    })),
+    reasonCodes: [...quality.reasonCodes],
+    authorizedActionIds: [...quality.authorizedActionIds],
+    consentVersion: references.ref('evidence-quality-consent-version', quality.consentVersion),
+    consentScopeRevision: references.revision(
+      'consent',
+      'evidence-quality-consent-scope',
+      quality.consentScopeHash,
+    ),
+  };
 }
 
 function deriveFilingReadinessState(

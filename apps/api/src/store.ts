@@ -200,11 +200,12 @@ export class TaxProfileStore {
       );
       CREATE TABLE IF NOT EXISTS evidence_consent_grants (
         workspace_id TEXT NOT NULL,
-        purpose TEXT NOT NULL CHECK (purpose = 'tax_workspace_processing'),
+        purpose TEXT NOT NULL CHECK (purpose IN ('tax_workspace_processing', 'tax_evidence_quality')),
         version TEXT NOT NULL,
         scope_hash TEXT NOT NULL,
         source_ids_json TEXT NOT NULL,
         granted_at TEXT NOT NULL,
+        expires_at TEXT,
         revoked_at TEXT,
         grant_event_id TEXT NOT NULL,
         revoke_event_id TEXT,
@@ -339,6 +340,50 @@ export class TaxProfileStore {
         bound_at TEXT NOT NULL
       );
     `);
+    this.#db.transaction(() => {
+      const consentGrantColumns = this.#db.query<{ name: string }, []>(
+        'PRAGMA table_info(evidence_consent_grants)',
+      ).all();
+      const hasExpiresAt = consentGrantColumns.some(column => column.name === 'expires_at');
+      const tableSql = this.#db.query<{ sql: string }, [string]>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get('evidence_consent_grants')?.sql ?? '';
+      const supportsQualityPurpose = tableSql.includes("'tax_evidence_quality'");
+      if (!hasExpiresAt || !supportsQualityPurpose) {
+        this.#db.exec(`
+          DROP TABLE IF EXISTS evidence_consent_grants_bu238_migration;
+          CREATE TABLE evidence_consent_grants_bu238_migration (
+            workspace_id TEXT NOT NULL,
+            purpose TEXT NOT NULL CHECK (purpose IN ('tax_workspace_processing', 'tax_evidence_quality')),
+            version TEXT NOT NULL,
+            scope_hash TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            expires_at TEXT,
+            revoked_at TEXT,
+            grant_event_id TEXT NOT NULL,
+            revoke_event_id TEXT,
+            PRIMARY KEY (workspace_id, purpose, version, scope_hash),
+            UNIQUE (workspace_id, purpose, version)
+          );
+          INSERT INTO evidence_consent_grants_bu238_migration (
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at,
+            expires_at, revoked_at, grant_event_id, revoke_event_id
+          )
+          SELECT
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at,
+            ${hasExpiresAt ? 'expires_at' : 'NULL'}, revoked_at, grant_event_id, revoke_event_id
+          FROM evidence_consent_grants;
+          DROP TABLE evidence_consent_grants;
+          ALTER TABLE evidence_consent_grants_bu238_migration RENAME TO evidence_consent_grants;
+        `);
+      }
+      this.#db.query(`
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES ('bu238-tax-evidence-quality-consent-v1', ?)
+        ON CONFLICT(version) DO NOTHING
+      `).run(new Date().toISOString());
+    })();
     this.#db.transaction(() => {
       const evidenceColumns = this.#db.query<{ name: string; notnull: number }, []>('PRAGMA table_info(evidence_records)').all();
       const sourceColumn = evidenceColumns.find(column => column.name === 'source_id');
@@ -1537,14 +1582,16 @@ export class TaxProfileStore {
         scope_hash: string;
         source_ids_json: string;
         granted_at: string;
+        expires_at: string | null;
         revoked_at: string | null;
-      }, [string, string]>(`
-        SELECT scope_hash, source_ids_json, granted_at, revoked_at
+      }, [string, string, string]>(`
+        SELECT scope_hash, source_ids_json, granted_at, expires_at, revoked_at
         FROM evidence_consent_grants
-        WHERE workspace_id = ? AND version = ?
-      `).get(event.workspaceId, event.consent.version);
+        WHERE workspace_id = ? AND purpose = ? AND version = ?
+      `).get(event.workspaceId, event.consent.purpose, event.consent.version);
       if (existingGrant && (existingGrant.scope_hash !== event.consent.scopeHash
-        || existingGrant.source_ids_json !== JSON.stringify(event.consent.sourceIds))) {
+        || existingGrant.source_ids_json !== JSON.stringify(event.consent.sourceIds)
+        || (event.action === 'grant' && existingGrant.expires_at !== (event.consent.expiresAt ?? null)))) {
         throw new Error('EVIDENCE_CONSENT_VERSION_SCOPE_CONFLICT');
       }
       if (event.action === 'grant') {
@@ -1552,14 +1599,17 @@ export class TaxProfileStore {
         if (existingGrant) throw new Error('EVIDENCE_CONSENT_ALREADY_GRANTED');
         this.#db.query(`
           INSERT INTO evidence_consent_grants (
-            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at, revoked_at, grant_event_id, revoke_event_id
-          ) VALUES (?, 'tax_workspace_processing', ?, ?, ?, ?, NULL, ?, NULL)
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at, expires_at,
+            revoked_at, grant_event_id, revoke_event_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)
         `).run(
           event.workspaceId,
+          event.consent.purpose,
           event.consent.version,
           event.consent.scopeHash,
           JSON.stringify(event.consent.sourceIds),
           event.occurredAt,
+          event.consent.expiresAt ?? null,
           event.eventId,
         );
       } else {
@@ -1571,8 +1621,15 @@ export class TaxProfileStore {
         this.#db.query(`
           UPDATE evidence_consent_grants
           SET revoked_at = ?, revoke_event_id = ?
-          WHERE workspace_id = ? AND version = ? AND scope_hash = ?
-        `).run(event.occurredAt, event.eventId, event.workspaceId, event.consent.version, event.consent.scopeHash);
+          WHERE workspace_id = ? AND purpose = ? AND version = ? AND scope_hash = ?
+        `).run(
+          event.occurredAt,
+          event.eventId,
+          event.workspaceId,
+          event.consent.purpose,
+          event.consent.version,
+          event.consent.scopeHash,
+        );
       }
       this.#db.query(`
         INSERT INTO evidence_consent_events (
@@ -1586,35 +1643,41 @@ export class TaxProfileStore {
 
   listEvidenceConsentGrants(workspaceId: string): readonly TaxConsentGrant[] {
     const rows = this.#db.query<{
+      purpose: TaxConsentGrant['purpose'];
       version: string;
       scope_hash: string;
       source_ids_json: string;
       granted_at: string;
+      expires_at: string | null;
       revoked_at: string | null;
     }, [string]>(`
-      SELECT version, scope_hash, source_ids_json, granted_at, revoked_at
+      SELECT purpose, version, scope_hash, source_ids_json, granted_at, expires_at, revoked_at
       FROM evidence_consent_grants
       WHERE workspace_id = ?
       ORDER BY granted_at ASC, version ASC, scope_hash ASC
     `).all(workspaceId);
     return rows.map(row => ({
-      purpose: 'tax_workspace_processing',
+      purpose: row.purpose,
       version: row.version,
       scopeIds: JSON.parse(row.source_ids_json) as string[],
       scopeHash: row.scope_hash,
       grantedAt: row.granted_at,
+      expiresAt: row.expires_at,
       revokedAt: row.revoked_at,
     }));
   }
 
   #assertActiveBatchConsent(batch: TaxEvidenceBatchV1): void {
-    const grant = this.#db.query<{ scope_hash: string; source_ids_json: string; granted_at: string; revoked_at: string | null }, [string, string]>(`
-      SELECT scope_hash, source_ids_json, granted_at, revoked_at
+    const grant = this.#db.query<{ scope_hash: string; source_ids_json: string; granted_at: string; expires_at: string | null; revoked_at: string | null }, [string, string]>(`
+      SELECT scope_hash, source_ids_json, granted_at, expires_at, revoked_at
       FROM evidence_consent_grants
-      WHERE workspace_id = ? AND version = ?
+      WHERE workspace_id = ? AND purpose = 'tax_workspace_processing' AND version = ?
     `).get(batch.workspaceId, batch.consent.version);
     if (!grant) throw new Error('EVIDENCE_CONSENT_GRANT_NOT_FOUND');
     if (grant.revoked_at) throw new Error('EVIDENCE_CONSENT_REVOKED');
+    if (grant.expires_at && parseInstant(batch.producedAt) >= parseInstant(grant.expires_at)) {
+      throw new Error('EVIDENCE_CONSENT_EXPIRED');
+    }
     if (grant.scope_hash !== batch.consent.scopeHash
       || grant.source_ids_json !== JSON.stringify(batch.consent.sourceIds)) throw new Error('EVIDENCE_CONSENT_SCOPE_CONFLICT');
     if (parseInstant(batch.producedAt) < parseInstant(grant.granted_at)) throw new Error('EVIDENCE_CONSENT_NOT_YET_GRANTED');

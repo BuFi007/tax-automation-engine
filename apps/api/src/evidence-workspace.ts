@@ -161,6 +161,15 @@ export class TaxEvidenceWorkspaceService {
     const evidence = {
       ...resolvedEvidence,
       validUntil: earliestIso([resolvedEvidence.validUntil, sourceValidUntil].filter((value): value is string => value !== null)),
+      ...(resolvedEvidence.evidenceQuality
+        ? { evidenceQuality: {
+            ...resolvedEvidence.evidenceQuality,
+            validUntil: earliestIso([
+              resolvedEvidence.evidenceQuality.validUntil,
+              sourceValidUntil,
+            ].filter((value): value is string => value !== null)),
+          } }
+        : {}),
     };
     const snapshot = buildTaxWidgetSnapshot({ workspaceId: input.workspaceId, profile, evidence });
     const persisted = this.store.saveTaxWidgetSnapshot({
