@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import type { TaxEvidenceRecord } from './evidence';
+import { assertTaxEvidenceBatchV1, hashTaxEvidenceConsentScope, type TaxEvidenceBatchV1, type TaxEvidenceRecord } from './evidence';
 import { money } from './money';
 import type { EvidenceMoney, JurisdictionCode, Period } from './types';
 
-export const STRIPE_TAX_SUPPORT_MATRIX_VERSION = 'stripe-tax-supported-countries-2026-07-15';
+export const STRIPE_TAX_SUPPORT_MATRIX_VERSION = 'stripe-tax-supported-countries-2026-07-16';
 export const STRIPE_TAX_SUPPORT_SOURCE_URL = 'https://docs.stripe.com/tax/supported-countries';
 
 export type FiscalAuthorityRoute = 'arca' | 'stripe_tax_supported_jurisdiction' | 'erp' | 'manual';
@@ -99,7 +99,7 @@ export type StripeTaxTransactionEvidenceInput = Readonly<{
   workspaceId: string;
   sourceId: string;
   consentVersion: string;
-  issuerJurisdiction: JurisdictionCode;
+  issuerJurisdiction: JurisdictionCode | null;
   period: Period;
   observedAt: string;
   economicEventId: string;
@@ -107,18 +107,30 @@ export type StripeTaxTransactionEvidenceInput = Readonly<{
   providerRevision: string;
   taxAmount: EvidenceMoney;
   route: StripeTaxRoutingDecisionV1;
+  supersedes?: Readonly<{
+    providerTransactionHash: string;
+    providerRevision: string;
+  }> | null;
 }>;
 
 export function stripeTaxTransactionEvidence(input: StripeTaxTransactionEvidenceInput): TaxEvidenceRecord {
+  assertStripeRouteEvidenceEligible(input.route);
   if (
     input.route.stripeRole !== 'indirect_tax_calculation_evidence'
     || input.route.fiscalAuthority !== 'stripe_tax_supported_jurisdiction'
     || !input.route.calculationState.startsWith('eligible_')
   ) throw new Error('STRIPE_TAX_CALCULATION_EVIDENCE_NOT_AUTHORIZED');
-  if (input.route.issuerCountry !== input.issuerJurisdiction) throw new Error('STRIPE_TAX_EVIDENCE_JURISDICTION_MISMATCH');
+  const expectedJurisdiction = input.route.issuerCountry === 'AR' || input.route.issuerCountry === 'US'
+    ? input.route.issuerCountry
+    : null;
+  if (expectedJurisdiction !== input.issuerJurisdiction) throw new Error('STRIPE_TAX_EVIDENCE_JURISDICTION_MISMATCH');
   if (!/^[a-f0-9]{64}$/.test(input.providerTransactionHash)) throw new Error('STRIPE_TAX_PROVIDER_HASH_INVALID');
   const taxAmount = money(input.taxAmount.decimal, input.taxAmount.currency);
   const idempotencyKey = sha256({ sourceId: input.sourceId, transaction: input.providerTransactionHash, revision: input.providerRevision });
+  const supersedesIdempotencyKey = input.supersedes
+    ? stripeTaxIdempotencyKey(input.sourceId, input.supersedes.providerTransactionHash, input.supersedes.providerRevision)
+    : null;
+  if (supersedesIdempotencyKey === idempotencyKey) throw new Error('STRIPE_TAX_SUPERSESSION_SELF_REFERENCE');
   return {
     evidenceId: `stripe-tax:${input.providerTransactionHash}`,
     workspaceId: input.workspaceId,
@@ -150,8 +162,80 @@ export function stripeTaxTransactionEvidence(input: StripeTaxTransactionEvidence
     validityState: 'active',
     consentVersion: input.consentVersion,
     idempotencyKey,
-    supersedesIdempotencyKey: null,
+    supersedesIdempotencyKey,
   };
+}
+
+export type StripeTaxEvidenceBatchInputV1 = Readonly<{
+  batchId: string;
+  workspaceId: string;
+  sourceId: string;
+  consentVersion: string;
+  consentSourceIds: readonly string[];
+  checkpoint: Readonly<{ sequence: number; revision: string; observedAt: string }>;
+  mode: TaxEvidenceBatchV1['mode'];
+  producedAt: string;
+  transactions: readonly Omit<StripeTaxTransactionEvidenceInput, 'workspaceId' | 'sourceId' | 'consentVersion'>[];
+}>;
+
+/**
+ * Converts a normalized Stripe Tax report/webhook projection into the shared
+ * TaxEvidenceBatchV1 corridor. This function never accepts Stripe secrets or
+ * raw customer payloads and never creates payment/settlement finality.
+ */
+export function buildStripeTaxEvidenceBatchV1(input: StripeTaxEvidenceBatchInputV1): TaxEvidenceBatchV1 {
+  const sourceIds = [...new Set(input.consentSourceIds)].sort();
+  const records = input.transactions
+    .map(transaction => stripeTaxTransactionEvidence({
+      ...transaction,
+      workspaceId: input.workspaceId,
+      sourceId: input.sourceId,
+      consentVersion: input.consentVersion,
+    }))
+    .sort((left, right) => left.idempotencyKey.localeCompare(right.idempotencyKey));
+  const batch: TaxEvidenceBatchV1 = {
+    version: 'tax-evidence-batch-v1',
+    batchId: input.batchId,
+    workspaceId: input.workspaceId,
+    source: {
+      sourceId: input.sourceId,
+      sourceKind: 'stripe',
+      canonicalProviderId: 'stripe_tax',
+      adapterSchemaVersion: 'stripe-tax-evidence-v2',
+    },
+    checkpoint: input.checkpoint,
+    mode: input.mode,
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version: input.consentVersion,
+      scopeHash: hashTaxEvidenceConsentScope(input.consentVersion, sourceIds),
+      sourceIds,
+    },
+    capabilities: [
+      { capability: 'tax_lines', state: 'available', observedAt: input.checkpoint.observedAt, safeErrorCode: null },
+      { capability: 'tax_documents', state: 'partial', observedAt: input.checkpoint.observedAt, safeErrorCode: 'STRIPE_DOCUMENT_NOT_FISCAL_AUTHORITY_RECEIPT' },
+    ],
+    records,
+    producedAt: input.producedAt,
+  };
+  assertTaxEvidenceBatchV1(batch);
+  return batch;
+}
+
+function assertStripeRouteEvidenceEligible(route: StripeTaxRoutingDecisionV1): void {
+  if (route.matrixVersion !== STRIPE_TAX_SUPPORT_MATRIX_VERSION || route.matrixSourceUrl !== STRIPE_TAX_SUPPORT_SOURCE_URL) {
+    throw new Error('STRIPE_TAX_SUPPORT_MATRIX_STALE');
+  }
+  if (!STRIPE_SUPPORTED_SELLER_COUNTRIES.has(route.issuerCountry)) throw new Error('STRIPE_TAX_SUPPORT_MATRIX_ROUTE_INVALID');
+  const customerSupport = STRIPE_CUSTOMER_COUNTRY_SUPPORT.get(route.customerCountry);
+  if (!customerSupport || (customerSupport === 'digital_only' && route.productType !== 'digital')) {
+    throw new Error('STRIPE_TAX_SUPPORT_MATRIX_ROUTE_INVALID');
+  }
+}
+
+function stripeTaxIdempotencyKey(sourceId: string, providerTransactionHash: string, providerRevision: string): string {
+  if (!/^[a-f0-9]{64}$/.test(providerTransactionHash)) throw new Error('STRIPE_TAX_PROVIDER_HASH_INVALID');
+  return sha256({ sourceId, transaction: providerTransactionHash, revision: providerRevision });
 }
 
 function unsupported(
@@ -175,9 +259,10 @@ const STRIPE_SUPPORTED_SELLER_COUNTRIES = new Set([
 
 const ALL_PRODUCT_CUSTOMER_COUNTRIES = [...STRIPE_SUPPORTED_SELLER_COUNTRIES];
 const DIGITAL_ONLY_CUSTOMER_COUNTRIES = [
-  'AL', 'AO', 'AM', 'AW', 'AZ', 'BS', 'BH', 'BD', 'BB', 'BY', 'BJ', 'BA', 'BF', 'KH', 'CM', 'CL', 'CO', 'CR', 'CD', 'EC', 'EG', 'ET', 'GE', 'GN', 'IS', 'IN', 'ID', 'KZ', 'KE', 'KG', 'LA', 'MY', 'MR', 'MD', 'ME', 'MA', 'NP', 'NG', 'MK', 'OM', 'PE', 'PH', 'RU', 'SA', 'SN', 'RS', 'ZA', 'KR', 'LK', 'SR', 'TW', 'TJ', 'TZ', 'TH', 'TR', 'UG', 'UA', 'UY', 'UZ', 'VN', 'ZM', 'ZW',
+  'AL', 'AO', 'AM', 'AW', 'AZ', 'BS', 'BH', 'BD', 'BB', 'BY', 'BJ', 'BA', 'BF', 'KH', 'CM', 'CV', 'CL', 'CO', 'CR', 'CD', 'EC', 'EG', 'ET', 'GE', 'GN', 'IS', 'IN', 'ID', 'KZ', 'KE', 'KG', 'LA', 'MY', 'MR', 'MD', 'ME', 'MA', 'NP', 'NG', 'MK', 'OM', 'PE', 'PH', 'RU', 'SA', 'SN', 'RS', 'KR', 'LK', 'SR', 'TW', 'TJ', 'TZ', 'TH', 'TR', 'UG', 'UA', 'UY', 'UZ', 'VN', 'ZM', 'ZW',
 ];
 const STRIPE_CUSTOMER_COUNTRY_SUPPORT = new Map<string, 'all_products' | 'digital_only'>([
   ...ALL_PRODUCT_CUSTOMER_COUNTRIES.map(country => [country, 'all_products'] as const),
+  ['ZA', 'all_products'],
   ...DIGITAL_ONLY_CUSTOMER_COUNTRIES.map(country => [country, 'digital_only'] as const),
 ]);
