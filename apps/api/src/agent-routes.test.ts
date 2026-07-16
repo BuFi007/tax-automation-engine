@@ -568,10 +568,11 @@ function confirmArgentinaProfile(store: TaxProfileStore): void {
       operatingSubdivisions: ['AR-C'],
       answers: [
         { questionId: 'province', value: 'AR-C', confirmationState: 'user_confirmed' },
+        { questionId: 'iibb_regime', value: 'caba_simplified', confirmationState: 'accountant_confirmed' },
         { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
         { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
       ],
-      catalogueVersion: 'ar-catalogue-2026-07-11',
+      catalogueVersion: 'ar-catalogue-2026-07-15',
       version: 'profile-v0',
       confirmationState: 'user_confirmed',
     },

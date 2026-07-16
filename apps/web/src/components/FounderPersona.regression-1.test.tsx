@@ -29,5 +29,7 @@ test('shows the U.S. founder persona and routes foreign S-Corp ownership to revi
 
   const localFounder = await demoSnapshot('US', 's_corp', 'local');
   expect(localFounder.estimate.state).toBe('review_ready');
-  expect(localFounder.obligations.every(obligation => obligation.applicability === 'applicable')).toBe(true);
+  expect(localFounder.obligations.find(obligation => obligation.id === 'us:form-1120-s')?.applicability).toBe('applicable');
+  expect(localFounder.obligations.find(obligation => obligation.id === 'us:state-review')?.applicability).toBe('needs_professional_review');
+  expect(localFounder.obligations.find(obligation => obligation.id === 'us:sales-tax')?.applicability).toBe('needs_professional_review');
 });

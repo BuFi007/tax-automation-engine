@@ -20,11 +20,12 @@ export function argentinaProfile(): TaxProfile {
     operatingSubdivisions: ['AR-C'],
     answers: [
       { questionId: 'province', value: 'AR-C', confirmationState: 'user_confirmed' },
+      { questionId: 'iibb_regime', value: 'caba_simplified', confirmationState: 'accountant_confirmed' },
       { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
       { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
       { questionId: 'mipyme_certificate', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'ar-catalogue-2026-07-11',
+    catalogueVersion: 'ar-catalogue-2026-07-15',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -50,7 +51,7 @@ export function unitedStatesProfile(): TaxProfile {
       { questionId: 'sales_states', value: ['US-CA', 'US-NY'], confirmationState: 'user_confirmed' },
       { questionId: 'has_payroll', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'us-catalogue-2026-07-10',
+    catalogueVersion: 'us-catalogue-2026-07-15',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -106,7 +107,10 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
     ownerTaxResidenceCountries: [founderResidency === 'local' ? 'US' : 'AR'],
     answers: base.answers.map(answer => {
       if (answer.questionId === 'member_count') return { ...answer, value: selectedRegimeId === 'llc_multi_member' ? 2 : 1 };
-      if (answer.questionId === 'tax_classification') return { ...answer, value: selectedRegimeId };
+      if (answer.questionId === 'tax_classification') {
+        const classification = selectedRegimeId === 'llc_multi_member' ? 'partnership' : selectedRegimeId;
+        return { ...answer, value: classification };
+      }
       if (answer.questionId === 'founder_residency') return { ...answer, value: founderResidency };
       return answer;
     }),

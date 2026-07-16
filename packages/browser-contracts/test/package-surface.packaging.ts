@@ -68,7 +68,7 @@ describe('published browser-contract package', () => {
     expect(rootModule.taxWidgetSnapshotReceiptV1Schema).toBeDefined();
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(goldenDigest).toBe(
-      '4042a7cbddaec9729854e4be9f99b1120eb0f608fa056ffaadb175928f9af2c9',
+      'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d',
     );
     if (typeof goldenDigest !== 'string') throw new Error('Built fixture digest is not a string');
 
@@ -80,7 +80,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '4042a7cbddaec9729854e4be9f99b1120eb0f608fa056ffaadb175928f9af2c9') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== 'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',
