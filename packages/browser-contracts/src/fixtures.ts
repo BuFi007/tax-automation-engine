@@ -36,7 +36,7 @@ export const argentinaTaxCaseV1Fixture = taxCaseV1Schema.parse({
     entityType: 'individual',
     regimeId: 'monotributo_exportador',
     confirmationState: 'user_confirmed',
-    catalogueVersion: 'ar-catalogue-2026-07-16',
+    catalogueVersion: 'ar-catalogue-2026-07-16.2',
   },
   period,
   displayCurrency: 'ARS',
@@ -369,4 +369,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '7724d0e8025e387d611f5020930df656dba7b666ecd591e7037cbaaf4b82d9c1';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425';

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { argentinaProfile, unitedStatesProfile } from '../fixtures';
 import type { TaxProfile } from '../types';
-import { ArgentinaJurisdictionProvider } from './argentina';
+import { ArgentinaJurisdictionProvider, assessMonotributoServiceCategory2026 } from './argentina';
 import { UnitedStatesJurisdictionProvider } from './united-states';
 
 const TAX_YEAR_2025 = { start: '2025-01-01', end: '2025-12-31' } as const;
@@ -125,10 +125,91 @@ describe('Argentina deterministic obligation catalogue', () => {
       period: TAX_YEAR_2025,
     });
 
-    expect(find(obligations, 'ar:annual-individual-review')).toMatchObject({
+    expect(find(obligations, 'ar:ganancias-individual-annual')).toMatchObject({
       dueAt: '2026-07-27T23:59:59-03:00',
       applicability: 'needs_professional_review',
     });
+    expect(find(obligations, 'ar:bienes-personales-annual')).toMatchObject({
+      dueAt: '2026-07-27T23:59:59-03:00',
+      applicability: 'needs_professional_review',
+    });
+  });
+
+  test('assesses the official February 2026 Monotributo ceiling without silently excluding a taxpayer', () => {
+    expect(assessMonotributoServiceCategory2026({
+      asOf: '2026-07-16T00:00:00.000Z',
+      currentCategory: 'A',
+      rollingGrossRevenue: { decimal: '15058447.71', currency: 'ARS' },
+      activityMonths: 12,
+    })).toMatchObject({ recommendedCategory: 'B', state: 'recategorization_required' });
+
+    expect(assessMonotributoServiceCategory2026({
+      asOf: '2026-07-16T00:00:00.000Z',
+      currentCategory: 'K',
+      rollingGrossRevenue: { decimal: '108357084.06', currency: 'ARS' },
+      activityMonths: 12,
+    })).toMatchObject({ recommendedCategory: null, state: 'exclusion_review' });
+
+    expect(assessMonotributoServiceCategory2026({
+      asOf: '2026-07-16T00:00:00.000Z',
+      currentCategory: 'A',
+      rollingGrossRevenue: { decimal: '15058447.71', currency: 'ARS' },
+      activityMonths: 5,
+    }).state).toBe('not_due_under_six_months');
+  });
+
+  test('binds IVA Simple to the minimized CUIT digit and keeps domestic invoice classes honest', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    const ri = withArgentinaRegime('responsable_inscripto', 'individual', [
+      { questionId: 'cuit_verifier_digit', value: '8', confirmationState: 'user_confirmed' },
+      { questionId: 'tax_accounting_basis', value: 'cash', confirmationState: 'accountant_confirmed' },
+    ]);
+    const obligations = provider.buildObligations({ profile: ri, period: { start: '2026-02-01', end: '2026-02-28' } });
+    expect(find(obligations, 'ar:iva-simple')).toMatchObject({
+      dueAt: '2026-03-26T23:59:59-03:00',
+      applicability: 'applicable',
+      preparationState: 'not_started',
+    });
+
+    const domesticMono = withArgentinaAnswer(argentinaProfile(), 'exports_services', false);
+    expect(find(provider.buildObligations({ profile: domesticMono, period: { start: '2026-01-01', end: '2026-01-31' } }), 'ar:invoice-readiness')).toMatchObject({
+      title: 'Factura C readiness',
+      actionId: 'action:prepare-domestic-invoice',
+      applicability: 'applicable',
+    });
+  });
+
+  test('publishes bounded corporate IVA and Ganancias deadlines without collecting the full CUIT', () => {
+    const company = withArgentinaRegime('sociedad_mipyme', 'company', [
+      { questionId: 'cuit_verifier_digit', value: '5', confirmationState: 'accountant_confirmed' },
+      { questionId: 'fiscal_year_end_month', value: 12, confirmationState: 'accountant_confirmed' },
+      { questionId: 'tax_accounting_basis', value: 'accrual', confirmationState: 'accountant_confirmed' },
+    ]);
+    const obligations = new ArgentinaJurisdictionProvider().buildObligations({ profile: company, period: TAX_YEAR_2025 });
+    expect(find(obligations, 'ar:ganancias-corporate-annual')).toMatchObject({
+      dueAt: '2026-05-14T23:59:59-03:00',
+      applicability: 'applicable',
+    });
+    expect(find(obligations, 'ar:iva-simple').ruleVersionIds).toEqual([
+      'ar-iva-simple-2026-v1',
+      'ar-rg-4172-iva-calendar-v1',
+      'ar-national-holidays-2026-v1',
+    ]);
+  });
+
+  test('requires export point-of-sale evidence only for exporters and rejects invalid profile facts', () => {
+    const provider = new ArgentinaJurisdictionProvider();
+    const domestic = withArgentinaAnswer(
+      { ...argentinaProfile(), answers: argentinaProfile().answers.filter(answer => answer.questionId !== 'export_pos_ready') },
+      'exports_services',
+      false,
+    );
+    expect(provider.validateProfile(domestic)).not.toContain('MISSING_EXPORT_POS_READY');
+
+    const exporterWithoutPos = withArgentinaAnswer(domestic, 'exports_services', true);
+    expect(provider.validateProfile(exporterWithoutPos)).toContain('MISSING_EXPORT_POS_READY');
+    expect(provider.validateProfile(withArgentinaAnswer(argentinaProfile(), 'monotributo_category', 'Z'))).toContain('INVALID_MONOTRIBUTO_CATEGORY');
+    expect(provider.validateProfile({ ...argentinaProfile(), answers: [...argentinaProfile().answers, argentinaProfile().answers[0]!] })).toEqual(['DUPLICATE_PROFILE_QUESTION']);
   });
 });
 
@@ -304,5 +385,25 @@ function withIibb(regime: string, dueGroup?: string, verifierDigit?: string): Ta
         ? [{ questionId: 'cuit_verifier_digit', value: verifierDigit, confirmationState: 'user_confirmed' as const }]
         : []),
     ],
+  };
+}
+
+function withArgentinaRegime(regimeId: string, entityType: string, extraAnswers: TaxProfile['answers']): TaxProfile {
+  const base = argentinaProfile();
+  return {
+    ...base,
+    regimeId,
+    entityType,
+    answers: [
+      ...base.answers.filter(answer => !extraAnswers.some(extra => extra.questionId === answer.questionId)),
+      ...extraAnswers,
+    ],
+  };
+}
+
+function withArgentinaAnswer(profile: TaxProfile, questionId: string, value: string | boolean | number): TaxProfile {
+  return {
+    ...profile,
+    answers: profile.answers.map(answer => answer.questionId === questionId ? { ...answer, value } : answer),
   };
 }
