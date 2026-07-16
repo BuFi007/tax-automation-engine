@@ -22,4 +22,14 @@ describe('Tax API production composition contract', () => {
     );
     expect(source).toContain('if (!taxDemoRoutesEnabled())');
   });
+
+  test('binds production ARCA effects to the reviewed Argentina launch policy', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toContain('resolveArgentinaLaunchPolicyReadiness()');
+    expect(source).toContain('assertNoTaxEngineFundingAuthority()');
+    expect(source).toMatch(
+      /arcaProductionAuthority[\s\S]*?authorityCorridorEnabled[\s\S]*?authorityRemoteEffectsEnabled[\s\S]*?facturaEFeatureEnabled[\s\S]*?assertArgentinaProductionBoundary\(argentinaLaunchPolicy\)/,
+    );
+    expect(source).toContain('argentinaLaunchPolicy,');
+  });
 });

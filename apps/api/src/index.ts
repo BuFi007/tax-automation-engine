@@ -1,4 +1,8 @@
-import { listJurisdictionProviders, taxWorkspaceIdSchema } from '@tax-engine/core';
+import {
+  assertArgentinaProductionBoundary,
+  listJurisdictionProviders,
+  taxWorkspaceIdSchema,
+} from '@tax-engine/core';
 import { ContabiliumSandboxProvider } from '@tax-engine/erp';
 import { z } from 'zod';
 
@@ -64,6 +68,10 @@ import {
 import { taxDemoRoutesEnabled } from './demo-route-policy';
 import { readBoundedBody } from './bounded-body';
 import { handleAccountantMandateRoute } from './accountant-mandate-routes';
+import {
+  assertNoTaxEngineFundingAuthority,
+  resolveArgentinaLaunchPolicyReadiness,
+} from './argentina-launch-policy';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
@@ -95,6 +103,8 @@ const authorityPrincipalSecrets: TaxAuthorityPrincipalSecrets = {
     process.env.TAX_ENGINE_OPEN_AGENTS_APPROVAL_PRINCIPAL_HMAC_SECRET ?? null,
 };
 const facturaEFeatureEnabled = process.env.TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED === 'true';
+const argentinaLaunchPolicy = resolveArgentinaLaunchPolicyReadiness();
+assertNoTaxEngineFundingAuthority();
 const facturaEFeaturePollIntervalMs = facturaEFeatureEnabled
   ? parseFacturaEFeaturePollInterval(
       process.env.TAX_FACTURA_E_FEATURE_POLL_INTERVAL_MS
@@ -249,6 +259,10 @@ if (facturaEFeatureEnabled) {
     && process.env.TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_PRODUCTION_APPROVED !== 'true'
   ) throw new Error('TAX_FACTURA_E_FEATURE_NO_EFFECT_RECOVERY_PRODUCTION_APPROVAL_REQUIRED');
 }
+if (
+  arcaProductionAuthority
+  && (authorityCorridorEnabled || authorityRemoteEffectsEnabled || facturaEFeatureEnabled)
+) assertArgentinaProductionBoundary(argentinaLaunchPolicy);
 
 const store = new TaxProfileStore();
 const taxEvidenceWorkspace = new TaxEvidenceWorkspaceService(store);
@@ -481,6 +495,7 @@ export const server = Bun.serve({
           status: 'ok',
           execution: wsfexGateway ? 'human_gated_agent' : 'manual_only',
           authorityEnvironment: arcaEnvironment,
+          argentinaLaunchPolicy,
           filingEnabled: Boolean(
             authorityCorridorEnabled
             && authorityRemoteEffectsEnabled
