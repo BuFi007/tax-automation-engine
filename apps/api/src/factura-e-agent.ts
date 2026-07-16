@@ -686,6 +686,60 @@ export class FacturaEAgentService {
     return result(this.persist(applied.run, applied.event, input.occurredAt, commandHash), false, undefined);
   }
 
+  /**
+   * Project an independently reconciled authority result back into the durable
+   * Factura E case. The authority corridor owns submission/recovery; this
+   * method only records the already verified official read so the existing
+   * settlement and accounting workflow can continue from `arca_authorized`.
+   */
+  recordAuthorityCorridorReconciliation(input: Readonly<{
+    runId: string;
+    requestId: string;
+    authorityPayloadRef: string;
+    invoiceNumber: string;
+    cae: string;
+    caeExpiry: string;
+    currencyId: string;
+    currencyQuote: string;
+    receiptHash: string;
+    reprocessed: boolean | null;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): AgentMutationResult {
+    const commandHash = facturaEAgentCommandHash(
+      'record_authority_corridor_reconciliation',
+      input
+    );
+    const replay = this.store.getFacturaEAgentRunByIdempotency(
+      input.runId,
+      input.idempotencyKey,
+      commandHash
+    );
+    if (replay) return result(replay, true, undefined);
+    const current = this.getRun(input.runId);
+    const applied = recordWsfexAuthorityResult(current, {
+      actorId: input.actorId,
+      requestId: input.requestId,
+      payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
+      status: 'accepted',
+      invoiceNumber: input.invoiceNumber,
+      cae: input.cae,
+      caeExpiry: input.caeExpiry,
+      currencyId: input.currencyId,
+      currencyQuote: input.currencyQuote,
+      receiptHash: input.receiptHash,
+      reprocessed: input.reprocessed,
+      occurredAt: input.occurredAt,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return result(
+      this.persist(applied.run, applied.event, input.occurredAt, commandHash),
+      false,
+      undefined
+    );
+  }
+
   async submitWsfexAdjustment(input: Readonly<{
     runId: string;
     adjustmentId: string;
