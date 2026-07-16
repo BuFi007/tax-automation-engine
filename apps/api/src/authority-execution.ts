@@ -272,6 +272,18 @@ export class FacturaEAuthorityExecutionStore {
     return row ? recordFromRow(row) : null;
   }
 
+  latestForWorkspace(workspaceId: string): FacturaEAuthorityExecutionRecord | null {
+    const row = this.#db
+      .query<AuthorityExecutionRow, [string]>(`
+        SELECT * FROM factura_e_authority_executions
+        WHERE workspace_id = ?
+        ORDER BY created_at DESC, execution_id DESC
+        LIMIT 1
+      `)
+      .get(workspaceId);
+    return row ? recordFromRow(row) : null;
+  }
+
   create(input: Readonly<{
     workspaceId: string;
     runId: string;
@@ -932,6 +944,11 @@ export class FacturaEAuthorityExecutionService {
         this.effectsEnabled && this.effect ? ('available_required' as const) : ('required_dark' as const),
       downstreamEligibility: 'blocked_until_officially_verified' as const,
     };
+  }
+
+  current(workspaceId: string): SafeFacturaEAuthorityExecutionReceipt | null {
+    const record = this.store.latestForWorkspace(workspaceId);
+    return record ? safeReceipt(record, false) : null;
   }
 
   createIntent(input: Readonly<{

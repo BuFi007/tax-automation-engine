@@ -109,6 +109,26 @@ function signedRequest(
   });
 }
 
+function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:user-1') {
+  const path = `/v1/authority/factura-e/workspaces/${candidateWorkspaceId}/current`;
+  return {
+    path,
+    request: new Request(`https://tax.test${path}`, {
+      method: 'GET',
+      headers: createTaxAuthorityPrincipalHeaders({
+        secret: motoraSecret,
+        workspaceId: candidateWorkspaceId,
+        actorId,
+        capability: 'factura-e:status:read',
+        method: 'GET',
+        path,
+        rawBody: '',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+  };
+}
+
 describe('Tax-owned Factura E authority corridor', () => {
   test('persists intent, consumes a distinct one-use approval, and recovers exactly', async () => {
     const { store, service, calls } = fixture();
@@ -641,6 +661,45 @@ describe('Tax-owned Factura E authority corridor', () => {
       const serialized = JSON.stringify(await executed!.json());
       expect(serialized).toContain('recovery_required');
       expect(serialized).not.toMatch(/vault|cuit|cae|token|certificate/i);
+
+      const currentRequest = signedStatusRequest(workspaceId);
+      const current = await handleFacturaEAuthorityCorridorRoute(
+        currentRequest.request,
+        new URL(`https://tax.test${currentRequest.path}`),
+        service,
+        options
+      );
+      expect(current?.status).toBe(200);
+      const currentBody = await current!.json();
+      expect(currentBody.data).toMatchObject({
+        executionId,
+        workspaceId,
+        state: 'recovery_required',
+        replayed: false,
+        nextAction: 'recover_exactly',
+      });
+      expect(JSON.stringify(currentBody)).not.toMatch(
+        /intentHash|runId|vault|cuit|cae|token|certificate/i
+      );
+
+      const otherWorkspaceId = '99999999-9999-4999-8999-999999999999';
+      const otherRequest = signedStatusRequest(otherWorkspaceId);
+      const empty = await handleFacturaEAuthorityCorridorRoute(
+        otherRequest.request,
+        new URL(`https://tax.test${otherRequest.path}`),
+        service,
+        options
+      );
+      expect(empty?.status).toBe(200);
+      expect(await empty!.json()).toEqual({ data: null });
+
+      const crossTenant = await handleFacturaEAuthorityCorridorRoute(
+        currentRequest.request,
+        new URL(`https://tax.test${otherRequest.path}`),
+        service,
+        options
+      );
+      expect(crossTenant?.status).toBe(403);
 
       const wrongSecret = await handleFacturaEAuthorityCorridorRoute(
         signedRequest(createPath, createBody, {
