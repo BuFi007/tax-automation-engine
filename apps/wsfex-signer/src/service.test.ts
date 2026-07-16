@@ -13,6 +13,37 @@ import type { WsaaTicketBroker } from './wsaa';
 const occurredAt = '2026-07-11T12:00:00.000Z';
 
 describe('isolated WSFEX signer service', () => {
+  test('reserves ARCA last+1 once, replays it, and consumes it on authorization', async () => {
+    const fixture = setup({ sequenceReservationsRequired: true });
+    const reservation = {
+      version: 'tax-wsfex-sequence-reservation-request-v1' as const,
+      workspaceId: fixture.request.workspaceId,
+      issuerProfileRef: fixture.vault.payload.issuerProfileRef,
+      runId: fixture.request.runId,
+      intentHash: fixture.request.intentHash,
+      subjectId: fixture.request.subjectId,
+      documentType: 19 as const,
+      pointOfSale: fixture.request.expected.pointOfSale,
+      idempotencyKey: 'reservation:invoice-1',
+    };
+    const first = await fixture.service.reserveSequence(reservation, occurredAt);
+    const replay = await fixture.service.reserveSequence(reservation, '2026-07-11T12:01:00.000Z');
+    expect(first).toEqual(expect.objectContaining({ requestId: '101', invoiceNumber: '6', replayed: false }));
+    expect(replay).toEqual(expect.objectContaining({ requestId: '101', invoiceNumber: '6', replayed: true }));
+    expect(fixture.authority.sequenceReadCalls).toBe(2);
+    expect((await fixture.service.authorize(
+      fixture.request, fixture.request.requestId, '2026-07-11T12:02:00.000Z'
+    )).status).toBe('accepted');
+  });
+
+  test('rejects a missing required sequence reservation before authority submission', async () => {
+    const fixture = setup({ sequenceReservationsRequired: true });
+    const result = await fixture.service.authorize(fixture.request, fixture.request.requestId, occurredAt);
+    expect(result.status).toBe('preflight_rejected');
+    expect(result.safeErrors[0]?.code).toBe('WSFEX_SEQUENCE_RESERVATION_REQUIRED');
+    expect(fixture.authority.authorizeCalls).toBe(0);
+  });
+
   test('authorizes once, persists only safe evidence, and idempotently returns the receipt', async () => {
     const fixture = setup();
     const first = await fixture.service.authorize(fixture.request, fixture.request.requestId, occurredAt);
@@ -410,6 +441,7 @@ function setup(options: Readonly<{
   recoveredDocuments?: RetrieveStep[];
   store?: SignerAttemptStore;
   wsaaCommitment?: string;
+  sequenceReservationsRequired?: boolean;
 }> = {}) {
   const signerRequest = options.request ?? request();
   const authorityPayload = options.payload ?? payload();
@@ -417,7 +449,13 @@ function setup(options: Readonly<{
   const vault = new FakeVault(authorityPayload);
   const authority = new FakeAuthority(options.authorizeResults, options.recoveredDocuments);
   const service = new WsfexSignerService(
-    { environment: 'homologation', signerVersion: 'test' },
+    {
+      environment: 'homologation',
+      signerVersion: 'test',
+      ...(options.sequenceReservationsRequired === undefined
+        ? {}
+        : { sequenceReservationsRequired: options.sequenceReservationsRequired }),
+    },
     store,
     vault,
     new FakeWsaa(options.wsaaCommitment ?? authorityPayload.representedCuitCommitment),
@@ -445,6 +483,7 @@ class FakeWsaa implements WsaaTicketBroker {
 class FakeAuthority implements WsfexAuthorityClient {
   authorizeCalls = 0;
   getDocumentCalls = 0;
+  sequenceReadCalls = 0;
   originalDocument: WsfexRetrievedDocument = retrieved({ invoiceNumber: '81' });
   // In band with the fixture invoice quote (1200.25) so invoice preflight passes;
   // tests override to force an error-1667 out-of-band rejection.
@@ -464,8 +503,11 @@ class FakeAuthority implements WsfexAuthorityClient {
     if (result === 'ambiguous') throw new WsfexAmbiguousTransportError(hashCanonical(`ambiguous-${this.authorizeCalls}`));
     return result;
   }
-  async getLastRequestId() { return '100'; }
-  async getLastInvoiceNumber(_ticket: unknown, documentType: 19 | 20 | 21) { return documentType === 19 ? '5' : '0'; }
+  async getLastRequestId() { this.sequenceReadCalls += 1; return '100'; }
+  async getLastInvoiceNumber(_ticket: unknown, documentType: 19 | 20 | 21) {
+    this.sequenceReadCalls += 1;
+    return documentType === 19 ? '5' : '0';
+  }
   async getDocument(_ticket: unknown, documentType: 19 | 20 | 21, _pointOfSale: number, invoiceNumber: string) {
     this.getDocumentCalls += 1;
     if (documentType === 19 && invoiceNumber === '81') return this.originalDocument;

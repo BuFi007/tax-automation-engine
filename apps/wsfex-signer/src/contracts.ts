@@ -6,6 +6,7 @@ import { monIdSchema } from './cotizacion';
 
 const unsignedDecimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const safeReferenceSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,500}$/);
 const cuitSchema = z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' });
 const moneySchema = z.object({ decimal: unsignedDecimalSchema, currency: z.string().regex(/^[A-Z]{3,10}$/) }).strict();
 const canonicalLineItemSchema = z.object({
@@ -87,6 +88,44 @@ export const signerRequestSchema = z.object({
   authorityPayloadHash: sha256Schema,
   expected: z.union([invoiceExpectedSchema, adjustmentExpectedSchema]),
 }).strict();
+
+/** Tax-owned request for one short-lived, authority-sequenced Factura E slot. */
+export const sequenceReservationRequestSchema = z.object({
+  version: z.literal('tax-wsfex-sequence-reservation-request-v1'),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: safeReferenceSchema,
+  runId: z.uuid(),
+  intentHash: sha256Schema,
+  subjectId: z.string().min(1).max(200),
+  documentType: z.literal(19),
+  pointOfSale: z.number().int().positive().max(99998),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{16,200}$/),
+}).strict();
+
+export type SequenceReservationRequest = z.infer<typeof sequenceReservationRequestSchema>;
+
+export const sequenceReservationReceiptSchema = z.object({
+  version: z.literal('tax-wsfex-sequence-reservation-receipt-v1'),
+  environment: z.enum(['homologation', 'production']),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: safeReferenceSchema,
+  issuerProfileReferenceHash: sha256Schema,
+  representedCuitCommitment: sha256Schema,
+  runId: z.uuid(),
+  intentHash: sha256Schema,
+  subjectId: z.string().min(1).max(200),
+  documentType: z.literal(19),
+  pointOfSale: z.number().int().positive().max(99998),
+  requestId: z.string().regex(/^[1-9]\d{0,14}$/),
+  invoiceNumber: z.string().regex(/^[1-9]\d{0,7}$/),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{16,200}$/),
+  reservedAt: z.iso.datetime({ offset: true }),
+  expiresAt: z.iso.datetime({ offset: true }),
+  replayed: z.boolean(),
+  evidenceHash: sha256Schema,
+}).strict();
+
+export type SequenceReservationReceipt = z.infer<typeof sequenceReservationReceiptSchema>;
 
 const lineItemSchema = z.object({
   code: z.string().max(50).nullable(),

@@ -4,7 +4,7 @@ import { hashCanonical } from '@tax-engine/core';
 
 import { signerResponseSchema, type SignerRequest, type SignerResponse } from './contracts';
 
-const ATTEMPT_SCHEMA_VERSION = 3;
+const ATTEMPT_SCHEMA_VERSION = 4;
 const SCOPED_PRIMARY_KEY = [
   'environment',
   'represented_cuit_commitment',
@@ -54,6 +54,42 @@ export type SignerAttempt = Readonly<{
   updatedAt: string;
 }>;
 
+export type WsfexSequenceReservation = Readonly<{
+  environment: SignerRequest['environment'];
+  representedCuitCommitment: string;
+  workspaceIdHash: string;
+  issuerProfileReferenceHash: string;
+  runId: string;
+  intentHash: string;
+  subjectIdHash: string;
+  idempotencyKey: string;
+  requestId: string;
+  documentType: 19;
+  pointOfSale: number;
+  invoiceNumber: string;
+  state: 'reserved' | 'consumed';
+  reservedAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}>;
+
+type SequenceReservationInput = Readonly<{
+  environment: SignerRequest['environment'];
+  representedCuitCommitment: string;
+  workspaceId: string;
+  issuerProfileRef: string;
+  runId: string;
+  intentHash: string;
+  subjectId: string;
+  idempotencyKey: string;
+  requestId: string;
+  documentType: 19;
+  pointOfSale: number;
+  invoiceNumber: string;
+  reservedAt: string;
+  expiresAt: string;
+}>;
+
 export class SignerAttemptStore {
   readonly #db: Database;
 
@@ -84,6 +120,145 @@ export class SignerAttemptStore {
   }
 
   begin(input: Readonly<{
+    request: SignerRequest;
+    issuerProfileRef: string;
+    representedCuitCommitment: string;
+    payloadReferenceHash: string;
+    payloadHash: string;
+    invoiceNumber: string;
+    occurredAt: string;
+  }>): SignerAttempt {
+    return this.beginRecord(input);
+  }
+
+  beginWithSequenceReservation(input: Readonly<{
+    request: SignerRequest;
+    issuerProfileRef: string;
+    representedCuitCommitment: string;
+    payloadReferenceHash: string;
+    payloadHash: string;
+    invoiceNumber: string;
+    occurredAt: string;
+  }>): SignerAttempt {
+    return this.#db.transaction(() => {
+      const identity = identityFor(input.request, input.representedCuitCommitment);
+      const existing = this.get(identity);
+      if (existing) return existing;
+      const reservation = this.getSequenceReservationByRequestId(identity);
+      if (!reservation) throw new Error('WSFEX_SEQUENCE_RESERVATION_REQUIRED');
+      assertSequenceReservationBinding(reservation, input);
+      if (reservation.state !== 'reserved') throw new Error('WSFEX_SEQUENCE_RESERVATION_CONSUMED');
+      if (Date.parse(reservation.expiresAt) <= Date.parse(input.occurredAt))
+        throw new Error('WSFEX_SEQUENCE_RESERVATION_EXPIRED');
+      const attempt = this.beginRecord(input);
+      const consumed = this.#db.query(`
+        UPDATE wsfex_sequence_reservations
+        SET state = 'consumed', consumed_at = ?
+        WHERE environment = ?
+          AND represented_cuit_commitment = ?
+          AND request_id = ?
+          AND state = 'reserved'
+      `).run(
+        input.occurredAt,
+        reservation.environment,
+        reservation.representedCuitCommitment,
+        reservation.requestId
+      );
+      if (consumed.changes !== 1) throw new Error('WSFEX_SEQUENCE_RESERVATION_CONFLICT');
+      return attempt;
+    })();
+  }
+
+  reserveSequence(input: SequenceReservationInput): Readonly<{
+    reservation: WsfexSequenceReservation;
+    replayed: boolean;
+  }> {
+    validateSequenceReservationInput(input);
+    return this.#db.transaction(() => {
+      const replay = this.getSequenceReservationByIdempotency(
+        input.environment,
+        input.representedCuitCommitment,
+        input.idempotencyKey
+      );
+      if (replay) {
+        assertSequenceReservationInputBinding(replay, input);
+        return { reservation: replay, replayed: true };
+      }
+      this.#db.query(`
+        DELETE FROM wsfex_sequence_reservations
+        WHERE environment = ?
+          AND represented_cuit_commitment = ?
+          AND state = 'reserved'
+          AND expires_at <= ?
+      `).run(input.environment, input.representedCuitCommitment, input.reservedAt);
+      const active = this.#db.query<{ request_id: string }, [string, string]>(`
+        SELECT request_id FROM wsfex_sequence_reservations
+        WHERE environment = ?
+          AND represented_cuit_commitment = ?
+          AND state = 'reserved'
+        LIMIT 1
+      `).get(input.environment, input.representedCuitCommitment);
+      if (active) throw new Error('WSFEX_SEQUENCE_RESERVATION_BUSY');
+      this.#db.query(`
+        INSERT INTO wsfex_sequence_reservations (
+          environment, represented_cuit_commitment, workspace_id_hash,
+          issuer_profile_reference_hash, run_id, intent_hash, subject_id_hash,
+          idempotency_key, request_id, document_type, point_of_sale,
+          invoice_number, state, reserved_at, expires_at, consumed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, NULL)
+      `).run(
+        input.environment,
+        input.representedCuitCommitment,
+        hashCanonical(input.workspaceId),
+        hashCanonical(input.issuerProfileRef),
+        input.runId,
+        input.intentHash,
+        hashCanonical(input.subjectId),
+        input.idempotencyKey,
+        input.requestId,
+        input.documentType,
+        input.pointOfSale,
+        input.invoiceNumber,
+        input.reservedAt,
+        input.expiresAt
+      );
+      const reservation = this.getSequenceReservationByIdempotency(
+        input.environment,
+        input.representedCuitCommitment,
+        input.idempotencyKey
+      );
+      if (!reservation) throw new Error('WSFEX_SEQUENCE_RESERVATION_PERSIST_FAILED');
+      return { reservation, replayed: false };
+    })();
+  }
+
+  getSequenceReservationByIdempotency(
+    environment: SignerRequest['environment'],
+    representedCuitCommitment: string,
+    idempotencyKey: string
+  ): WsfexSequenceReservation | null {
+    const row = this.#db.query<SequenceReservationRow, [string, string, string]>(`
+      SELECT * FROM wsfex_sequence_reservations
+      WHERE environment = ?
+        AND represented_cuit_commitment = ?
+        AND idempotency_key = ?
+    `).get(environment, representedCuitCommitment, idempotencyKey);
+    return row ? sequenceReservationFromRow(row) : null;
+  }
+
+  private getSequenceReservationByRequestId(
+    identity: SignerAttemptIdentity
+  ): WsfexSequenceReservation | null {
+    const row = this.#db.query<SequenceReservationRow, [string, string, string]>(`
+      SELECT * FROM wsfex_sequence_reservations
+      WHERE environment = ?
+        AND represented_cuit_commitment = ?
+        AND request_id = ?
+    `).get(identity.environment, identity.representedCuitCommitment, identity.requestId);
+    return row ? sequenceReservationFromRow(row) : null;
+  }
+
+  private beginRecord(input: Readonly<{
     request: SignerRequest;
     issuerProfileRef: string;
     representedCuitCommitment: string;
@@ -219,6 +394,33 @@ export class SignerAttemptStore {
         owner_token TEXT NOT NULL,
         lease_expires_at TEXT NOT NULL,
         PRIMARY KEY (environment, represented_cuit_commitment)
+      );
+      CREATE TABLE IF NOT EXISTS wsfex_sequence_reservations (
+        environment TEXT NOT NULL CHECK (environment IN ('homologation', 'production')),
+        represented_cuit_commitment TEXT NOT NULL,
+        workspace_id_hash TEXT NOT NULL,
+        issuer_profile_reference_hash TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        intent_hash TEXT NOT NULL,
+        subject_id_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        document_type INTEGER NOT NULL CHECK (document_type = 19),
+        point_of_sale INTEGER NOT NULL,
+        invoice_number TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('reserved', 'consumed')),
+        reserved_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        PRIMARY KEY (environment, represented_cuit_commitment, idempotency_key),
+        UNIQUE (environment, represented_cuit_commitment, request_id),
+        UNIQUE (
+          environment,
+          represented_cuit_commitment,
+          document_type,
+          point_of_sale,
+          invoice_number
+        )
       );
     `);
   }
@@ -359,6 +561,86 @@ function attemptState(value: string): SignerAttempt['state'] {
   return value as SignerAttempt['state'];
 }
 
+function validateSequenceReservationInput(input: SequenceReservationInput): void {
+  if (!/^[a-f0-9]{64}$/.test(input.representedCuitCommitment))
+    throw new Error('WSFEX_REPRESENTED_CUIT_COMMITMENT_INVALID');
+  if (!/^[a-f0-9]{64}$/.test(input.intentHash))
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_INTENT_HASH_INVALID');
+  if (!/^[1-9]\d{0,14}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
+  if (!/^[1-9]\d{0,7}$/.test(input.invoiceNumber)) throw new Error('WSFEX_INVOICE_NUMBER_INVALID');
+  const reservedAt = Date.parse(input.reservedAt);
+  const expiresAt = Date.parse(input.expiresAt);
+  if (!Number.isFinite(reservedAt) || !Number.isFinite(expiresAt)
+    || expiresAt <= reservedAt || expiresAt - reservedAt > 15 * 60_000)
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_TTL_INVALID');
+}
+
+function assertSequenceReservationInputBinding(
+  reservation: WsfexSequenceReservation,
+  input: SequenceReservationInput
+): void {
+  if (reservation.environment !== input.environment
+    || reservation.representedCuitCommitment !== input.representedCuitCommitment
+    || reservation.workspaceIdHash !== hashCanonical(input.workspaceId)
+    || reservation.issuerProfileReferenceHash !== hashCanonical(input.issuerProfileRef)
+    || reservation.runId !== input.runId
+    || reservation.intentHash !== input.intentHash
+    || reservation.subjectIdHash !== hashCanonical(input.subjectId)
+    || reservation.idempotencyKey !== input.idempotencyKey
+    || reservation.requestId !== input.requestId
+    || reservation.documentType !== input.documentType
+    || reservation.pointOfSale !== input.pointOfSale
+    || reservation.invoiceNumber !== input.invoiceNumber)
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_BINDING_MISMATCH');
+}
+
+function assertSequenceReservationBinding(
+  reservation: WsfexSequenceReservation,
+  input: Readonly<{
+    request: SignerRequest;
+    issuerProfileRef: string;
+    representedCuitCommitment: string;
+    invoiceNumber: string;
+  }>
+): void {
+  if (reservation.environment !== input.request.environment
+    || reservation.representedCuitCommitment !== input.representedCuitCommitment
+    || reservation.workspaceIdHash !== hashCanonical(input.request.workspaceId)
+    || reservation.issuerProfileReferenceHash !== hashCanonical(input.issuerProfileRef)
+    || reservation.runId !== input.request.runId
+    || reservation.intentHash !== input.request.intentHash
+    || reservation.subjectIdHash !== hashCanonical(input.request.subjectId)
+    || reservation.requestId !== input.request.requestId
+    || reservation.documentType !== input.request.expected.documentType
+    || reservation.pointOfSale !== input.request.expected.pointOfSale
+    || reservation.invoiceNumber !== input.invoiceNumber)
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_BINDING_MISMATCH');
+}
+
+function sequenceReservationFromRow(row: SequenceReservationRow): WsfexSequenceReservation {
+  if (row.document_type !== 19) throw new Error('WSFEX_SEQUENCE_RESERVATION_DOCUMENT_INVALID');
+  if (row.state !== 'reserved' && row.state !== 'consumed')
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_STATE_INVALID');
+  return {
+    environment: environment(row.environment),
+    representedCuitCommitment: row.represented_cuit_commitment,
+    workspaceIdHash: row.workspace_id_hash,
+    issuerProfileReferenceHash: row.issuer_profile_reference_hash,
+    runId: row.run_id,
+    intentHash: row.intent_hash,
+    subjectIdHash: row.subject_id_hash,
+    idempotencyKey: row.idempotency_key,
+    requestId: row.request_id,
+    documentType: 19,
+    pointOfSale: row.point_of_sale,
+    invoiceNumber: row.invoice_number,
+    state: row.state,
+    reservedAt: row.reserved_at,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
+  };
+}
+
 type AttemptRow = {
   environment: string;
   represented_cuit_commitment: string;
@@ -377,4 +659,23 @@ type AttemptRow = {
   response_json: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type SequenceReservationRow = {
+  environment: string;
+  represented_cuit_commitment: string;
+  workspace_id_hash: string;
+  issuer_profile_reference_hash: string;
+  run_id: string;
+  intent_hash: string;
+  subject_id_hash: string;
+  idempotency_key: string;
+  request_id: string;
+  document_type: number;
+  point_of_sale: number;
+  invoice_number: string;
+  state: string;
+  reserved_at: string;
+  expires_at: string;
+  consumed_at: string | null;
 };
