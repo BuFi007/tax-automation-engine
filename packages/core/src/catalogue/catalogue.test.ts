@@ -146,6 +146,49 @@ describe('United States deterministic obligation catalogue', () => {
     });
   });
 
+  test('does not infer U.S.-person status from a foreign domicile', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    const foreignDomiciledUsPerson = withUsAnswer(
+      withUsRegime('llc_single_member', 'disregarded_entity', 'foreign', 1),
+      'owner_us_person_status',
+      'us_person'
+    );
+    const obligations = provider.buildObligations({ profile: foreignDomiciledUsPerson, period: TAX_YEAR_2025 });
+
+    expect(obligations.some(obligation => obligation.id === 'us:form-5472-pro-forma-1120')).toBe(false);
+    expect(find(obligations, 'us:owner-income-return-review')).toBeTruthy();
+
+    const foreignDomiciledSOwner = withUsAnswer(
+      withUsRegime('s_corp', 's_corp', 'foreign'),
+      'owner_us_person_status',
+      'us_person'
+    );
+    expect(provider.validateProfile(foreignDomiciledSOwner)).not.toContain('S_CORP_NON_US_OWNER_NEEDS_PROFESSIONAL_REVIEW');
+  });
+
+  test('routes a 25% foreign-owned C corporation with reportable transactions to Form 5472 review', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    const obligations = provider.buildObligations({
+      profile: withUsRegime('c_corp', 'c_corp', 'foreign'),
+      period: TAX_YEAR_2025,
+    });
+
+    expect(find(obligations, 'us:form-5472-corporation-review')).toMatchObject({
+      dueAt: '2026-04-15T23:59:59-04:00',
+      applicability: 'needs_professional_review',
+    });
+  });
+
+  test('fails closed when foreign ownership or related-party reporting facts are unresolved', () => {
+    const provider = new UnitedStatesJurisdictionProvider();
+    const noOwnershipAnswer = withoutUsAnswer(withUsRegime('c_corp', 'c_corp', 'foreign'), 'foreign_ownership_25_percent');
+    expect(provider.validateProfile(noOwnershipAnswer)).toContain('MISSING_FOREIGN_OWNERSHIP_25_PERCENT');
+
+    const noTransactionAnswer = withoutUsAnswer(withUsRegime('c_corp', 'c_corp', 'foreign'), 'related_party_reportable_transactions');
+    expect(provider.validateProfile(noTransactionAnswer)).toContain('MISSING_RELATED_PARTY_REPORTABLE_TRANSACTIONS');
+    expect(find(provider.buildObligations({ profile: noTransactionAnswer, period: TAX_YEAR_2025 }), 'us:form-5472-corporation-review').dueAt).toBeNull();
+  });
+
   test('dates partnership and S corporation returns after the 2026 weekend adjustment', () => {
     const partnership = withUsRegime('llc_multi_member', 'partnership', 'foreign', 2);
     const sCorporation = withUsRegime('s_corp', 's_corp', 'local');
@@ -222,13 +265,28 @@ function withUsRegime(regimeId: string, classification: string, residency: 'loca
     ...base,
     regimeId,
     entityType: regimeId.startsWith('llc_') ? 'llc' : 'corporation',
+    ownerDomicileCountries: [residency === 'local' ? 'US' : 'AR'],
+    ownerTaxResidenceCountries: [residency === 'local' ? 'US' : 'AR'],
     answers: base.answers.map(answer => {
       if (answer.questionId === 'founder_residency') return { ...answer, value: residency };
+      if (answer.questionId === 'owner_us_person_status') return { ...answer, value: residency === 'local' ? 'us_person' : 'non_us_person' };
+      if (answer.questionId === 'foreign_ownership_25_percent') return { ...answer, value: classification === 'c_corp' && residency === 'local' ? 'no' : 'yes' };
       if (answer.questionId === 'tax_classification') return { ...answer, value: classification };
       if (answer.questionId === 'member_count' && memberCount !== undefined) return { ...answer, value: memberCount };
       return answer;
     }),
   };
+}
+
+function withUsAnswer(profile: TaxProfile, questionId: string, value: string): TaxProfile {
+  return {
+    ...profile,
+    answers: profile.answers.map(answer => answer.questionId === questionId ? { ...answer, value } : answer),
+  };
+}
+
+function withoutUsAnswer(profile: TaxProfile, questionId: string): TaxProfile {
+  return { ...profile, answers: profile.answers.filter(answer => answer.questionId !== questionId) };
 }
 
 function withIibb(regime: string, dueGroup?: string, verifierDigit?: string): TaxProfile {

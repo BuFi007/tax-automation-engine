@@ -44,6 +44,9 @@ export function unitedStatesProfile(): TaxProfile {
     operatingSubdivisions: ['US-DE'],
     answers: [
       { questionId: 'founder_residency', value: 'foreign', confirmationState: 'user_confirmed' },
+      { questionId: 'owner_us_person_status', value: 'non_us_person', confirmationState: 'accountant_confirmed' },
+      { questionId: 'foreign_ownership_25_percent', value: 'yes', confirmationState: 'accountant_confirmed' },
+      { questionId: 'related_party_reportable_transactions', value: 'yes', confirmationState: 'accountant_confirmed' },
       { questionId: 'member_count', value: 1, confirmationState: 'user_confirmed' },
       { questionId: 'tax_classification', value: 'disregarded_entity', confirmationState: 'accountant_confirmed' },
       { questionId: 'formation_state', value: 'US-DE', confirmationState: 'user_confirmed' },
@@ -51,7 +54,7 @@ export function unitedStatesProfile(): TaxProfile {
       { questionId: 'sales_states', value: ['US-CA', 'US-NY'], confirmationState: 'user_confirmed' },
       { questionId: 'has_payroll', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'us-catalogue-2026-07-15',
+    catalogueVersion: 'us-catalogue-2026-07-16',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -116,6 +119,8 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
         return { ...answer, value: classification };
       }
       if (answer.questionId === 'founder_residency') return { ...answer, value: founderResidency };
+      if (answer.questionId === 'owner_us_person_status') return { ...answer, value: founderResidency === 'local' ? 'us_person' : 'non_us_person' };
+      if (answer.questionId === 'foreign_ownership_25_percent') return { ...answer, value: selectedRegimeId === 'c_corp' && founderResidency === 'local' ? 'no' : 'yes' };
       return answer;
     }),
   };

@@ -18,12 +18,27 @@ const RULES = {
 
 export const unitedStatesCatalogue: JurisdictionCatalogue = {
   jurisdiction: 'US',
-  version: 'us-catalogue-2026-07-15',
+  version: 'us-catalogue-2026-07-16',
   displayName: 'United States',
   questions: [
-    { id: 'founder_residency', label: 'Founder tax residency', kind: 'enum', required: true, options: [
-      { value: 'local', label: 'U.S. person' },
+    { id: 'founder_residency', label: 'Founder domicile context (not U.S.-person status)', kind: 'enum', required: true, options: [
+      { value: 'local', label: 'U.S.-domiciled founder' },
       { value: 'foreign', label: 'Foreign-domiciled founder' },
+    ] },
+    { id: 'owner_us_person_status', label: 'Confirmed owner U.S.-person status', kind: 'enum', required: true, options: [
+      { value: 'us_person', label: 'U.S. person' },
+      { value: 'non_us_person', label: 'Non-U.S. person' },
+      { value: 'needs_classification', label: 'Needs professional classification' },
+    ] },
+    { id: 'foreign_ownership_25_percent', label: 'At least 25% foreign ownership by vote or value', kind: 'enum', required: false, options: [
+      { value: 'yes', label: 'Yes' },
+      { value: 'no', label: 'No' },
+      { value: 'needs_review', label: 'Needs professional review' },
+    ] },
+    { id: 'related_party_reportable_transactions', label: 'Reportable related-party transactions occurred', kind: 'enum', required: false, options: [
+      { value: 'yes', label: 'Yes' },
+      { value: 'no', label: 'No' },
+      { value: 'needs_review', label: 'Needs professional review' },
     ] },
     { id: 'member_count', label: 'LLC member count', kind: 'integer', required: false },
     { id: 'tax_classification', label: 'Confirmed federal classification/election', kind: 'enum', required: true, options: [
@@ -39,10 +54,10 @@ export const unitedStatesCatalogue: JurisdictionCatalogue = {
     { id: 'has_payroll', label: 'Has payroll', kind: 'boolean', required: true },
   ],
   regimes: [
-    { id: 'llc_single_member', entityTypes: ['llc'], label: 'Single-member LLC', description: 'Entity, owner-residency, federal classification, state, and sales-tax review.', requiredQuestions: ['founder_residency', 'member_count', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form5472, RULES.form1120, RULES.filingCalendar, RULES.records] },
-    { id: 'llc_multi_member', entityTypes: ['llc'], label: 'Multi-member LLC', description: 'Partnership/default-election ambiguity is routed to professional review.', requiredQuestions: ['founder_residency', 'member_count', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form1065, RULES.filingCalendar, RULES.records] },
-    { id: 's_corp', entityTypes: ['corporation'], label: 'S-Corporation', description: 'Federal, state, payroll, and information-return workflow.', requiredQuestions: ['founder_residency', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form1120s, RULES.filingCalendar] },
-    { id: 'c_corp', entityTypes: ['corporation'], label: 'C-Corporation', description: 'Federal corporate, state franchise/income, sales-tax, and payroll workflow.', requiredQuestions: ['founder_residency', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form1120, RULES.estimated, RULES.filingCalendar, RULES.records] },
+    { id: 'llc_single_member', entityTypes: ['llc'], label: 'Single-member LLC', description: 'Entity, owner-status, federal classification, state, and sales-tax review.', requiredQuestions: ['founder_residency', 'owner_us_person_status', 'member_count', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form5472, RULES.form1120, RULES.filingCalendar, RULES.records] },
+    { id: 'llc_multi_member', entityTypes: ['llc'], label: 'Multi-member LLC', description: 'Partnership/default-election ambiguity is routed to professional review.', requiredQuestions: ['founder_residency', 'owner_us_person_status', 'member_count', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form1065, RULES.filingCalendar, RULES.records] },
+    { id: 's_corp', entityTypes: ['corporation'], label: 'S-Corporation', description: 'Federal, state, payroll, shareholder-eligibility, and information-return workflow.', requiredQuestions: ['founder_residency', 'owner_us_person_status', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form1120s, RULES.filingCalendar] },
+    { id: 'c_corp', entityTypes: ['corporation'], label: 'C-Corporation', description: 'Federal corporate, foreign-ownership information reporting, state franchise/income, sales-tax, and payroll workflow.', requiredQuestions: ['founder_residency', 'owner_us_person_status', 'tax_classification', 'formation_state', 'operating_states', 'sales_states', 'has_payroll'], ruleVersionIds: [RULES.entity, RULES.form5472, RULES.form1120, RULES.estimated, RULES.filingCalendar, RULES.records] },
   ],
   rules: [
     { id: RULES.entity, jurisdiction: 'US', effectiveFrom: '2026-01-01', effectiveTo: null, sourceUrl: 'https://www.irs.gov/businesses/small-businesses-self-employed/limited-liability-company-llc', title: 'IRS LLC classification overview', reviewedByAccountant: false, version: '1' },
@@ -76,13 +91,34 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
     const errors = [...new Set(missing)].map(question => `MISSING_${question.toUpperCase()}`);
     const classification = answerMap.get('tax_classification');
     const memberCount = answerMap.get('member_count');
+    const ownerUsPersonStatus = answerMap.get('owner_us_person_status');
+    const foreignOwnership = answerMap.get('foreign_ownership_25_percent');
+    const reportableTransactions = answerMap.get('related_party_reportable_transactions');
     if (profile.regimeId === 'llc_single_member' && typeof memberCount === 'number' && memberCount !== 1) errors.push('LLC_MEMBER_COUNT_REGIME_MISMATCH');
     if (profile.regimeId === 'llc_multi_member' && typeof memberCount === 'number' && memberCount < 2) errors.push('LLC_MEMBER_COUNT_REGIME_MISMATCH');
     if (!classificationMatchesRegime(profile.regimeId, classification)) errors.push('REGIME_CLASSIFICATION_MISMATCH');
-    if (classification === 's_corp' && answerMap.get('founder_residency') === 'foreign') {
-      errors.push('S_CORP_FOREIGN_OWNER_NEEDS_PROFESSIONAL_REVIEW');
+    if (ownerUsPersonStatus === 'needs_classification') errors.push('OWNER_US_PERSON_STATUS_NEEDS_PROFESSIONAL_REVIEW');
+    if (ownerUsPersonStatus !== undefined && !isOwnerUsPersonStatus(ownerUsPersonStatus)) errors.push('INVALID_OWNER_US_PERSON_STATUS');
+    if (classification === 's_corp' && ownerUsPersonStatus === 'non_us_person') {
+      errors.push('S_CORP_NON_US_OWNER_NEEDS_PROFESSIONAL_REVIEW');
     }
     if (classification === 'needs_classification') errors.push('FEDERAL_CLASSIFICATION_NEEDS_PROFESSIONAL_REVIEW');
+    if (profile.ownerDomicileCountries.length === 0) errors.push('MISSING_OWNER_DOMICILE_COUNTRY');
+    if (profile.ownerTaxResidenceCountries.length === 0) errors.push('MISSING_OWNER_TAX_RESIDENCE_COUNTRY');
+    if (answerMap.get('formation_state') !== profile.formationSubdivision) errors.push('PROFILE_FORMATION_STATE_MISMATCH');
+    if (!sameStringSet(answerMap.get('operating_states'), profile.operatingSubdivisions)) errors.push('PROFILE_OPERATING_STATES_MISMATCH');
+    if (classification === 'c_corp') {
+      if (!isReviewAnswer(foreignOwnership)) errors.push('MISSING_FOREIGN_OWNERSHIP_25_PERCENT');
+      if (foreignOwnership === 'needs_review') errors.push('FOREIGN_OWNERSHIP_NEEDS_PROFESSIONAL_REVIEW');
+      if (foreignOwnership === 'yes') {
+        if (!isReviewAnswer(reportableTransactions)) errors.push('MISSING_RELATED_PARTY_REPORTABLE_TRANSACTIONS');
+        if (reportableTransactions === 'needs_review') errors.push('RELATED_PARTY_TRANSACTIONS_NEED_PROFESSIONAL_REVIEW');
+      }
+    }
+    if (profile.regimeId === 'llc_single_member' && classification === 'disregarded_entity' && ownerUsPersonStatus === 'non_us_person') {
+      if (!isReviewAnswer(reportableTransactions)) errors.push('MISSING_RELATED_PARTY_REPORTABLE_TRANSACTIONS');
+      if (reportableTransactions === 'needs_review') errors.push('RELATED_PARTY_TRANSACTIONS_NEED_PROFESSIONAL_REVIEW');
+    }
     return errors;
   }
 
@@ -91,8 +127,11 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
     const needsReview = validation.length > 0;
     const answerMap = new Map(profile.answers.map(answer => [answer.questionId, answer.value]));
     const year = taxYear(period);
-    const founderIsForeign = answerMap.get('founder_residency') === 'foreign';
+    const ownerUsPersonStatus = answerMap.get('owner_us_person_status');
+    const ownerIsNonUsPerson = ownerUsPersonStatus === 'non_us_person';
     const classification = answerMap.get('tax_classification');
+    const foreignOwnership = answerMap.get('foreign_ownership_25_percent');
+    const reportableTransactions = answerMap.get('related_party_reportable_transactions');
     const formationState = answerMap.get('formation_state');
     const operatingStates = answerMap.get('operating_states');
     const shared = {
@@ -107,7 +146,7 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
       satisfactionState: 'outstanding' as const,
     };
     const obligations: TaxObligation[] = [
-      federalObligation(profile.regimeId, classification, founderIsForeign, year, shared),
+      federalObligation(profile.regimeId, classification, ownerIsNonUsPerson, reportableTransactions, year, shared),
       {
         ...shared,
         id: 'us:state-review',
@@ -192,6 +231,25 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
         });
       }
     }
+    if (classification === 'c_corp' && foreignOwnership !== 'no') {
+      obligations.push({
+        ...shared,
+        id: 'us:form-5472-corporation-review',
+        category: 'federal_income_return',
+        title: '25% foreign-owned corporation · Form 5472 review',
+        description: foreignOwnership === 'yes' && reportableTransactions === 'yes'
+          ? 'Prepare each required Form 5472 with the corporation return; ownership attribution, related parties, transaction classification, and filing remain under professional review.'
+          : 'Confirm whether the corporation was at least 25% foreign owned and had a reportable related-party transaction before creating a Form 5472 filing packet.',
+        dueAt: foreignOwnership === 'yes' && reportableTransactions === 'yes' && year === 2025
+          ? localEndOfDay('2026-04-15', '-04:00')
+          : null,
+        evidenceRequirementIds: ['us:req:foreign-ownership', 'us:req:related-party-transactions', 'us:req:entity-profile'],
+        ruleVersionIds: [RULES.form5472, RULES.form1120, RULES.filingCalendar],
+        actionId: 'action:review-form-5472',
+        applicability: 'needs_professional_review',
+        preparationState: 'unknown',
+      });
+    }
     const hasPayroll = profile.answers.some(answer => answer.questionId === 'has_payroll' && answer.value === true);
     if (hasPayroll) {
       obligations.push({
@@ -213,20 +271,34 @@ export class UnitedStatesJurisdictionProvider implements TaxJurisdictionProvider
 
 type SharedObligation = Omit<TaxObligation, 'id' | 'category' | 'title' | 'description' | 'evidenceRequirementIds' | 'ruleVersionIds' | 'actionId'>;
 
-function federalObligation(regimeId: string, classification: unknown, founderIsForeign: boolean, year: number, shared: SharedObligation): TaxObligation {
+function federalObligation(
+  regimeId: string,
+  classification: unknown,
+  ownerIsNonUsPerson: boolean,
+  reportableTransactions: unknown,
+  year: number,
+  shared: SharedObligation
+): TaxObligation {
   const base = {
     ...shared,
     category: 'federal_income_return' as const,
     evidenceRequirementIds: ['us:req:income-ledger', 'us:req:expense-ledger', 'us:req:entity-profile'],
     actionId: 'action:prepare-federal-packet',
   };
-  if (regimeId === 'llc_single_member' && classification === 'disregarded_entity' && founderIsForeign) {
+  if (
+    regimeId === 'llc_single_member'
+    && classification === 'disregarded_entity'
+    && ownerIsNonUsPerson
+    && reportableTransactions !== 'no'
+  ) {
     return {
       ...base,
       id: 'us:form-5472-pro-forma-1120',
       title: 'Foreign-owned disregarded entity · Form 5472 + pro forma Form 1120',
-      description: 'Prepare reportable-transaction evidence and route the special non-e-file submission to a qualified professional.',
-      dueAt: year === 2025 ? localEndOfDay('2026-04-15', '-04:00') : null,
+      description: reportableTransactions === 'yes'
+        ? 'Prepare reportable-transaction evidence and route the special non-e-file submission to a qualified professional.'
+        : 'Confirm reportable related-party transactions before preparing the special pro forma Form 1120 and Form 5472 submission.',
+      dueAt: reportableTransactions === 'yes' && year === 2025 ? localEndOfDay('2026-04-15', '-04:00') : null,
       ruleVersionIds: [RULES.form5472, RULES.form1120, RULES.filingCalendar],
       applicability: 'needs_professional_review',
       preparationState: 'unknown',
@@ -247,13 +319,13 @@ function federalObligation(regimeId: string, classification: unknown, founderIsF
       ...base,
       id: 'us:form-1120-s',
       title: 'S corporation return · Form 1120-S',
-      description: founderIsForeign
-        ? 'Foreign ownership conflicts with the ordinary S corporation eligibility path; stop for professional review.'
+      description: ownerIsNonUsPerson
+        ? 'A non-U.S. owner does not establish ordinary S corporation shareholder eligibility; stop for professional review.'
         : 'Prepare Form 1120-S and shareholder schedule evidence for an authorized filing path.',
       dueAt: year === 2025 ? localEndOfDay('2026-03-16', '-04:00') : null,
       ruleVersionIds: [RULES.form1120s, RULES.filingCalendar],
-      applicability: founderIsForeign ? 'needs_professional_review' : shared.applicability,
-      preparationState: founderIsForeign ? 'unknown' : shared.preparationState,
+      applicability: ownerIsNonUsPerson ? 'needs_professional_review' : shared.applicability,
+      preparationState: ownerIsNonUsPerson ? 'unknown' : shared.preparationState,
     };
   }
   if (classification === 'c_corp') {
@@ -285,6 +357,20 @@ function classificationMatchesRegime(regimeId: string, classification: unknown):
   if (regimeId === 's_corp') return classification === 's_corp';
   if (regimeId === 'c_corp') return classification === 'c_corp';
   return false;
+}
+
+function isOwnerUsPersonStatus(value: unknown): value is 'us_person' | 'non_us_person' | 'needs_classification' {
+  return value === 'us_person' || value === 'non_us_person' || value === 'needs_classification';
+}
+
+function isReviewAnswer(value: unknown): value is 'yes' | 'no' | 'needs_review' {
+  return value === 'yes' || value === 'no' || value === 'needs_review';
+}
+
+function sameStringSet(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value)
+    && value.every(item => typeof item === 'string')
+    && [...new Set(value)].sort().join('\u0000') === [...new Set(expected)].sort().join('\u0000');
 }
 
 const C_CORP_ESTIMATED_2026 = [

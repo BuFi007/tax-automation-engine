@@ -263,7 +263,7 @@ export const unitedStatesTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.
     entityType: 'llc',
     regimeId: 'llc_single_member_foreign_owned',
     confirmationState: 'accountant_confirmed',
-    catalogueVersion: 'us-catalogue-2026-07-15',
+    catalogueVersion: 'us-catalogue-2026-07-16',
   },
   displayCurrency: 'USD',
   activity: {
@@ -369,4 +369,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '7418feba55b5269e90d0043f2e52738d92d37f01f7b469b5fb7b565463117e55';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '7724d0e8025e387d611f5020930df656dba7b666ecd591e7037cbaaf4b82d9c1';
