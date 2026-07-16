@@ -33,6 +33,9 @@ export type ArgentinaServiceCaseV1 = Readonly<{
   verificationState: 'unverified' | 'verified' | 'rejected';
   submittedArtifactHash: string | null;
   verifiedArtifactHash: string | null;
+  benefitState: 'not_applicable' | 'not_verified' | 'active' | 'rejected';
+  benefitArtifactHash: string | null;
+  benefitValidUntil: string | null;
 }>;
 
 export type ArgentinaServiceCommand =
@@ -42,7 +45,8 @@ export type ArgentinaServiceCommand =
   | Readonly<{ kind: 'approve_review' }>
   | Readonly<{ kind: 'reject_review' }>
   | Readonly<{ kind: 'record_submission'; artifactHash: string }>
-  | Readonly<{ kind: 'record_verification'; artifactHash: string; accepted: boolean }>;
+  | Readonly<{ kind: 'record_verification'; artifactHash: string; accepted: boolean }>
+  | Readonly<{ kind: 'record_benefit'; artifactHash: string; accepted: boolean; validUntil: string | null }>;
 
 export type ArgentinaServiceCaseInput = Readonly<{
   caseId: string;
@@ -85,6 +89,9 @@ export function createArgentinaServiceCase(input: ArgentinaServiceCaseInput): Ar
     verificationState: 'unverified',
     submittedArtifactHash: null,
     verifiedArtifactHash: null,
+    benefitState: input.serviceType === 'mipyme' || input.serviceType === 'knowledge_economy' ? 'not_verified' : 'not_applicable',
+    benefitArtifactHash: null,
+    benefitValidUntil: null,
   };
 }
 
@@ -114,11 +121,38 @@ export function applyArgentinaServiceCommand(serviceCase: ArgentinaServiceCaseV1
   if (command.kind === 'record_submission') {
     if (serviceCase.reviewState !== 'approved') throw new Error('ARGENTINA_SERVICE_SUBMISSION_NOT_APPROVED');
     if (!hash(command.artifactHash)) throw new Error('ARGENTINA_SERVICE_ARTIFACT_HASH_INVALID');
+    if (serviceCase.submissionState === 'submitted') {
+      if (serviceCase.submittedArtifactHash !== command.artifactHash) throw new Error('ARGENTINA_SERVICE_SUBMISSION_CONFLICT');
+      return serviceCase;
+    }
     return { ...serviceCase, submissionState: 'submitted', submittedArtifactHash: command.artifactHash };
+  }
+  if (command.kind === 'record_benefit') {
+    if (serviceCase.benefitState === 'not_applicable') throw new Error('ARGENTINA_SERVICE_BENEFIT_NOT_APPLICABLE');
+    if (serviceCase.verificationState !== 'verified') throw new Error('ARGENTINA_SERVICE_BENEFIT_NOT_VERIFIED');
+    if (!hash(command.artifactHash)) throw new Error('ARGENTINA_SERVICE_ARTIFACT_HASH_INVALID');
+    if (command.accepted && command.validUntil === null) throw new Error('ARGENTINA_SERVICE_BENEFIT_VALIDITY_REQUIRED');
+    if (command.validUntil !== null) serviceInstant(command.validUntil);
+    if (serviceCase.benefitState !== 'not_verified') {
+      if (serviceCase.benefitArtifactHash !== command.artifactHash || serviceCase.benefitValidUntil !== command.validUntil || serviceCase.benefitState !== (command.accepted ? 'active' : 'rejected')) throw new Error('ARGENTINA_SERVICE_BENEFIT_CONFLICT');
+      return serviceCase;
+    }
+    return { ...serviceCase, benefitState: command.accepted ? 'active' : 'rejected', benefitArtifactHash: command.artifactHash, benefitValidUntil: command.validUntil };
   }
   if (serviceCase.submissionState !== 'submitted') throw new Error('ARGENTINA_SERVICE_NOT_SUBMITTED');
   if (!hash(command.artifactHash)) throw new Error('ARGENTINA_SERVICE_ARTIFACT_HASH_INVALID');
+  if (serviceCase.verificationState !== 'unverified') {
+    if (serviceCase.verifiedArtifactHash !== command.artifactHash || serviceCase.verificationState !== (command.accepted ? 'verified' : 'rejected')) throw new Error('ARGENTINA_SERVICE_VERIFICATION_CONFLICT');
+    return serviceCase;
+  }
   return { ...serviceCase, verificationState: command.accepted ? 'verified' : 'rejected', verifiedArtifactHash: command.artifactHash };
+}
+
+export function effectiveArgentinaServiceBenefitState(serviceCase: ArgentinaServiceCaseV1, asOf: string): ArgentinaServiceCaseV1['benefitState'] | 'expired' {
+  const at = serviceInstant(asOf);
+  if (serviceCase.benefitState !== 'active') return serviceCase.benefitState;
+  if (serviceCase.benefitValidUntil === null) throw new Error('ARGENTINA_SERVICE_BENEFIT_VALIDITY_REQUIRED');
+  return at > serviceInstant(serviceCase.benefitValidUntil) ? 'expired' : 'active';
 }
 
 export type RegulatoryRuleProposalV1 = Readonly<{
@@ -174,6 +208,12 @@ function rangesOverlap(left: Period, right: Period): boolean {
 
 function hash(value: string): boolean {
   return /^[a-f0-9]{64}$/.test(value);
+}
+
+function serviceInstant(value: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || !/[zZ]|[+-]\d\d:\d\d$/.test(value)) throw new Error('ARGENTINA_SERVICE_TIMESTAMP_INVALID');
+  return parsed;
 }
 
 function officialRegulatorySource(value: string): boolean {

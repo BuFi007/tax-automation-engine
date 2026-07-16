@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { applyArgentinaServiceCommand, createArgentinaServiceCase, proposeRegulatoryRuleImpact, reviewRegulatoryRuleProposal } from './argentina-services';
+import { applyArgentinaServiceCommand, createArgentinaServiceCase, effectiveArgentinaServiceBenefitState, proposeRegulatoryRuleImpact, reviewRegulatoryRuleProposal } from './argentina-services';
 import { argentinaProfile } from './fixtures';
 
 const period = { start: '2026-01-01', end: '2026-12-31' } as const;
@@ -19,6 +19,22 @@ describe('Argentina accountant-service workflows', () => {
     expect(serviceCase.verificationState).toBe('unverified');
     serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'record_verification', artifactHash: 'b'.repeat(64), accepted: true });
     expect(serviceCase.verificationState).toBe('verified');
+    expect(serviceCase.benefitState).toBe('not_verified');
+    serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'record_benefit', artifactHash: 'c'.repeat(64), accepted: true, validUntil: '2027-07-15T00:00:00.000Z' });
+    expect(effectiveArgentinaServiceBenefitState(serviceCase, '2027-07-15T00:00:00.000Z')).toBe('active');
+    expect(effectiveArgentinaServiceBenefitState(serviceCase, '2027-07-15T00:00:00.001Z')).toBe('expired');
+  });
+
+  test('never turns submission or verification alone into an active benefit', () => {
+    let serviceCase = createArgentinaServiceCase({ caseId: 'case:mipyme:separation', profile: argentinaProfile(), serviceType: 'mipyme', period, asOf: '2026-07-15T00:00:00.000Z' });
+    for (const requirement of serviceCase.requirements) serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'accept_evidence', requirementId: requirement.requirementId, evidenceId: `evidence:${requirement.requirementId}` });
+    serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'request_review' });
+    serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'approve_review' });
+    serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'record_submission', artifactHash: 'a'.repeat(64) });
+    expect(() => applyArgentinaServiceCommand(serviceCase, { kind: 'record_benefit', artifactHash: 'c'.repeat(64), accepted: true, validUntil: '2027-01-01T00:00:00.000Z' })).toThrow('ARGENTINA_SERVICE_BENEFIT_NOT_VERIFIED');
+    serviceCase = applyArgentinaServiceCommand(serviceCase, { kind: 'record_verification', artifactHash: 'b'.repeat(64), accepted: true });
+    expect(serviceCase.benefitState).toBe('not_verified');
+    expect(() => applyArgentinaServiceCommand(serviceCase, { kind: 'record_benefit', artifactHash: 'c'.repeat(64), accepted: true, validUntil: null })).toThrow('ARGENTINA_SERVICE_BENEFIT_VALIDITY_REQUIRED');
   });
 
   test('enforces the three-month income-certification entitlement and legal-entity knowledge path', () => {
