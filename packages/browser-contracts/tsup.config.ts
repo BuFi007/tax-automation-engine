@@ -3,6 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
+    'arca-onboarding': 'src/arca-onboarding.ts',
     fixtures: 'src/fixtures.ts',
     'scenario-fixtures': 'src/scenario-fixtures.ts',
   },

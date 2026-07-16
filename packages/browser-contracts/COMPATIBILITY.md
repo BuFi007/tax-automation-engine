@@ -41,3 +41,7 @@ Package `0.5.0` adds the ARCA onboarding run, mutation, read, history, and
 Reclaim-handoff browser contracts. The raw Tax onboarding aggregate and raw
 Reclaim request configuration remain internal-only. Consumers must reject an
 unknown onboarding wire discriminator rather than falling back to local state.
+
+Package `0.5.1` adds the bounded `./arca-onboarding` package entrypoint. It is a
+type-graph and packaging improvement only: every 0.5.0 ARCA onboarding wire
+discriminator and projection remains byte-compatible.
