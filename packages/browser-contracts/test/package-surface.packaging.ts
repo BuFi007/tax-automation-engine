@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes only the frozen root and fixtures entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.1.0');
+    expect(packageJson.version).toBe('0.2.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -68,7 +68,7 @@ describe('published browser-contract package', () => {
     expect(rootModule.taxWidgetSnapshotReceiptV1Schema).toBeDefined();
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(goldenDigest).toBe(
-      'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d',
+      '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c',
     );
     if (typeof goldenDigest !== 'string') throw new Error('Built fixture digest is not a string');
 
@@ -80,7 +80,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== 'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

@@ -177,6 +177,50 @@ export const argentinaTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.par
     satisfactionState: 'outstanding',
     actionId: 'action:review-monotributo',
   }],
+  filingReadiness: {
+    state: 'blocked',
+    asOf: '2026-07-15T09:59:00.000Z',
+    blockingGapRefs: ['gap:accounting-stale'],
+    limitationCodes: ['EVIDENCE_GAP_BLOCKING'],
+  },
+  evidenceTasks: [{
+    taskRef: 'task:accounting-stale',
+    title: 'Reconnect accounting evidence',
+    state: 'open',
+    actor: 'user',
+    asOf: '2026-07-15T09:59:00.000Z',
+    safeEvidenceRefs: ['source:accounting'],
+    actionId: 'action:reconnect-accounting',
+    limitationCodes: [],
+  }],
+  accountantPacket: {
+    state: 'unavailable',
+    packetRef: null,
+    generatedAt: null,
+    safeEvidenceRefs: [],
+    actionId: null,
+    limitationCodes: ['ACCOUNTANT_PACKET_NOT_PROJECTED'],
+  },
+  planningForecast: {
+    state: 'unavailable',
+    horizon: period,
+    asOf: '2026-07-15T09:59:00.000Z',
+    lowerBound: null,
+    upperBound: null,
+    safeSourceRefs: [],
+    limitationCodes: ['TAX_FORECAST_NOT_PROJECTED'],
+    planningOnly: true,
+  },
+  supplementalEvidenceQuality: {
+    state: 'unavailable',
+    band: null,
+    asOf: '2026-07-15T09:59:00.000Z',
+    safeSourceRefs: [],
+    limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+    use: 'tax_evidence_only',
+    affectsCredit: false,
+    affectsFactoring: false,
+  },
   authorizedNextActions: ['action:reconnect-accounting'],
   conclusions: [{
     conclusionRef: 'conclusion:reconciled-revenue',
@@ -264,6 +308,13 @@ export const unitedStatesTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.
     satisfactionState: 'not_due',
     actionId: 'action:review-us-filing',
   }],
+  filingReadiness: {
+    state: 'in_progress',
+    asOf: '2026-07-15T09:59:00.000Z',
+    blockingGapRefs: [],
+    limitationCodes: [],
+  },
+  evidenceTasks: [],
   authorizedNextActions: ['action:review-us-filing'],
   conclusions: [],
   warnings: ['Tax liability remains unavailable until deterministic federal and state rules are projected.'],
@@ -318,4 +369,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = 'c8d1e73d9672a1240245682846ebae10174e2a66ada342e33838a5e45d6fe38d';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c';

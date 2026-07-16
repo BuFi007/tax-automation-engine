@@ -10,4 +10,6 @@ This package contains no provider clients, raw evidence, graph records, authorit
 
 Command replay receipts preserve the original `previousCaseRevision -> caseRevision` edge; `replayed` describes delivery, never a second mutation. Current snapshot receipts enforce `asOf <= generatedAt <= checkedAt < expiresAt` when an expiry is present. Source health is derived from schema-validated source aggregates and their capability states, so failed or stale capabilities cannot be hidden behind a healthy aggregate.
 
+Package `0.2.0` adds optional, fail-closed workflow presentation fields for filing readiness, evidence tasks, accountant packets, planning-only forecasts, and supplemental Tax evidence quality. Their absence means the producer has not projected that capability; it is never permission for a browser consumer to calculate or infer the missing value.
+
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for versioning and rollout rules.
