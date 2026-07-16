@@ -8,6 +8,15 @@ type Provenance = Readonly<{
   sourceEvidenceIds: readonly string[];
 }>;
 
+export type AssetValuationV1 = Readonly<{
+  provider: string;
+  pair: string;
+  observedAt: string;
+  rate: string;
+  confidence: 'verified' | 'reviewed' | 'unreviewed';
+  evidenceId: string;
+}>;
+
 export type DigitalAssetAcquisitionV1 = Readonly<{
   version: 'digital-asset-event-v1';
   kind: 'acquisition';
@@ -15,8 +24,10 @@ export type DigitalAssetAcquisitionV1 = Readonly<{
   workspaceId: string;
   occurredAt: string;
   asset: string;
+  assetId: string;
   quantity: string;
   costBasis: EvidenceMoney;
+  valuation: AssetValuationV1;
   purpose: 'invoice_settlement' | 'exchange_purchase' | 'transfer_in' | 'other';
   provenance: Provenance;
 }>;
@@ -28,9 +39,11 @@ export type DigitalAssetDisposalV1 = Readonly<{
   workspaceId: string;
   occurredAt: string;
   asset: string;
+  assetId: string;
   quantity: string;
   proceeds: EvidenceMoney;
   fee: EvidenceMoney;
+  valuation: AssetValuationV1;
   purpose: 'payroll' | 'sale' | 'invoice_refund' | 'fee' | 'other';
   provenance: Provenance;
 }>;
@@ -54,15 +67,18 @@ export type DigitalAssetLedgerV1 = Readonly<{
   openLots: readonly Readonly<{
     acquisitionEventId: string;
     asset: string;
+    assetId: string;
     acquiredAt: string;
     remainingQuantity: string;
     remainingCostBasis: EvidenceMoney;
     economicEventId: string;
     sourceEvidenceIds: readonly string[];
+    valuation: AssetValuationV1;
   }>[];
   dispositions: readonly Readonly<{
     disposalEventId: string;
     asset: string;
+    assetId: string;
     disposedAt: string;
     purpose: DigitalAssetDisposalV1['purpose'];
     state: 'active' | 'reversed';
@@ -78,6 +94,7 @@ export type DigitalAssetLedgerV1 = Readonly<{
     }>[];
     economicEventId: string;
     sourceEvidenceIds: readonly string[];
+    valuation: AssetValuationV1;
   }>[];
   reversalEventIds: readonly string[];
 }>;
@@ -87,11 +104,17 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
   const ordered = [...events].sort(compareEvents);
   const workspaceId = ordered[0]!.workspaceId;
   const eventById = new Map<string, DigitalAssetEventV1>();
+  const monetaryEventByEconomicId = new Map<string, string>();
   const reversedDisposals = new Map<string, string>();
 
   for (const event of ordered) {
     validateEvent(event, workspaceId);
     if (eventById.has(event.eventId)) throw new Error('DIGITAL_ASSET_EVENT_ID_CONFLICT');
+    if (event.kind !== 'disposal_reversal') {
+      const existingEventId = monetaryEventByEconomicId.get(event.provenance.economicEventId);
+      if (existingEventId && existingEventId !== event.eventId) throw new Error('DIGITAL_ASSET_ECONOMIC_EVENT_CONFLICT');
+      monetaryEventByEconomicId.set(event.provenance.economicEventId, event.eventId);
+    }
     if (event.kind === 'disposal_reversal') {
       const target = eventById.get(event.reversesEventId);
       if (!target || target.kind !== 'disposal') throw new Error('DIGITAL_ASSET_REVERSAL_TARGET_INVALID');
@@ -127,7 +150,7 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     let allocated = new Decimal(0);
     const lotMatches: DigitalAssetLedgerV1['dispositions'][number]['lotMatches'][number][] = [];
     for (const lot of lots) {
-      if (lot.acquisition.asset !== event.asset || lot.remainingQuantity.isZero()) continue;
+      if (lot.acquisition.assetId !== event.assetId || lot.remainingQuantity.isZero()) continue;
       if (lot.acquisition.costBasis.currency !== event.proceeds.currency) throw new Error('DIGITAL_ASSET_QUOTE_CURRENCY_MISMATCH');
       const taken = Decimal.min(needed, lot.remainingQuantity);
       const isFinalTake = taken.equals(lot.remainingQuantity);
@@ -150,6 +173,7 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     activeDispositions.push({
       disposalEventId: event.eventId,
       asset: event.asset,
+      assetId: event.assetId,
       disposedAt: event.occurredAt,
       purpose: event.purpose,
       state: 'active',
@@ -161,6 +185,7 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
       lotMatches,
       economicEventId: event.provenance.economicEventId,
       sourceEvidenceIds: event.provenance.sourceEvidenceIds,
+      valuation: event.valuation,
     });
   }
 
@@ -171,6 +196,7 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     return {
       disposalEventId: event.eventId,
       asset: event.asset,
+      assetId: event.assetId,
       disposedAt: event.occurredAt,
       purpose: event.purpose,
       state: 'reversed' as const,
@@ -182,6 +208,7 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
       lotMatches: [],
       economicEventId: event.provenance.economicEventId,
       sourceEvidenceIds: event.provenance.sourceEvidenceIds,
+      valuation: event.valuation,
     };
   });
 
@@ -192,11 +219,13 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     openLots: lots.filter(lot => !lot.remainingQuantity.isZero()).map(lot => ({
       acquisitionEventId: lot.acquisition.eventId,
       asset: lot.acquisition.asset,
+      assetId: lot.acquisition.assetId,
       acquiredAt: lot.acquisition.occurredAt,
       remainingQuantity: canonical(lot.remainingQuantity),
       remainingCostBasis: money(lot.remainingCostBasis.toFixed(), lot.acquisition.costBasis.currency),
       economicEventId: lot.acquisition.provenance.economicEventId,
       sourceEvidenceIds: lot.acquisition.provenance.sourceEvidenceIds,
+      valuation: lot.acquisition.valuation,
     })),
     dispositions,
     reversalEventIds: ordered.filter(event => event.kind === 'disposal_reversal').map(event => event.eventId),
@@ -207,13 +236,26 @@ function validateEvent(event: DigitalAssetEventV1, workspaceId: string): void {
   if (event.version !== 'digital-asset-event-v1') throw new Error('DIGITAL_ASSET_EVENT_VERSION_UNSUPPORTED');
   if (event.workspaceId !== workspaceId) throw new Error('DIGITAL_ASSET_WORKSPACE_MISMATCH');
   if (!event.eventId || !event.provenance.economicEventId || event.provenance.sourceEvidenceIds.length === 0 || event.provenance.sourceEvidenceIds.some(id => !id)) throw new Error('DIGITAL_ASSET_PROVENANCE_REQUIRED');
-  if (event.kind !== 'disposal_reversal' && !/^[A-Z][A-Z0-9._-]{1,15}$/.test(event.asset)) throw new Error('DIGITAL_ASSET_SYMBOL_INVALID');
+  if (new Set(event.provenance.sourceEvidenceIds).size !== event.provenance.sourceEvidenceIds.length) throw new Error('DIGITAL_ASSET_PROVENANCE_DUPLICATED');
+  if (event.kind !== 'disposal_reversal') {
+    if (!/^[A-Z][A-Z0-9._-]{1,15}$/.test(event.asset)) throw new Error('DIGITAL_ASSET_SYMBOL_INVALID');
+    if (!/^[a-z0-9][a-z0-9:._/-]{2,191}$/.test(event.assetId)) throw new Error('DIGITAL_ASSET_ID_INVALID');
+    validateValuation(event.valuation, event.occurredAt, event.asset, event.kind === 'acquisition' ? event.costBasis.currency : event.proceeds.currency);
+  }
   if (!Number.isFinite(Date.parse(event.occurredAt)) || !/[zZ]|[+-]\d\d:\d\d$/.test(event.occurredAt)) throw new Error('DIGITAL_ASSET_TIMESTAMP_INVALID');
   if (event.kind === 'disposal') {
     if (event.proceeds.currency !== event.fee.currency) throw new Error('DIGITAL_ASSET_QUOTE_CURRENCY_MISMATCH');
     nonNegative(event.proceeds.decimal, 'DIGITAL_ASSET_PROCEEDS_INVALID');
     nonNegative(event.fee.decimal, 'DIGITAL_ASSET_FEE_INVALID');
   }
+}
+
+function validateValuation(valuation: AssetValuationV1, occurredAt: string, asset: string, quoteCurrency: string): void {
+  if (!valuation.provider || !valuation.pair || !valuation.evidenceId) throw new Error('DIGITAL_ASSET_VALUATION_PROVENANCE_REQUIRED');
+  if (valuation.pair !== `${asset}/${quoteCurrency}`) throw new Error('DIGITAL_ASSET_VALUATION_PAIR_MISMATCH');
+  if (!Number.isFinite(Date.parse(valuation.observedAt)) || !/[zZ]|[+-]\d\d:\d\d$/.test(valuation.observedAt)) throw new Error('DIGITAL_ASSET_VALUATION_TIMESTAMP_INVALID');
+  if (Date.parse(valuation.observedAt) > Date.parse(occurredAt)) throw new Error('DIGITAL_ASSET_VALUATION_FROM_FUTURE');
+  positive(valuation.rate, 'DIGITAL_ASSET_VALUATION_RATE_INVALID');
 }
 
 function compareEvents(left: DigitalAssetEventV1, right: DigitalAssetEventV1): number {

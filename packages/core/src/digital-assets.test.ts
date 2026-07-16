@@ -11,9 +11,11 @@ describe('digital asset tax evidence ledger', () => {
 
     expect(ledger.openLots).toEqual([expect.objectContaining({
       acquisitionEventId: 'acq:invoice',
+      assetId: 'eip155:1/erc20:usdc',
       remainingQuantity: '600',
       remainingCostBasis: { decimal: '600', currency: 'USD' },
       economicEventId: 'event:factura-e-settlement',
+      valuation: expect.objectContaining({ pair: 'USDC/USD', rate: '1' }),
     })]);
     expect(ledger.dispositions[0]).toMatchObject({
       purpose: 'payroll',
@@ -53,16 +55,42 @@ describe('digital asset tax evidence ledger', () => {
       { ...acquisition('acq:no-proof', '100', '100', 'event:invoice'), provenance: { economicEventId: 'event:invoice', sourceEvidenceIds: [] } },
     ])).toThrow('DIGITAL_ASSET_PROVENANCE_REQUIRED');
   });
+
+  test('never mixes same-symbol assets with different canonical identities', () => {
+    expect(() => buildDigitalAssetLedger([
+      acquisition('acq:ethereum', '100', '100', 'event:invoice'),
+      { ...disposal('dispose:solana', '10', '10', '0', 'event:sale'), assetId: 'solana:mainnet/spl:usdc' },
+    ])).toThrow('DIGITAL_ASSET_INSUFFICIENT_LOTS');
+  });
+
+  test('rejects duplicate economic events and untraceable or future valuations', () => {
+    expect(() => buildDigitalAssetLedger([
+      acquisition('acq:first', '100', '100', 'event:onchain:1'),
+      acquisition('acq:duplicate', '100', '100', 'event:onchain:1'),
+    ])).toThrow('DIGITAL_ASSET_ECONOMIC_EVENT_CONFLICT');
+
+    expect(() => buildDigitalAssetLedger([
+      { ...acquisition('acq:future-rate', '100', '100', 'event:onchain:2'), valuation: valuation('2026-07-11T00:00:00.000Z') },
+    ])).toThrow('DIGITAL_ASSET_VALUATION_FROM_FUTURE');
+
+    expect(() => buildDigitalAssetLedger([
+      { ...acquisition('acq:wrong-pair', '100', '100', 'event:onchain:3'), valuation: { ...valuation('2026-07-10T00:00:00.000Z'), pair: 'USDT/USD' } },
+    ])).toThrow('DIGITAL_ASSET_VALUATION_PAIR_MISMATCH');
+  });
 });
 
 function acquisition(eventId: string, quantity: string, cost: string, economicEventId: string): DigitalAssetAcquisitionV1 {
   return {
-    version: 'digital-asset-event-v1', kind: 'acquisition', eventId, workspaceId: 'workspace:1', occurredAt: '2026-07-10T00:00:00.000Z', asset: 'USDC', quantity, costBasis: { decimal: cost, currency: 'USD' }, purpose: 'invoice_settlement', provenance: { economicEventId, sourceEvidenceIds: ['evidence:onchain-receipt', 'evidence:factura-e'] },
+    version: 'digital-asset-event-v1', kind: 'acquisition', eventId, workspaceId: 'workspace:1', occurredAt: '2026-07-10T00:00:00.000Z', asset: 'USDC', assetId: 'eip155:1/erc20:usdc', quantity, costBasis: { decimal: cost, currency: 'USD' }, valuation: valuation('2026-07-10T00:00:00.000Z'), purpose: 'invoice_settlement', provenance: { economicEventId, sourceEvidenceIds: ['evidence:onchain-receipt', 'evidence:factura-e'] },
   };
 }
 
 function disposal(eventId: string, quantity: string, proceeds: string, fee: string, economicEventId: string): DigitalAssetDisposalV1 {
   return {
-    version: 'digital-asset-event-v1', kind: 'disposal', eventId, workspaceId: 'workspace:1', occurredAt: '2026-07-11T00:00:00.000Z', asset: 'USDC', quantity, proceeds: { decimal: proceeds, currency: 'USD' }, fee: { decimal: fee, currency: 'USD' }, purpose: 'payroll', provenance: { economicEventId, sourceEvidenceIds: ['evidence:payroll-settlement'] },
+    version: 'digital-asset-event-v1', kind: 'disposal', eventId, workspaceId: 'workspace:1', occurredAt: '2026-07-11T00:00:00.000Z', asset: 'USDC', assetId: 'eip155:1/erc20:usdc', quantity, proceeds: { decimal: proceeds, currency: 'USD' }, fee: { decimal: fee, currency: 'USD' }, valuation: valuation('2026-07-11T00:00:00.000Z'), purpose: 'payroll', provenance: { economicEventId, sourceEvidenceIds: ['evidence:payroll-settlement'] },
   };
+}
+
+function valuation(observedAt: string) {
+  return { provider: 'provider:historical-prices', pair: 'USDC/USD', observedAt, rate: '1', confidence: 'verified' as const, evidenceId: 'evidence:historical-price' };
 }
