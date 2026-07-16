@@ -169,6 +169,11 @@ describe('browser-safe Tax V1 contracts', () => {
       ].map(dimension => ({
         ...dimension,
         safeSourceRefs: [],
+        safeRevisionRefs: ['evidence:quality_revision_0001'],
+        bindingState: 'verified',
+        freshnessState: 'current',
+        reviewState: 'accepted',
+        supersessionState: 'current',
         limitationCodes: [],
         ruleVersion: 'rule:tax-evidence-quality-v1',
       })),

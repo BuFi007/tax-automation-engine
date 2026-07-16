@@ -313,6 +313,11 @@ export type TaxEvidenceQualityV1 =
         score: number;
         weight: number;
         safeSourceReferenceIds: readonly string[];
+        safeRevisionReferenceIds: readonly string[];
+        bindingState: 'verified' | 'incomplete';
+        freshnessState: 'current' | 'mixed' | 'expired' | 'unknown';
+        reviewState: 'accepted' | 'incomplete';
+        supersessionState: 'current' | 'successor' | 'mixed' | 'unknown';
         limitationCodes: readonly string[];
         ruleVersion: 'tax-evidence-quality-v1';
       }>[];

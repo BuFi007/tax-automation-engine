@@ -338,6 +338,11 @@ describe('browser tax snapshot production boundary', () => {
         ].map(dimension => ({
           ...dimension,
           safeSourceReferenceIds: snapshot.sourceCoverage.map(source => `source:${source.sourceId}`),
+          safeRevisionReferenceIds: [`revision:${dimension.id}`],
+          bindingState: 'verified' as const,
+          freshnessState: 'current' as const,
+          reviewState: 'accepted' as const,
+          supersessionState: 'current' as const,
           limitationCodes: [],
           ruleVersion: 'tax-evidence-quality-v1' as const,
         })),

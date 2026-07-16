@@ -98,7 +98,34 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
     return unavailable(base, 'expired', 'TAX_EVIDENCE_QUALITY_EVIDENCE_EXPIRED');
   }
 
-  const active = input.activePeriodRecords;
+  const active = input.activePeriodRecords.filter(record => (
+    record.validityState === 'active' && record.reviewState === 'accepted'
+  ));
+  const safeRevisionReferenceIds = [...new Set(active.map(record => (
+    `revision:${record.sourceId}:${record.revision}`
+  )))].sort();
+  const bindingState = active.length > 0
+    && active.every(record => record.workspaceId === input.context.workspaceId)
+    ? 'verified' as const
+    : 'incomplete' as const;
+  const freshRecords = active.filter(record => (
+    !record.expiresAt || instant(record.expiresAt) > instant(asOf)
+  )).length;
+  const freshnessState = active.length === 0
+    ? 'unknown' as const
+    : freshRecords === active.length
+      ? 'current' as const
+      : freshRecords === 0
+        ? 'expired' as const
+        : 'mixed' as const;
+  const successorRecords = active.filter(record => record.supersedesIdempotencyKey !== null).length;
+  const supersessionState = active.length === 0
+    ? 'unknown' as const
+    : successorRecords === 0
+      ? 'current' as const
+      : successorRecords === active.length
+        ? 'successor' as const
+        : 'mixed' as const;
   const connectedSources = input.sources.filter(source => source.connectionState === 'connected').length;
   const verifiedRecords = active.filter(record => (
     isSha256(record.externalReferenceHash)
@@ -112,8 +139,7 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
   )).length;
 
   const dimensions = [
-    dimension('subject_workspace_binding', active.length > 0
-      && active.every(record => record.workspaceId === input.context.workspaceId) ? 25 : 0),
+    dimension('subject_workspace_binding', bindingState === 'verified' ? 25 : 0),
     dimension('source_provenance_verification', Math.round(25 * average([
       ratio(connectedSources, input.sources.length),
       ratio(verifiedRecords, active.length),
@@ -122,8 +148,8 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
       active.filter(record => !record.expiresAt || instant(record.expiresAt) > instant(asOf)).length,
       active.length,
     ))),
-    dimension('required_evidence_coverage', Math.max(0, Math.round(20 * (
-      1 - Math.min(input.gapCount, Math.max(active.length, 1)) / Math.max(active.length, 1)
+    dimension('required_evidence_coverage', active.length === 0 ? 0 : Math.max(0, Math.round(20 * (
+      1 - Math.min(input.gapCount, active.length) / active.length
     )))),
     dimension('reviewed_reconciliation', Math.round(10 * average([
       ratio(acceptedRecords, active.length),
@@ -134,6 +160,11 @@ export function calculateTaxEvidenceQualityV1(input: TaxEvidenceQualityInputV1):
   ].map(item => ({
     ...item,
     safeSourceReferenceIds,
+    safeRevisionReferenceIds,
+    bindingState,
+    freshnessState,
+    reviewState: active.length > 0 ? 'accepted' as const : 'incomplete' as const,
+    supersessionState,
     limitationCodes: item.score === item.weight ? [] : [dimensionLimitationCode(item.id)],
     ruleVersion: 'tax-evidence-quality-v1' as const,
   }));

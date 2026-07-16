@@ -29,13 +29,40 @@ describe('consented Tax evidence quality', () => {
       affectsCredit: false,
       affectsFactoring: false,
       dimensions: [
-        { id: 'subject_workspace_binding', score: 25, weight: 25 },
+        {
+          id: 'subject_workspace_binding',
+          score: 25,
+          weight: 25,
+          bindingState: 'verified',
+          freshnessState: 'current',
+          reviewState: 'accepted',
+          supersessionState: 'current',
+        },
         { id: 'source_provenance_verification', score: 25, weight: 25 },
         { id: 'freshness_expiry', score: 20, weight: 20 },
         { id: 'required_evidence_coverage', score: 20, weight: 20 },
         { id: 'reviewed_reconciliation', score: 10, weight: 10 },
       ],
     });
+  });
+
+  test('never lets unreviewed or rejected records improve evidence quality', () => {
+    const rejected = { ...record('invoice'), reviewState: 'rejected' as const };
+    const unreviewed = { ...record('settlement'), reviewState: 'unreviewed' as const };
+    const quality = calculateTaxEvidenceQualityV1(input({
+      consentGrants: [qualityGrant()],
+      records: [rejected, unreviewed],
+    }));
+
+    expect(quality).toMatchObject({ state: 'ready', value: 13, band: 'limited' });
+    if (quality.state !== 'ready') throw new Error('expected ready quality');
+    for (const dimension of quality.dimensions) {
+      expect(dimension.safeRevisionReferenceIds).toEqual([]);
+      expect(dimension.bindingState).toBe('incomplete');
+      expect(dimension.freshnessState).toBe('unknown');
+      expect(dimension.reviewState).toBe('incomplete');
+      expect(dimension.supersessionState).toBe('unknown');
+    }
   });
 
   test('keeps consent, lifecycle, support, and subject failures numeric-free', () => {
