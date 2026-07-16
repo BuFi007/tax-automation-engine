@@ -1,7 +1,9 @@
 import Decimal from 'decimal.js';
+import { createHash } from 'node:crypto';
 
+import { assertActiveAccountantMandate, type AccountantMandateV1 } from './accountant-mandate';
 import { money } from './money';
-import type { EvidenceMoney } from './types';
+import type { EvidenceMoney, Period } from './types';
 
 type Provenance = Readonly<{
   economicEventId: string;
@@ -64,6 +66,16 @@ export type DigitalAssetLedgerV1 = Readonly<{
   version: 'digital-asset-ledger-v1';
   workspaceId: string;
   method: 'FIFO';
+  builtThrough: string;
+  eventManifest: readonly Readonly<{
+    eventId: string;
+    kind: DigitalAssetEventV1['kind'];
+    occurredAt: string;
+    economicEventId: string;
+    sourceEvidenceIds: readonly string[];
+    valuationEvidenceId: string | null;
+    reversesEventId: string | null;
+  }>[];
   openLots: readonly Readonly<{
     acquisitionEventId: string;
     asset: string;
@@ -97,6 +109,30 @@ export type DigitalAssetLedgerV1 = Readonly<{
     valuation: AssetValuationV1;
   }>[];
   reversalEventIds: readonly string[];
+}>;
+
+export type DigitalAssetAccountantPackageV1 = Readonly<{
+  version: 'digital-asset-accountant-package-v1';
+  workspaceId: string;
+  period: Period;
+  method: DigitalAssetLedgerV1['method'];
+  evidenceCoverageThrough: string;
+  coverageState: 'complete' | 'partial';
+  preparedAt: string;
+  accountantAuthority: Readonly<{
+    mandateId: string;
+    accountantActorId: string;
+    accountantOrganizationId: string;
+  }>;
+  files: readonly Readonly<{
+    fileName: 'holdings.csv' | 'dispositions.csv' | 'lot-matches.csv' | 'source-manifest.csv';
+    mediaType: 'text/csv';
+    rowCount: number;
+    sha256: string;
+    contents: string;
+  }>[];
+  limitations: readonly ('ACCOUNTANT_REVIEW_REQUIRED' | 'JURISDICTION_CLASSIFICATION_NOT_INFERRED' | 'PARTIAL_EVIDENCE_COVERAGE')[];
+  packageHash: string;
 }>;
 
 export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]): DigitalAssetLedgerV1 {
@@ -216,6 +252,16 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     version: 'digital-asset-ledger-v1',
     workspaceId,
     method: 'FIFO',
+    builtThrough: ordered.at(-1)!.occurredAt,
+    eventManifest: ordered.map(event => ({
+      eventId: event.eventId,
+      kind: event.kind,
+      occurredAt: event.occurredAt,
+      economicEventId: event.provenance.economicEventId,
+      sourceEvidenceIds: [...event.provenance.sourceEvidenceIds].sort(),
+      valuationEvidenceId: event.kind === 'disposal_reversal' ? null : event.valuation.evidenceId,
+      reversesEventId: event.kind === 'disposal_reversal' ? event.reversesEventId : null,
+    })),
     openLots: lots.filter(lot => !lot.remainingQuantity.isZero()).map(lot => ({
       acquisitionEventId: lot.acquisition.eventId,
       asset: lot.acquisition.asset,
@@ -230,6 +276,166 @@ export function buildDigitalAssetLedger(events: readonly DigitalAssetEventV1[]):
     dispositions,
     reversalEventIds: ordered.filter(event => event.kind === 'disposal_reversal').map(event => event.eventId),
   };
+}
+
+export function buildDigitalAssetAccountantPackage(input: Readonly<{
+  ledger: DigitalAssetLedgerV1;
+  period: Period;
+  evidenceCoverageThrough: string;
+  preparedAt: string;
+  accountantActorId: string;
+  mandate: AccountantMandateV1;
+}>): DigitalAssetAccountantPackageV1 {
+  const periodStart = utcPeriodBoundary(input.period.start, 'start');
+  const periodEnd = utcPeriodBoundary(input.period.end, 'end');
+  if (periodStart > periodEnd) throw new Error('DIGITAL_ASSET_EXPORT_PERIOD_INVALID');
+  const coverageThrough = instant(input.evidenceCoverageThrough, 'DIGITAL_ASSET_EXPORT_COVERAGE_INVALID');
+  const preparedAt = instant(input.preparedAt, 'DIGITAL_ASSET_EXPORT_PREPARED_AT_INVALID');
+  const builtThrough = instant(input.ledger.builtThrough, 'DIGITAL_ASSET_LEDGER_BUILT_THROUGH_INVALID');
+  if (coverageThrough < builtThrough) throw new Error('DIGITAL_ASSET_EXPORT_COVERAGE_BEFORE_LEDGER');
+  if (coverageThrough > periodEnd) throw new Error('DIGITAL_ASSET_EXPORT_COVERAGE_AFTER_PERIOD');
+  if (coverageThrough > preparedAt) throw new Error('DIGITAL_ASSET_EXPORT_COVERAGE_FROM_FUTURE');
+  assertActiveAccountantMandate(input.mandate, {
+    workspaceId: input.ledger.workspaceId,
+    accountantActorId: input.accountantActorId,
+    scope: 'export_accountant_packet',
+    at: input.preparedAt,
+  });
+
+  const holdingsRows = input.ledger.openLots
+    .filter(lot => Date.parse(lot.acquiredAt) <= coverageThrough)
+    .sort((left, right) => left.assetId.localeCompare(right.assetId) || left.acquiredAt.localeCompare(right.acquiredAt) || left.acquisitionEventId.localeCompare(right.acquisitionEventId))
+    .map(lot => [
+      lot.asset,
+      lot.assetId,
+      lot.acquisitionEventId,
+      lot.acquiredAt,
+      lot.remainingQuantity,
+      lot.remainingCostBasis.decimal,
+      lot.remainingCostBasis.currency,
+      lot.valuation.provider,
+      lot.valuation.pair,
+      lot.valuation.observedAt,
+      lot.valuation.rate,
+      lot.valuation.confidence,
+      lot.valuation.evidenceId,
+    ]);
+  const periodDispositions = input.ledger.dispositions
+    .filter(disposition => {
+      const occurredAt = Date.parse(disposition.disposedAt);
+      return occurredAt >= periodStart && occurredAt <= coverageThrough;
+    })
+    .sort((left, right) => left.disposedAt.localeCompare(right.disposedAt) || left.disposalEventId.localeCompare(right.disposalEventId));
+  const dispositionRows = periodDispositions.map(disposition => [
+    disposition.disposalEventId,
+    disposition.disposedAt,
+    disposition.asset,
+    disposition.assetId,
+    disposition.purpose,
+    disposition.state,
+    disposition.quantity,
+    disposition.proceeds.decimal,
+    disposition.proceeds.currency,
+    disposition.fee.decimal,
+    disposition.allocatedCostBasis?.decimal ?? '',
+    disposition.realizedResult?.decimal ?? '',
+    disposition.economicEventId,
+    disposition.valuation.provider,
+    disposition.valuation.pair,
+    disposition.valuation.observedAt,
+    disposition.valuation.rate,
+    disposition.valuation.confidence,
+    disposition.valuation.evidenceId,
+  ]);
+  const lotMatchRows = periodDispositions.flatMap(disposition => disposition.lotMatches.map(match => [
+    disposition.disposalEventId,
+    match.acquisitionEventId,
+    match.quantity,
+    match.allocatedCostBasis.decimal,
+    match.allocatedCostBasis.currency,
+  ])).sort(compareRows);
+  const includedEventIds = new Set([
+    ...input.ledger.openLots.filter(lot => Date.parse(lot.acquiredAt) <= coverageThrough).map(lot => lot.acquisitionEventId),
+    ...periodDispositions.map(disposition => disposition.disposalEventId),
+    ...periodDispositions.flatMap(disposition => disposition.lotMatches.map(match => match.acquisitionEventId)),
+  ]);
+  for (const event of input.ledger.eventManifest) {
+    if (event.kind === 'disposal_reversal' && event.reversesEventId && includedEventIds.has(event.reversesEventId)) {
+      includedEventIds.add(event.eventId);
+    }
+  }
+  const sourceRows = input.ledger.eventManifest
+    .filter(event => includedEventIds.has(event.eventId) && Date.parse(event.occurredAt) <= coverageThrough)
+    .flatMap(event => [
+      ...event.sourceEvidenceIds.map(evidenceId => [event.eventId, event.kind, event.occurredAt, event.economicEventId, 'source_event', evidenceId, event.reversesEventId ?? '']),
+      ...(event.valuationEvidenceId ? [[event.eventId, event.kind, event.occurredAt, event.economicEventId, 'historical_valuation', event.valuationEvidenceId, '']] : []),
+    ])
+    .sort(compareRows);
+
+  const files = [
+    csvFile('holdings.csv', ['asset', 'asset_id', 'acquisition_event_id', 'acquired_at', 'remaining_quantity', 'remaining_cost_basis', 'cost_basis_currency', 'valuation_provider', 'valuation_pair', 'valuation_observed_at', 'valuation_rate', 'valuation_confidence', 'valuation_evidence_id'], holdingsRows),
+    csvFile('dispositions.csv', ['disposal_event_id', 'disposed_at', 'asset', 'asset_id', 'purpose', 'state', 'quantity', 'proceeds', 'currency', 'fee', 'allocated_cost_basis', 'realized_result', 'economic_event_id', 'valuation_provider', 'valuation_pair', 'valuation_observed_at', 'valuation_rate', 'valuation_confidence', 'valuation_evidence_id'], dispositionRows),
+    csvFile('lot-matches.csv', ['disposal_event_id', 'acquisition_event_id', 'quantity', 'allocated_cost_basis', 'currency'], lotMatchRows),
+    csvFile('source-manifest.csv', ['event_id', 'event_kind', 'occurred_at', 'economic_event_id', 'evidence_role', 'evidence_id', 'reverses_event_id'], sourceRows),
+  ] as const;
+  const coverageState: DigitalAssetAccountantPackageV1['coverageState'] = coverageThrough === periodEnd ? 'complete' : 'partial';
+  const limitations: DigitalAssetAccountantPackageV1['limitations'] = [
+    'ACCOUNTANT_REVIEW_REQUIRED',
+    'JURISDICTION_CLASSIFICATION_NOT_INFERRED',
+    ...(coverageState === 'partial' ? ['PARTIAL_EVIDENCE_COVERAGE' as const] : []),
+  ];
+  const packageWithoutHash = {
+    version: 'digital-asset-accountant-package-v1' as const,
+    workspaceId: input.ledger.workspaceId,
+    period: input.period,
+    method: input.ledger.method,
+    evidenceCoverageThrough: input.evidenceCoverageThrough,
+    coverageState,
+    preparedAt: input.preparedAt,
+    accountantAuthority: {
+      mandateId: input.mandate.mandateId,
+      accountantActorId: input.accountantActorId,
+      accountantOrganizationId: input.mandate.accountantOrganizationId,
+    },
+    files,
+    limitations,
+  };
+  return { ...packageWithoutHash, packageHash: sha256(JSON.stringify(packageWithoutHash)) };
+}
+
+function csvFile<Name extends DigitalAssetAccountantPackageV1['files'][number]['fileName']>(
+  fileName: Name,
+  headers: readonly string[],
+  rows: readonly (readonly string[])[]
+): DigitalAssetAccountantPackageV1['files'][number] {
+  const contents = [headers, ...rows].map(row => row.map(csvCell).join(',')).join('\n') + '\n';
+  return { fileName, mediaType: 'text/csv', rowCount: rows.length, sha256: sha256(contents), contents };
+}
+
+function csvCell(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
+function compareRows(left: readonly string[], right: readonly string[]): number {
+  return left.join('\u0000').localeCompare(right.join('\u0000'));
+}
+
+function utcPeriodBoundary(value: string, edge: 'start' | 'end'): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error('DIGITAL_ASSET_EXPORT_PERIOD_INVALID');
+  const suffix = edge === 'start' ? 'T00:00:00.000Z' : 'T23:59:59.999Z';
+  const parsed = Date.parse(`${value}${suffix}`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) throw new Error('DIGITAL_ASSET_EXPORT_PERIOD_INVALID');
+  return parsed;
+}
+
+function instant(value: string, error: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || !/[zZ]|[+-]\d\d:\d\d$/.test(value)) throw new Error(error);
+  return parsed;
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function validateEvent(event: DigitalAssetEventV1, workspaceId: string): void {
