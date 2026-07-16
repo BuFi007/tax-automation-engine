@@ -83,5 +83,76 @@ export const taxSnapshotReadResultV1Schema = z.discriminatedUnion('ok', [
   }).strict(),
 ]);
 
+export const TAX_COMMAND_PROBLEM_STATUS_V1 = {
+  TAX_TENANT_SCOPE_FORBIDDEN: 403,
+  TAX_ACTION_NOT_AUTHORIZED: 403,
+  TAX_CASE_REVISION_CONFLICT: 409,
+  TAX_COMMAND_IDEMPOTENCY_CONFLICT: 409,
+  TAX_COMMAND_VALIDATION_FAILED: 422,
+  TAX_EXTERNAL_EFFECT_AMBIGUOUS: 425,
+  TAX_COMMAND_RATE_LIMITED: 429,
+  TAX_EXTERNAL_EFFECT_CONFIGURATION_REQUIRED: 503,
+} as const;
+
+export type TaxCommandProblemCodeV1 = keyof typeof TAX_COMMAND_PROBLEM_STATUS_V1;
+
+export const taxCommandProblemV1Schema = z.object({
+  version: z.literal('tax-command-problem-v1'),
+  code: z.enum(Object.keys(TAX_COMMAND_PROBLEM_STATUS_V1) as [
+    TaxCommandProblemCodeV1,
+    ...TaxCommandProblemCodeV1[],
+  ]),
+  status: z.union([
+    z.literal(403), z.literal(409), z.literal(422), z.literal(425),
+    z.literal(429), z.literal(503),
+  ]),
+  state: z.enum([
+    'forbidden', 'refresh_required', 'reconcile_required', 'invalid',
+    'retry_later', 'configuration_required',
+  ]),
+  retryable: z.boolean(),
+  traceRef: safeReferenceSchema.nullable(),
+  currentCaseRevision: z.number().int().positive().nullable(),
+}).strict().superRefine((problem, context) => {
+  if (problem.status !== TAX_COMMAND_PROBLEM_STATUS_V1[problem.code]) {
+    context.addIssue({ code: 'custom', message: 'Command problem status does not match its stable code', path: ['status'] });
+  }
+  if (problem.state !== commandProblemState(problem.code)) {
+    context.addIssue({ code: 'custom', message: 'Command problem state does not match its stable code', path: ['state'] });
+  }
+  const retryable = ['TAX_CASE_REVISION_CONFLICT', 'TAX_COMMAND_RATE_LIMITED'].includes(problem.code);
+  if (problem.retryable !== retryable) {
+    context.addIssue({ code: 'custom', message: 'Command problem retry policy does not match its stable code', path: ['retryable'] });
+  }
+  if ((problem.code === 'TAX_CASE_REVISION_CONFLICT') !== (problem.currentCaseRevision !== null)) {
+    context.addIssue({ code: 'custom', message: 'Only a case revision conflict exposes the safe current revision', path: ['currentCaseRevision'] });
+  }
+});
+
+export function buildTaxCommandProblemV1(
+  code: TaxCommandProblemCodeV1,
+  input: Readonly<{ traceRef?: string | null; currentCaseRevision?: number | null }> = {},
+): TaxCommandProblemV1 {
+  return taxCommandProblemV1Schema.parse({
+    version: 'tax-command-problem-v1',
+    code,
+    status: TAX_COMMAND_PROBLEM_STATUS_V1[code],
+    state: commandProblemState(code),
+    retryable: ['TAX_CASE_REVISION_CONFLICT', 'TAX_COMMAND_RATE_LIMITED'].includes(code),
+    traceRef: input.traceRef ?? null,
+    currentCaseRevision: input.currentCaseRevision ?? null,
+  });
+}
+
+function commandProblemState(code: TaxCommandProblemCodeV1): TaxCommandProblemV1['state'] {
+  if (code === 'TAX_TENANT_SCOPE_FORBIDDEN' || code === 'TAX_ACTION_NOT_AUTHORIZED') return 'forbidden';
+  if (code === 'TAX_CASE_REVISION_CONFLICT' || code === 'TAX_COMMAND_IDEMPOTENCY_CONFLICT') return 'refresh_required';
+  if (code === 'TAX_EXTERNAL_EFFECT_AMBIGUOUS') return 'reconcile_required';
+  if (code === 'TAX_COMMAND_VALIDATION_FAILED') return 'invalid';
+  if (code === 'TAX_COMMAND_RATE_LIMITED') return 'retry_later';
+  return 'configuration_required';
+}
+
 export type TaxSnapshotProblemV1 = z.infer<typeof taxSnapshotProblemV1Schema>;
 export type TaxSnapshotReadResultV1 = z.infer<typeof taxSnapshotReadResultV1Schema>;
+export type TaxCommandProblemV1 = z.infer<typeof taxCommandProblemV1Schema>;
