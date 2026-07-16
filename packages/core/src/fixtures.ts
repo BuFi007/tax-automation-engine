@@ -23,9 +23,10 @@ export function argentinaProfile(): TaxProfile {
       { questionId: 'iibb_regime', value: 'caba_simplified', confirmationState: 'accountant_confirmed' },
       { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
       { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
+      { questionId: 'monotributo_category', value: 'A', confirmationState: 'user_confirmed' },
       { questionId: 'mipyme_certificate', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'ar-catalogue-2026-07-16',
+    catalogueVersion: 'ar-catalogue-2026-07-16.2',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -90,11 +91,19 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
   if (jurisdiction === 'AR') {
     if (!regimeId || regimeId === base.regimeId) return base;
     if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
+    const regimeAnswers = [
+      { questionId: 'cuit_verifier_digit', value: '0', confirmationState: 'user_confirmed' as const },
+      { questionId: 'tax_accounting_basis', value: 'needs_review', confirmationState: 'accountant_confirmed' as const },
+      ...(regimeId === 'sociedad_mipyme'
+        ? [{ questionId: 'fiscal_year_end_month', value: 12, confirmationState: 'accountant_confirmed' as const }]
+        : []),
+    ];
     return {
       ...base,
       profileId: `profile:ar-demo:${regimeId}`,
       regimeId,
       entityType: regimeId === 'sociedad_mipyme' ? 'company' : 'individual',
+      answers: [...base.answers, ...regimeAnswers],
     };
   }
 
