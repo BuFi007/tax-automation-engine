@@ -81,7 +81,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
   try {
     if (!options.corridorEnabled)
       throw new Error('TAX_AUTHORITY_CORRIDOR_CONFIGURATION_REQUIRED');
-    if (route.operation === 'readiness') {
+    if (route.operation === 'readiness' || route.operation === 'status') {
       const workspaceId = workspaceIdSchema.parse(
         decodeURIComponent(route.workspaceId ?? '')
       );
@@ -92,7 +92,9 @@ export async function handleFacturaEAuthorityCorridorRoute(
         secrets: options.secrets,
       });
       assertPrincipalWorkspace(principal.workspaceId, workspaceId);
-      return privateJson({ data: { workspaceId, ...service.readiness() } }, 200);
+      return route.operation === 'readiness'
+        ? privateJson({ data: { workspaceId, ...service.readiness() } }, 200)
+        : privateJson({ data: service.current(workspaceId) }, 200);
     }
 
     const rawBody = await readBoundedBody(
@@ -173,7 +175,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
 }
 
 function matchRoute(method: string, pathname: string): Readonly<{
-  operation: 'readiness' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
+  operation: 'readiness' | 'status' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
   capability: TaxAuthorityCapability;
   workspaceId?: string;
   executionId?: string;
@@ -186,6 +188,15 @@ function matchRoute(method: string, pathname: string): Readonly<{
       operation: 'readiness',
       capability: 'factura-e:readiness',
       workspaceId: readiness[1]!,
+    };
+  const status = pathname.match(
+    /^\/v1\/authority\/factura-e\/workspaces\/([^/]+)\/current$/
+  );
+  if (method === 'GET' && status)
+    return {
+      operation: 'status',
+      capability: 'factura-e:status:read',
+      workspaceId: status[1]!,
     };
   const mutation = pathname.match(
     /^\/v1\/authority\/factura-e\/intents\/([^/]+)\/(approvals|execute|recover|reconcile)$/

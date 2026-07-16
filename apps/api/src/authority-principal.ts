@@ -10,6 +10,7 @@ export const taxAuthorityCapabilitySchema = z.enum([
   'factura-e:recover',
   'factura-e:reconcile',
   'factura-e:readiness',
+  'factura-e:status:read',
 ]);
 
 const authorityPrincipalSchema = z
