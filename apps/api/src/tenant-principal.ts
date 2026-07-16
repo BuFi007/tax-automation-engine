@@ -11,6 +11,7 @@ const capabilitySchema = z.enum([
   'snapshot:project',
   'snapshot:read',
   'arca:onboard',
+  'accountant:mandate',
 ]);
 const principalSchema = z.object({
   version: z.literal('tax-tenant-principal-v2'),
@@ -107,6 +108,7 @@ export function requiredTaxTenantPrincipalCapability(
   if (method === 'GET' && /^\/v1\/snapshots\/(?!demo(?:\/|$))[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (method === 'GET' && /^\/v1\/browser\/snapshots\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
+  if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   return null;
 }
 

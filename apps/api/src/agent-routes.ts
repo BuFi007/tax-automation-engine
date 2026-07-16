@@ -8,6 +8,17 @@ import {
 } from './agent-principal';
 
 import type { FacturaEAgentService } from './factura-e-agent';
+import type { AccountantMandateScope } from '@tax-engine/core';
+
+type AccountantMandateAuthorizer = Readonly<{
+  requireAccountantMandate(input: Readonly<{
+    mandateId: string;
+    workspaceId: string;
+    accountantActorId: string;
+    scope: AccountantMandateScope;
+    at: string;
+  }>): unknown;
+}>;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const decimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
@@ -223,6 +234,7 @@ export async function handleAgentRoute(
     accountantApprovalToken: string | null;
     evidenceIngestToken: string | null;
     agentPrincipalSecret: string | null;
+    accountantMandates?: AccountantMandateAuthorizer | null;
     /** Retired compatibility input; never authorizes an ARCA effect. */
     authorityPayloadToken?: string | null;
     legacyEvidenceAppendEnabled?: boolean;
@@ -318,8 +330,11 @@ export async function handleAgentRoute(
   const accountantApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/accountant-approval$/);
   if (request.method === 'POST' && accountantApprovalMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
-    return json({ data: service.approveIntentByAccountant({ ...body, runId: decodeURIComponent(accountantApprovalMatch[1]!), occurredAt: new Date().toISOString() }) });
+    const body = z.object({ actorId: z.string().min(1), mandateId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
+    const runId = decodeURIComponent(accountantApprovalMatch[1]!);
+    const occurredAt = new Date().toISOString();
+    requireScopedAccountantMandate(options.accountantMandates, service, runId, body, 'approve_invoice_intent', occurredAt);
+    return json({ data: service.approveIntentByAccountant({ actorId: body.actorId, intentHash: body.intentHash, idempotencyKey: body.idempotencyKey, runId, occurredAt }) });
   }
 
   const adjustmentUserApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/user-approval$/);
@@ -337,12 +352,17 @@ export async function handleAgentRoute(
   const adjustmentAccountantApprovalMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/adjustments\/([^/]+)\/accountant-approval$/);
   if (request.method === 'POST' && adjustmentAccountantApprovalMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
+    const body = z.object({ actorId: z.string().min(1), mandateId: z.string().min(1), intentHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
+    const runId = decodeURIComponent(adjustmentAccountantApprovalMatch[1]!);
+    const occurredAt = new Date().toISOString();
+    requireScopedAccountantMandate(options.accountantMandates, service, runId, body, 'approve_invoice_adjustment', occurredAt);
     return json({ data: service.approveAdjustmentByAccountant({
-      ...body,
-      runId: decodeURIComponent(adjustmentAccountantApprovalMatch[1]!),
+      actorId: body.actorId,
+      intentHash: body.intentHash,
+      idempotencyKey: body.idempotencyKey,
+      runId,
       adjustmentId: decodeURIComponent(adjustmentAccountantApprovalMatch[2]!),
-      occurredAt: new Date().toISOString(),
+      occurredAt,
     }) });
   }
 
@@ -371,18 +391,43 @@ export async function handleAgentRoute(
   const fxMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/fx-ingress-verification$/);
   if (request.method === 'POST' && fxMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
-    return json({ data: service.verifyFxIngress({ ...body, runId: decodeURIComponent(fxMatch[1]!), occurredAt: new Date().toISOString() }) });
+    const body = z.object({ actorId: z.string().min(1), mandateId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
+    const runId = decodeURIComponent(fxMatch[1]!);
+    const occurredAt = new Date().toISOString();
+    requireScopedAccountantMandate(options.accountantMandates, service, runId, body, 'verify_fx_ingress', occurredAt);
+    return json({ data: service.verifyFxIngress({ actorId: body.actorId, evidenceHash: body.evidenceHash, idempotencyKey: body.idempotencyKey, runId, occurredAt }) });
   }
 
   const taxMatch = url.pathname.match(/^\/v1\/agent\/runs\/([^/]+)\/tax-declaration$/);
   if (request.method === 'POST' && taxMatch) {
     requireTrustedToken(request, 'x-tax-accountant-approval-token', options.accountantApprovalToken, 'ACCOUNTANT_APPROVAL');
-    const body = z.object({ actorId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
-    return json({ data: service.markTaxDeclared({ ...body, runId: decodeURIComponent(taxMatch[1]!), occurredAt: new Date().toISOString() }) });
+    const body = z.object({ actorId: z.string().min(1), mandateId: z.string().min(1), evidenceHash: sha256Schema, idempotencyKey: z.string().min(8) }).strict().parse(await boundedJson(request, 64 * 1024));
+    const runId = decodeURIComponent(taxMatch[1]!);
+    const occurredAt = new Date().toISOString();
+    requireScopedAccountantMandate(options.accountantMandates, service, runId, body, 'record_tax_declaration', occurredAt);
+    return json({ data: service.markTaxDeclared({ actorId: body.actorId, evidenceHash: body.evidenceHash, idempotencyKey: body.idempotencyKey, runId, occurredAt }) });
   }
 
   return null;
+}
+
+function requireScopedAccountantMandate(
+  authorizer: AccountantMandateAuthorizer | null | undefined,
+  service: FacturaEAgentService,
+  runId: string,
+  body: Readonly<{ actorId: string; mandateId: string }>,
+  scope: AccountantMandateScope,
+  at: string,
+): void {
+  if (!authorizer) throw new Error('ACCOUNTANT_MANDATE_STORE_REQUIRED');
+  const run = service.getRun(runId);
+  authorizer.requireAccountantMandate({
+    mandateId: body.mandateId,
+    workspaceId: run.workspaceId,
+    accountantActorId: body.actorId,
+    scope,
+    at,
+  });
 }
 
 function assertAgentInvocationScope(

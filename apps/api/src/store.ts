@@ -4,6 +4,8 @@ import type { TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1 } from '@tax-eng
 
 import type {
   ArcaOnboardingEventV1,
+  AccountantMandateV1,
+  AccountantMandateScope,
   ArcaOnboardingReclaimSessionV1,
   ArcaOnboardingRunV1,
   ComplianceWorkspaceState,
@@ -25,6 +27,7 @@ import type {
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
+  assertActiveAccountantMandate,
   hashCanonical,
   hashTaxEvidenceBatch,
   normalizeTaxSnapshotProjectionKey,
@@ -105,6 +108,17 @@ export class TaxProfileStore {
         occurred_at TEXT NOT NULL,
         safe_metadata_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS accountant_mandates (
+        mandate_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        accountant_actor_id TEXT NOT NULL,
+        mandate_json TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS accountant_mandates_workspace_actor
+        ON accountant_mandates (workspace_id, accountant_actor_id, expires_at);
       CREATE TABLE IF NOT EXISTS evidence_records (
         workspace_id TEXT NOT NULL,
         source_id TEXT NOT NULL,
@@ -1745,6 +1759,95 @@ export class TaxProfileStore {
     ).get(sessionId);
     return row ? { requestUrl: row.request_url, requestConfig: row.request_config, statusUrl: row.status_url } : null;
   }
+
+  grantAccountantMandate(mandate: AccountantMandateV1): void {
+    assertActiveAccountantMandate(mandate, {
+      workspaceId: mandate.workspaceId,
+      accountantActorId: mandate.accountantActorId,
+      scope: mandate.scopes[0] ?? invalidMandateScope(),
+      at: mandate.grantedAt,
+    });
+    const existing = this.getAccountantMandate(mandate.mandateId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(mandate)) throw new Error('ACCOUNTANT_MANDATE_ID_CONFLICT');
+      return;
+    }
+    this.#db.query(`
+      INSERT INTO accountant_mandates (
+        mandate_id, workspace_id, accountant_actor_id, mandate_json, granted_at, expires_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      mandate.mandateId,
+      mandate.workspaceId,
+      mandate.accountantActorId,
+      JSON.stringify(mandate),
+      mandate.grantedAt,
+      mandate.expiresAt,
+      mandate.revokedAt,
+    );
+    this.#db.query(`
+      INSERT INTO audit_events (event_id, workspace_id, actor_id, action, occurred_at, safe_metadata_json)
+      VALUES (?, ?, ?, 'accountant_mandate_granted', ?, ?)
+    `).run(
+      `accountant-mandate-grant:${mandate.mandateId}`,
+      mandate.workspaceId,
+      mandate.grantedByActorId,
+      mandate.grantedAt,
+      JSON.stringify({ mandateId: mandate.mandateId, accountantActorId: mandate.accountantActorId, scopes: mandate.scopes, expiresAt: mandate.expiresAt }),
+    );
+  }
+
+  revokeAccountantMandate(mandateId: string, workspaceId: string, revokedByActorId: string, revokedAt: string): AccountantMandateV1 {
+    const mandate = this.getAccountantMandate(mandateId);
+    if (!mandate) throw new Error('ACCOUNTANT_MANDATE_NOT_FOUND');
+    if (mandate.workspaceId !== workspaceId) throw new Error('ACCOUNTANT_MANDATE_WORKSPACE_UNAUTHORIZED');
+    if (mandate.revokedAt !== null) return mandate;
+    const revoked = { ...mandate, revokedAt };
+    this.#db.query(`
+      UPDATE accountant_mandates SET mandate_json = ?, revoked_at = ? WHERE mandate_id = ?
+    `).run(JSON.stringify(revoked), revokedAt, mandateId);
+    this.#db.query(`
+      INSERT INTO audit_events (event_id, workspace_id, actor_id, action, occurred_at, safe_metadata_json)
+      VALUES (?, ?, ?, 'accountant_mandate_revoked', ?, ?)
+    `).run(
+      `accountant-mandate-revoke:${mandateId}`,
+      workspaceId,
+      revokedByActorId,
+      revokedAt,
+      JSON.stringify({ mandateId, accountantActorId: mandate.accountantActorId }),
+    );
+    return revoked;
+  }
+
+  getAccountantMandate(mandateId: string): AccountantMandateV1 | null {
+    const row = this.#db.query<{ mandate_json: string }, [string]>(
+      'SELECT mandate_json FROM accountant_mandates WHERE mandate_id = ?'
+    ).get(mandateId);
+    return row ? JSON.parse(row.mandate_json) as AccountantMandateV1 : null;
+  }
+
+  listAccountantMandates(workspaceId: string): readonly AccountantMandateV1[] {
+    return this.#db.query<{ mandate_json: string }, [string]>(
+      'SELECT mandate_json FROM accountant_mandates WHERE workspace_id = ? ORDER BY granted_at DESC, mandate_id ASC'
+    ).all(workspaceId).map(row => JSON.parse(row.mandate_json) as AccountantMandateV1);
+  }
+
+  requireAccountantMandate(input: Readonly<{
+    mandateId: string;
+    workspaceId: string;
+    accountantActorId: string;
+    scope: AccountantMandateScope;
+    at: string;
+  }>): AccountantMandateV1 {
+    const mandate = this.getAccountantMandate(input.mandateId);
+    if (!mandate) throw new Error('ACCOUNTANT_MANDATE_NOT_FOUND');
+    assertActiveAccountantMandate(mandate, input);
+    return mandate;
+  }
+}
+
+function invalidMandateScope(): AccountantMandateScope {
+  throw new Error('ACCOUNTANT_MANDATE_SCOPE_REQUIRED');
 }
 
 function normalizeEvidenceRecord(record: TaxEvidenceRecord): TaxEvidenceRecord {

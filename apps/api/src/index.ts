@@ -63,6 +63,7 @@ import {
 } from './factura-e-feature-terminal-receipt';
 import { taxDemoRoutesEnabled } from './demo-route-policy';
 import { readBoundedBody } from './bounded-body';
+import { handleAccountantMandateRoute } from './accountant-mandate-routes';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
@@ -382,7 +383,7 @@ export const server = Bun.serve({
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (url.pathname === '/v1/reclaim/callback') {
-        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, legacyEvidenceAppendEnabled });
+        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (request.method === 'POST'
@@ -465,13 +466,15 @@ export const server = Bun.serve({
             tenantCapability,
           )
         : null;
+      const accountantMandateResponse = await handleAccountantMandateRoute(request, url, store, tenantPrincipal);
+      if (accountantMandateResponse) return applyCors(accountantMandateResponse, request);
       const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken, tenantPrincipal });
       if (onboardingResponse) return applyCors(onboardingResponse, request);
       const browserSnapshotResponse = handleTaxBrowserSnapshotRoute(request, url, taxBrowserSnapshots, tenantPrincipal);
       if (browserSnapshotResponse) return applyCors(browserSnapshotResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
-      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, legacyEvidenceAppendEnabled });
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
         return applyCors(json({
