@@ -36,6 +36,29 @@ describe('isolated WSFEX signer service', () => {
     )).status).toBe('accepted');
   });
 
+  test('renews an expired unconsumed reservation using a fresh authority read', async () => {
+    const fixture = setup({ sequenceReservationsRequired: true });
+    const reservation = {
+      version: 'tax-wsfex-sequence-reservation-request-v1' as const,
+      workspaceId: fixture.request.workspaceId,
+      issuerProfileRef: fixture.vault.payload.issuerProfileRef,
+      runId: fixture.request.runId,
+      intentHash: fixture.request.intentHash,
+      subjectId: fixture.request.subjectId,
+      documentType: 19 as const,
+      pointOfSale: fixture.request.expected.pointOfSale,
+      idempotencyKey: 'reservation:invoice-expiry',
+    };
+    await fixture.service.reserveSequence(reservation, occurredAt);
+    const renewed = await fixture.service.reserveSequence(
+      reservation,
+      '2026-07-11T12:10:00.001Z'
+    );
+    expect(renewed.replayed).toBe(false);
+    expect(renewed.reservedAt).toBe('2026-07-11T12:10:00.001Z');
+    expect(fixture.authority.sequenceReadCalls).toBe(4);
+  });
+
   test('rejects a missing required sequence reservation before authority submission', async () => {
     const fixture = setup({ sequenceReservationsRequired: true });
     const result = await fixture.service.authorize(fixture.request, fixture.request.requestId, occurredAt);

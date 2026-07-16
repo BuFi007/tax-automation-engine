@@ -129,7 +129,8 @@ export class TaxOwnedFacturaEAuthorityPreparationGateway
     private readonly currencies: ReadonlyMap<string, string>,
     private readonly privateData: FacturaEPrivateDataGateway,
     private readonly sequences: WsfexSequenceGateway,
-    private readonly environment: 'homologation' | 'production'
+    private readonly environment: 'homologation' | 'production',
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   static profileRegistryFromEnvironment(): ReadonlyMap<string, string> | null {
@@ -182,6 +183,12 @@ export class TaxOwnedFacturaEAuthorityPreparationGateway
         idempotencyKey: input.idempotencyKey,
       })}`,
     });
+    const now = this.now().getTime();
+    const reservedAt = Date.parse(reservation.reservedAt);
+    const expiresAt = Date.parse(reservation.expiresAt);
+    if (reservedAt > now + 2 * 60_000 || expiresAt <= now
+      || expiresAt <= reservedAt || expiresAt - reservedAt > 15 * 60_000)
+      throw new Error('TAX_ARCA_SEQUENCE_RESERVATION_EXPIRED');
     if (reservation.representedCuitCommitment !== onboarding.authorityBinding?.representedCuitCommitment)
       throw new Error('TAX_ARCA_SEQUENCE_AUTHORITY_BINDING_MISMATCH');
     const preparedAt = reservation.reservedAt;

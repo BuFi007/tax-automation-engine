@@ -60,7 +60,8 @@ describe('Tax-owned Factura E authority preparation', () => {
           expiresAt: '2026-07-16T12:10:00.000Z', replayed: false, evidenceHash: 'e'.repeat(64),
         };
       } },
-      'homologation'
+      'homologation',
+      () => new Date('2026-07-16T12:01:00.000Z')
     );
     const prepared = await gateway.prepare({
       executionId: 'execution-1', workspaceId: 'workspace-1', runId: run.runId,

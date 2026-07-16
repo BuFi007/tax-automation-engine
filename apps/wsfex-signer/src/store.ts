@@ -181,8 +181,19 @@ export class SignerAttemptStore {
         input.idempotencyKey
       );
       if (replay) {
-        assertSequenceReservationInputBinding(replay, input);
-        return { reservation: replay, replayed: true };
+        if (replay.state === 'reserved' && Date.parse(replay.expiresAt) <= Date.parse(input.reservedAt)) {
+          this.#db.query(`
+            DELETE FROM wsfex_sequence_reservations
+            WHERE environment = ?
+              AND represented_cuit_commitment = ?
+              AND idempotency_key = ?
+              AND state = 'reserved'
+              AND expires_at <= ?
+          `).run(input.environment, input.representedCuitCommitment, input.idempotencyKey, input.reservedAt);
+        } else {
+          assertSequenceReservationInputBinding(replay, input);
+          return { reservation: replay, replayed: true };
+        }
       }
       this.#db.query(`
         DELETE FROM wsfex_sequence_reservations

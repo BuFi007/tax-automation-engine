@@ -94,7 +94,8 @@ export class WsfexSignerService {
       ticket.representedCuitCommitment,
       request.idempotencyKey
     );
-    if (replay) return sequenceReservationReceipt(request, replay, true);
+    if (replay && sequenceReservationReplayUsable(replay, occurredAt))
+      return sequenceReservationReceipt(request, replay, true);
     const identity: SignerAttemptIdentity = {
       environment: this.config.environment,
       representedCuitCommitment: ticket.representedCuitCommitment,
@@ -107,7 +108,8 @@ export class WsfexSignerService {
         ticket.representedCuitCommitment,
         request.idempotencyKey
       );
-      if (racedReplay) return sequenceReservationReceipt(request, racedReplay, true);
+      if (racedReplay && sequenceReservationReplayUsable(racedReplay, occurredAt))
+        return sequenceReservationReceipt(request, racedReplay, true);
       await this.authority.assertPointOfSaleActive(ticket, request.pointOfSale);
       const [lastRequestId, lastInvoiceNumber] = await Promise.all([
         this.authority.getLastRequestId(ticket),
@@ -760,6 +762,14 @@ function incrementAuthoritySequence(value: string, maximumDigits: number, exhaus
   const rendered = next.toString();
   if (next <= 0n || rendered.length > maximumDigits) throw new Error(exhaustedCode);
   return rendered;
+}
+
+function sequenceReservationReplayUsable(
+  reservation: WsfexSequenceReservation,
+  occurredAt: string
+): boolean {
+  return reservation.state === 'consumed'
+    || Date.parse(reservation.expiresAt) > Date.parse(occurredAt);
 }
 
 function sequenceReservationReceipt(
