@@ -18,6 +18,9 @@ describe('Stripe Tax authority routing', () => {
   test('never treats Stripe as Argentine fiscal authority or a Factura E', () => {
     const decision = routeStripeTaxAuthority({ ...base, issuerCountry: 'AR', customerCountry: 'US', customerTaxIdType: 'ar_cuit' });
     expect(decision).toMatchObject({
+      issuerCountry: 'AR',
+      customerCountry: 'US',
+      productType: 'service',
       fiscalAuthority: 'arca',
       stripeRole: 'payment_evidence_only',
       calculationState: 'unsupported_seller_country',
@@ -62,5 +65,14 @@ describe('Stripe Tax authority routing', () => {
       records: [record],
       producedAt: '2026-07-15T00:00:00.000Z',
     })).not.toThrow();
+  });
+
+  test('binds calculation evidence to the exact seller jurisdiction', () => {
+    const route = routeStripeTaxAuthority(base);
+    const evidenceInput = {
+      workspaceId: 'workspace:1', sourceId: 'stripe:acct:1', consentVersion: 'consent-v1', issuerJurisdiction: 'US' as const, period: { start: '2026-07-01', end: '2026-07-31' }, observedAt: '2026-07-15T00:00:00.000Z', economicEventId: 'event:invoice:1', providerTransactionHash: 'b'.repeat(64), providerRevision: '1', taxAmount: { decimal: '8.25', currency: 'USD' }, route,
+    };
+    expect(() => stripeTaxTransactionEvidence({ ...evidenceInput, issuerJurisdiction: 'AR' })).toThrow('STRIPE_TAX_EVIDENCE_JURISDICTION_MISMATCH');
+    expect(() => routeStripeTaxAuthority({ ...base, issuerCountry: 'US', invoiceDocumentKind: 'arca_factura_e' })).toThrow('STRIPE_TAX_ARCA_DOCUMENT_ISSUER_MISMATCH');
   });
 });
