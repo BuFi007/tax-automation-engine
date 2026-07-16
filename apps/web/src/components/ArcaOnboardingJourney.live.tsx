@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { TaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
-import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
+import type {
+  ArcaOnboardingBrowserRunV1,
+  TaxWidgetSnapshotV1,
+} from '@tax-engine/browser-contracts';
 
 import {
   ArcaOnboardingApiClient,
@@ -21,7 +23,7 @@ export function LiveArcaOnboardingJourney({
 }>) {
   const client = useMemo(() => new ArcaOnboardingApiClient(authority), [authority]);
   const requestedServicesKey = requestedServices.join(',');
-  const [run, setRun] = useState<ArcaOnboardingRunV1 | null>(null);
+  const [run, setRun] = useState<ArcaOnboardingBrowserRunV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,9 @@ export function LiveArcaOnboardingJourney({
     return () => { active = false; };
   }, [client, environment, requestedServicesKey, snapshot.profile.profileRef]);
 
-  const mutate = async (operation: (current: ArcaOnboardingRunV1) => Promise<ArcaOnboardingRunV1>) => {
+  const mutate = async (
+    operation: (current: ArcaOnboardingBrowserRunV1) => Promise<ArcaOnboardingBrowserRunV1>,
+  ) => {
     if (!run || saving) return;
     setSaving(true);
     setError(null);

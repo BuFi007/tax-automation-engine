@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { AlertTriangle, CheckCircle2, Circle, ExternalLink, KeyRound, LockKeyhole, RadioTower, ShieldCheck } from 'lucide-react';
-import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
+import type { ArcaOnboardingBrowserRunV1 } from '@tax-engine/browser-contracts';
 
 import { ARCA_ONBOARDING_UI_STEPS, ARCA_POINT_OF_SALE_GUIDE, arcaScopeDescriptions, formatArcaPointOfSale, parseArcaPointOfSale } from './ArcaOnboardingJourney.model';
 
@@ -9,7 +9,7 @@ const ARCA_POINT_OF_SALE_URL = 'https://auth.afip.gob.ar/contribuyente_/login.xh
 type PointOfSaleRegistrationState = 'idle' | 'recorded';
 
 type ArcaOnboardingJourneyProps = Readonly<{
-  run?: ArcaOnboardingRunV1 | null;
+  run?: ArcaOnboardingBrowserRunV1 | null;
   activeFeeWsPoints?: readonly number[];
   saving?: boolean;
   saveError?: string | null;

@@ -36,3 +36,8 @@ mismatches that earlier prerelease packages could parse.
 Package `0.4.0` adds the factoring projection receipt/read-result schemas. This
 is an additive endpoint contract: existing Tax snapshot bytes and both frozen
 fixture digests remain unchanged.
+
+Package `0.5.0` adds the ARCA onboarding run, mutation, read, history, and
+Reclaim-handoff browser contracts. The raw Tax onboarding aggregate and raw
+Reclaim request configuration remain internal-only. Consumers must reject an
+unknown onboarding wire discriminator rather than falling back to local state.

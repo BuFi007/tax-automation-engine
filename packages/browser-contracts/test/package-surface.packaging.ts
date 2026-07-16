@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes only the frozen root, golden fixtures, and scenario entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.4.0');
+    expect(packageJson.version).toBe('0.5.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
