@@ -87,6 +87,10 @@ export class TaxBrowserSnapshotProjector {
     return this.#references.reference('case', workspaceId, projectionKey, 'durable-tax-case-v1');
   }
 
+  workspaceReference(workspaceId: string, projectionKey: string): string {
+    return this.#references.reference('workspace', workspaceId, projectionKey, workspaceId);
+  }
+
   project(
     receipt: CoreTaxWidgetSnapshotReceiptV1,
     durable: Readonly<{ caseRef: string; caseRevision: number; sourceFingerprint: string }>,

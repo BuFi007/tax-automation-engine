@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes only the frozen root, golden fixtures, and scenario entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.3.0');
+    expect(packageJson.version).toBe('0.4.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -74,13 +74,14 @@ describe('published browser-contract package', () => {
     const goldenDigest = fixturesModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256;
 
     expect(rootModule.taxWidgetSnapshotReceiptV1Schema).toBeDefined();
+    expect(rootModule.facturaEFactoringProjectionReceiptV1Schema).toBeDefined();
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1).toBeDefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256).toBe(
-      'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0',
+      '961fd3133f757f183cc30b8ee3e6bf4435396f1105113a67d66200ba8e1c7dac',
     );
     expect(goldenDigest).toBe(
-      '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c',
+      '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425',
     );
     if (typeof goldenDigest !== 'string') throw new Error('Built fixture digest is not a string');
 
@@ -92,7 +93,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== 'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== '961fd3133f757f183cc30b8ee3e6bf4435396f1105113a67d66200ba8e1c7dac' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '0fe0c49d4f83c52f2e8e9a97b2178cf28ff58beeb9a44b9df9eca8deca1ad425') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

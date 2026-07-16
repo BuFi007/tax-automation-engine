@@ -25,6 +25,7 @@ import {
   TaxBrowserSnapshotService,
 } from './browser-snapshot';
 import { handleTaxBrowserSnapshotRoute } from './browser-snapshot-routes';
+import { handleFacturaEFactoringBrowserRoute } from './factura-e-factoring-browser-routes';
 import { classifyApiError } from './api-errors';
 import {
   assertTaxTenantPrincipalScope,
@@ -266,10 +267,13 @@ if (
 
 const store = new TaxProfileStore();
 const taxEvidenceWorkspace = new TaxEvidenceWorkspaceService(store);
+const taxBrowserSnapshotProjector = browserReferenceSecret
+  ? new TaxBrowserSnapshotProjector(browserReferenceSecret)
+  : null;
 const taxBrowserSnapshots = new TaxBrowserSnapshotService(
   store,
   taxEvidenceWorkspace,
-  browserReferenceSecret ? new TaxBrowserSnapshotProjector(browserReferenceSecret) : null,
+  taxBrowserSnapshotProjector,
 );
 const argentinaErp = new ContabiliumSandboxProvider(null);
 const reclaimGateway = ReclaimProtocolGateway.fromEnvironment();
@@ -486,6 +490,14 @@ export const server = Bun.serve({
       if (onboardingResponse) return applyCors(onboardingResponse, request);
       const browserSnapshotResponse = handleTaxBrowserSnapshotRoute(request, url, taxBrowserSnapshots, tenantPrincipal);
       if (browserSnapshotResponse) return applyCors(browserSnapshotResponse, request);
+      const factoringBrowserResponse = await handleFacturaEFactoringBrowserRoute(
+        request,
+        url,
+        store,
+        taxBrowserSnapshotProjector,
+        tenantPrincipal,
+      );
+      if (factoringBrowserResponse) return applyCors(factoringBrowserResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
       const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
