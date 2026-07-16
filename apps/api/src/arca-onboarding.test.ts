@@ -63,6 +63,12 @@ describe('ARCA onboarding API service', () => {
       onboardingId, actorId: 'user:owner', idempotencyKey: 'start-reclaim', occurredAt: now,
     });
     expect(request.output.requestUrl).toBe('https://reclaim.example/request');
+    const requestReplay = await service.startReclaim({
+      onboardingId, actorId: 'user:owner', idempotencyKey: 'start-reclaim', occurredAt: '2026-07-14T12:01:00.000Z',
+    });
+    expect(requestReplay.replayed).toBe(true);
+    expect(requestReplay.output).toEqual(request.output);
+    expect(gateway.createRequestCalls).toBe(1);
     const completed = await service.ingestReclaimCallback('reclaim-onboarding-session', { rawProofMarker: 'vault-only' }, now);
     expect(completed.run.status).toBe('ready');
     expect(completed.run.zkEvidence?.custodyReceipt?.opaqueReference).toBe('vault://reclaim/60000000-0000-4000-8000-000000000099');
@@ -126,7 +132,10 @@ function advanceToApiVerificationStep(service: ArcaOnboardingService): ArcaOnboa
 }
 
 class FakeOnboardingReclaimGateway implements ArcaOnboardingReclaimGateway {
+  createRequestCalls = 0;
+
   async createRequest(_run: ArcaOnboardingRunV1, _occurredAt: string): Promise<ArcaOnboardingReclaimRequest> {
+    this.createRequestCalls += 1;
     return {
       session: {
         sessionId: 'reclaim-onboarding-session', providerId: 'arca-onboarding-provider', providerVersion: '1.0.0',
