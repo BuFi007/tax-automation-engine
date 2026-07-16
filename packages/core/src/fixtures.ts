@@ -25,7 +25,7 @@ export function argentinaProfile(): TaxProfile {
       { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
       { questionId: 'mipyme_certificate', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'ar-catalogue-2026-07-15',
+    catalogueVersion: 'ar-catalogue-2026-07-16',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
