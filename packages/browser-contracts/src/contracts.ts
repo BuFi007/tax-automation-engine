@@ -237,6 +237,115 @@ const conclusionV1Schema = z.object({
   limitations: z.array(z.string().max(500)).max(100),
 }).strict();
 
+const filingReadinessV1Schema = z.object({
+  state: z.enum([
+    'blocked',
+    'in_progress',
+    'accountant_review',
+    'ready_for_submission',
+    'submitted',
+    'complete',
+  ]),
+  asOf: isoDateTimeSchema,
+  blockingGapRefs: z.array(safeReferenceSchema).max(500),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+}).strict();
+
+const evidenceTaskV1Schema = z.object({
+  taskRef: safeReferenceSchema,
+  title: z.string().min(1).max(200),
+  state: z.enum(['open', 'under_review', 'resolved', 'blocked']),
+  actor: z.enum(['user', 'tax_agent', 'accountant']),
+  asOf: isoDateTimeSchema,
+  safeEvidenceRefs: z.array(safeReferenceSchema).max(100),
+  actionId: safeReferenceSchema.nullable(),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+}).strict();
+
+const accountantPacketV1Schema = z.object({
+  state: z.enum([
+    'unavailable',
+    'not_generated',
+    'generating',
+    'ready_for_review',
+    'approved',
+    'rejected',
+  ]),
+  packetRef: safeReferenceSchema.nullable(),
+  generatedAt: isoDateTimeSchema.nullable(),
+  safeEvidenceRefs: z.array(safeReferenceSchema).max(500),
+  actionId: safeReferenceSchema.nullable(),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+}).strict().superRefine((packet, context) => {
+  if (packet.state === 'unavailable' && packet.limitationCodes.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Unavailable accountant packet requires a named limitation',
+      path: ['limitationCodes'],
+    });
+  }
+  if (['generating', 'ready_for_review', 'approved', 'rejected'].includes(packet.state)
+    && packet.packetRef === null) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Available accountant packet state requires a packet reference',
+      path: ['packetRef'],
+    });
+  }
+});
+
+const planningForecastV1Schema = z.object({
+  state: z.enum(['unavailable', 'partial', 'available']),
+  horizon: periodSchema,
+  asOf: isoDateTimeSchema,
+  lowerBound: exactMoneySchema.nullable(),
+  upperBound: exactMoneySchema.nullable(),
+  safeSourceRefs: z.array(safeReferenceSchema).max(100),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  planningOnly: z.literal(true),
+}).strict().superRefine((forecast, context) => {
+  if (forecast.state === 'unavailable'
+    && (forecast.lowerBound !== null || forecast.upperBound !== null)) {
+    context.addIssue({ code: 'custom', message: 'Unavailable forecast values must remain null' });
+  }
+  if (forecast.state === 'unavailable' && forecast.limitationCodes.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Unavailable forecast requires a named limitation',
+      path: ['limitationCodes'],
+    });
+  }
+  if (forecast.state === 'available'
+    && (forecast.lowerBound === null || forecast.upperBound === null)) {
+    context.addIssue({ code: 'custom', message: 'Available forecast requires both bounds' });
+  }
+});
+
+const supplementalEvidenceQualityV1Schema = z.object({
+  state: z.enum(['unavailable', 'available']),
+  band: z.enum(['limited', 'developing', 'strong']).nullable(),
+  asOf: isoDateTimeSchema,
+  safeSourceRefs: z.array(safeReferenceSchema).max(100),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  use: z.literal('tax_evidence_only'),
+  affectsCredit: z.literal(false),
+  affectsFactoring: z.literal(false),
+}).strict().superRefine((quality, context) => {
+  if (quality.state === 'unavailable' && quality.band !== null) {
+    context.addIssue({ code: 'custom', message: 'Unavailable evidence quality cannot carry a band' });
+  }
+  if (quality.state === 'available' && quality.band === null) {
+    context.addIssue({ code: 'custom', message: 'Available evidence quality requires a band' });
+  }
+  if (quality.state === 'unavailable' && quality.limitationCodes.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Unavailable evidence quality requires a named limitation',
+      path: ['limitationCodes'],
+    });
+  }
+});
+
 export const taxCacheIdentityV1Schema = z.object({
   version: z.literal('tax-cache-identity-v1'),
   projectionKey: projectionKeySchema,
@@ -278,6 +387,11 @@ export const taxWidgetSnapshotV1Schema = z.object({
     satisfactionState: z.string().min(1).max(100),
     actionId: safeReferenceSchema.nullable(),
   }).strict()).max(500),
+  filingReadiness: filingReadinessV1Schema.optional(),
+  evidenceTasks: z.array(evidenceTaskV1Schema).max(500).optional(),
+  accountantPacket: accountantPacketV1Schema.optional(),
+  planningForecast: planningForecastV1Schema.optional(),
+  supplementalEvidenceQuality: supplementalEvidenceQualityV1Schema.optional(),
   authorizedNextActions: z.array(safeReferenceSchema).max(20),
   conclusions: z.array(conclusionV1Schema).max(500),
   warnings: z.array(z.string().max(500)).max(100),
@@ -290,6 +404,8 @@ export const taxWidgetSnapshotV1Schema = z.object({
     snapshot.evidenceCoverage.reconciledRevenue,
     snapshot.evidenceCoverage.recordedExpenses,
     snapshot.evidenceCoverage.supportedExpenses,
+    snapshot.planningForecast?.lowerBound ?? null,
+    snapshot.planningForecast?.upperBound ?? null,
   ];
   for (const [index, value] of moneyValues.entries()) {
     if (value && value.currency !== snapshot.displayCurrency) {

@@ -62,6 +62,29 @@ describe('browser tax snapshot production boundary', () => {
         supportedExpenses: initialSnapshot.metrics.supportedExpenses,
       });
       expect(first.result.data.snapshot.authorizedNextActions).toEqual([]);
+      expect(first.result.data.snapshot.filingReadiness?.asOf).toBe(GENERATED_AT);
+      expect(
+        first.result.data.snapshot.evidenceTasks?.every(task => task.actionId === null),
+      ).toBe(true);
+      expect(first.result.data.snapshot.accountantPacket).toMatchObject({
+        state: 'unavailable',
+        packetRef: null,
+        actionId: null,
+        limitationCodes: ['ACCOUNTANT_PACKET_NOT_PROJECTED'],
+      });
+      expect(first.result.data.snapshot.planningForecast).toMatchObject({
+        state: 'unavailable',
+        lowerBound: null,
+        upperBound: null,
+        planningOnly: true,
+      });
+      expect(first.result.data.snapshot.supplementalEvidenceQuality).toMatchObject({
+        state: 'unavailable',
+        band: null,
+        use: 'tax_evidence_only',
+        affectsCredit: false,
+        affectsFactoring: false,
+      });
       expect(first.result.data.snapshot.capabilityManifest.approvalAwareActions.every(action => (
         action.state === 'policy_blocked' && action.actionId === null
       ))).toBe(true);

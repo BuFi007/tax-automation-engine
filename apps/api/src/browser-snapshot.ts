@@ -207,6 +207,55 @@ export class TaxBrowserSnapshotProjector {
         satisfactionState: obligation.satisfactionState,
         actionId: null,
       })),
+      filingReadiness: {
+        state: deriveFilingReadinessState(receipt.snapshot),
+        asOf: receipt.asOf,
+        blockingGapRefs: receipt.snapshot.evidenceCoverage.gaps
+          .filter(gap => gap.severity === 'blocking')
+          .map(gap => ref('gap', gap.id)),
+        limitationCodes: receipt.snapshot.evidenceCoverage.gaps.some(
+          gap => gap.severity === 'blocking',
+        ) ? ['EVIDENCE_GAP_BLOCKING'] : [],
+      },
+      evidenceTasks: receipt.snapshot.evidenceCoverage.gaps.map(gap => ({
+        taskRef: ref('evidence-task', gap.id),
+        title: evidenceTaskTitle(gap.kind),
+        state: gap.severity === 'blocking' ? ('blocked' as const) : ('open' as const),
+        actor: evidenceTaskActor(gap.kind),
+        asOf: receipt.asOf,
+        safeEvidenceRefs: gap.safeSourceReferenceIds.map(sourceRefForWrappedReference),
+        // Task execution stays unavailable until an explicit policy descriptor authorizes it.
+        actionId: null,
+        limitationCodes: gap.severity === 'blocking' ? ['EVIDENCE_TASK_BLOCKING'] : [],
+      })),
+      accountantPacket: {
+        state: 'unavailable',
+        packetRef: null,
+        generatedAt: null,
+        safeEvidenceRefs: [],
+        actionId: null,
+        limitationCodes: ['ACCOUNTANT_PACKET_NOT_PROJECTED'],
+      },
+      planningForecast: {
+        state: 'unavailable',
+        horizon: receipt.snapshot.period,
+        asOf: receipt.asOf,
+        lowerBound: null,
+        upperBound: null,
+        safeSourceRefs: [],
+        limitationCodes: ['TAX_FORECAST_NOT_PROJECTED'],
+        planningOnly: true,
+      },
+      supplementalEvidenceQuality: {
+        state: 'unavailable',
+        band: null,
+        asOf: receipt.asOf,
+        safeSourceRefs: [],
+        limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+        use: 'tax_evidence_only',
+        affectsCredit: false,
+        affectsFactoring: false,
+      },
       authorizedNextActions: [],
       conclusions,
       warnings: [
@@ -215,6 +264,41 @@ export class TaxBrowserSnapshotProjector {
       cacheIdentity,
     });
   }
+}
+
+function deriveFilingReadinessState(
+  snapshot: CoreTaxWidgetSnapshotReceiptV1['snapshot'],
+): NonNullable<BrowserTaxWidgetSnapshotV1['filingReadiness']>['state'] {
+  if (snapshot.evidenceCoverage.gaps.some(gap => gap.severity === 'blocking')) return 'blocked';
+  if (snapshot.obligations.length > 0 && snapshot.obligations.every(obligation => (
+    obligation.submissionState === 'accepted'
+    && obligation.satisfactionState === 'satisfied'
+  ))) return 'complete';
+  if (snapshot.obligations.some(obligation => (
+    obligation.submissionState === 'submitted'
+    || obligation.submissionState === 'authority_receipt_pending'
+  ))) return 'submitted';
+  if (snapshot.obligations.length > 0 && snapshot.obligations.every(obligation => (
+    obligation.preparationState === 'accountant_approved'
+    && obligation.submissionState === 'ready_for_submission'
+  ))) return 'ready_for_submission';
+  if (snapshot.obligations.some(obligation => (
+    obligation.preparationState === 'ready_for_review'
+    || obligation.preparationState === 'under_accountant_review'
+    || obligation.preparationState === 'changes_requested'
+  ))) return 'accountant_review';
+  return 'in_progress';
+}
+
+function evidenceTaskTitle(kind: string): string {
+  const normalized = kind.replace(/[_-]+/g, ' ').trim();
+  return `Resolve evidence gap: ${normalized || 'review required'}`.slice(0, 200);
+}
+
+function evidenceTaskActor(
+  kind: string,
+): NonNullable<BrowserTaxWidgetSnapshotV1['evidenceTasks']>[number]['actor'] {
+  return /(accounting|ledger|erp|classification|entity)/i.test(kind) ? 'accountant' : 'user';
 }
 
 export class TaxBrowserSnapshotService {

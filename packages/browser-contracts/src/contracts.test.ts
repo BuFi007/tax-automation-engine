@@ -116,6 +116,48 @@ describe('browser-safe Tax V1 contracts', () => {
     expect(taxWidgetSnapshotReceiptV1Schema.safeParse(expiredAtCheck).success).toBe(false);
   });
 
+  test('keeps planning, accountant packets, and evidence quality fail-closed', () => {
+    expect(argentinaTaxWidgetSnapshotV1Fixture.planningForecast).toMatchObject({
+      state: 'unavailable',
+      lowerBound: null,
+      upperBound: null,
+      planningOnly: true,
+    });
+    expect(argentinaTaxWidgetSnapshotV1Fixture.accountantPacket).toMatchObject({
+      state: 'unavailable',
+      packetRef: null,
+      generatedAt: null,
+    });
+    expect(argentinaTaxWidgetSnapshotV1Fixture.supplementalEvidenceQuality).toMatchObject({
+      state: 'unavailable',
+      band: null,
+      use: 'tax_evidence_only',
+      affectsCredit: false,
+      affectsFactoring: false,
+    });
+
+    const inventedForecast = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    inventedForecast.planningForecast.lowerBound = { decimal: '1', currency: 'ARS' };
+    expect(taxWidgetSnapshotV1Schema.safeParse(inventedForecast).success).toBe(false);
+
+    const unreferencedPacket = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    unreferencedPacket.accountantPacket.state = 'ready_for_review';
+    unreferencedPacket.accountantPacket.limitationCodes = [];
+    expect(taxWidgetSnapshotV1Schema.safeParse(unreferencedPacket).success).toBe(false);
+
+    const scoringLeak = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    scoringLeak.supplementalEvidenceQuality.affectsFactoring = true;
+    expect(taxWidgetSnapshotV1Schema.safeParse(scoringLeak).success).toBe(false);
+
+    const preMinorSnapshot = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    delete preMinorSnapshot.filingReadiness;
+    delete preMinorSnapshot.evidenceTasks;
+    delete preMinorSnapshot.accountantPacket;
+    delete preMinorSnapshot.planningForecast;
+    delete preMinorSnapshot.supplementalEvidenceQuality;
+    expect(taxWidgetSnapshotV1Schema.safeParse(preMinorSnapshot).success).toBe(true);
+  });
+
   test('rejects restricted fiscal/evidence fields and incoherent durable steps', () => {
     const leaked = { ...argentinaTaxWidgetSnapshotV1Fixture, cae: '12345678901234' };
     expect(taxWidgetSnapshotV1Schema.safeParse(leaked).success).toBe(false);

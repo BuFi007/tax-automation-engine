@@ -59,6 +59,7 @@
       "name": "@tax-engine/web",
       "version": "0.1.0",
       "dependencies": {
+        "@tax-engine/browser-contracts": "workspace:*",
         "@tax-engine/core": "workspace:*",
         "lucide-react": "^0.562.0",
         "react": "^19.1.0",
@@ -116,7 +117,7 @@
     },
     "packages/browser-contracts": {
       "name": "@tax-engine/browser-contracts",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "decimal.js": "^10.6.0",
         "zod": "^4.3.6",
