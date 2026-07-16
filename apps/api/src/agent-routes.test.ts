@@ -18,6 +18,34 @@ const userToken = 'user-token-kept-outside-agent';
 const agentPrincipalSecret = 'open-agents-tax-principal-secret-at-least-32';
 
 describe('Factura E agent HTTP tools', () => {
+  test('requires a live workspace-scoped mandate for accountant approval', async () => {
+    const store = new TaxProfileStore(':memory:');
+    confirmArgentinaProfile(store);
+    const service = new FacturaEAgentService(store, new FakeReclaimGateway(), null, null, false);
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret, accountantMandates: store };
+    const now = new Date().toISOString();
+    const base = { actorId: 'agent:tax', occurredAt: now };
+    service.createRun({ ...base, runId, workspaceId, issuancePath: 'wsfex_delegated', idempotencyKey: 'mandate-create-run' });
+    await service.startReclaim({ ...base, runId, purpose: 'arca_taxpayer_readiness', idempotencyKey: 'mandate-readiness' });
+    await service.ingestReclaimCallback('readiness-session', {}, now);
+    service.draftIntent({ ...base, runId, intent: intent(), asOf: now.slice(0, 10), idempotencyKey: 'mandate-draft-intent' });
+    service.requestApproval({ ...base, runId, idempotencyKey: 'mandate-request-approval' });
+    const pending = service.getRun(runId);
+    service.approveIntent({ ...base, actorId: 'user:owner', runId, intentHash: pending.intentHash!, idempotencyKey: 'mandate-user-approval' });
+
+    await expect(route(service, options, 'POST', `/v1/agent/runs/${runId}/accountant-approval`, {
+      actorId: 'accountant:1', mandateId: 'mandate:missing', intentHash: pending.intentHash, idempotencyKey: 'mandate-accountant-missing',
+    }, { 'x-tax-accountant-approval-token': 'accountant-token' })).rejects.toThrow('ACCOUNTANT_MANDATE_NOT_FOUND');
+
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1', mandateId: 'mandate:approval', workspaceId, accountantActorId: 'accountant:1', accountantOrganizationId: 'firm:1', scopes: ['approve_invoice_intent'], grantedByActorId: 'user:owner', grantedAt: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null,
+    });
+    const response = await route(service, options, 'POST', `/v1/agent/runs/${runId}/accountant-approval`, {
+      actorId: 'accountant:1', mandateId: 'mandate:approval', intentHash: pending.intentHash, idempotencyKey: 'mandate-accountant-approved',
+    }, { 'x-tax-accountant-approval-token': 'accountant-token' });
+    expect((await response.json() as any).data.run.approvalState).toBe('accountant_approved');
+  });
+
   test('lets an agent orchestrate Path B while keeping human approval and Reclaim authority separate', async () => {
     const store = new TaxProfileStore(':memory:');
     confirmArgentinaProfile(store);
@@ -504,7 +532,7 @@ class FakeWsfexGateway implements WsfexGateway {
 
 async function invoke(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; accountantMandates?: TaxProfileStore; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
   toolId: string,
   idempotencyKey: string,
   input: Record<string, unknown>
@@ -527,7 +555,7 @@ async function invoke(
 
 async function route(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; accountantMandates?: TaxProfileStore; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
   method: string,
   path: string,
   body?: unknown,
