@@ -58,6 +58,10 @@ import {
 import { HttpFacturaEAuthorityPreparationGateway } from './factura-e-authority-preparation';
 import { TaxWsfexAuthorityRemoteEffect } from './factura-e-authority-remote-effect';
 import {
+  HttpDeskFacturaEPrivateDataGateway,
+  TaxOwnedFacturaEAuthorityPreparationGateway,
+} from './tax-owned-factura-e-authority-preparation';
+import {
   FACTURA_E_FEATURE_RENEWAL_WINDOW_MS,
   facturaEFeatureRenewalCadenceReady,
   parseFacturaEFeaturePollInterval,
@@ -290,7 +294,9 @@ const arcaEnvironment = arcaProductionAuthority ? 'production' as const : 'homol
 const proofVault = HttpReclaimProofVault.fromEnvironment();
 const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
 const authorityPayloadWriter = HttpAuthorityPayloadWriter.fromEnvironment();
-const authorityPreparation = HttpFacturaEAuthorityPreparationGateway.fromEnvironment();
+const externalAuthorityPreparation = HttpFacturaEAuthorityPreparationGateway.fromEnvironment();
+const deskFacturaEPrivateData = HttpDeskFacturaEPrivateDataGateway.fromEnvironment();
+const issuerProfileRegistry = TaxOwnedFacturaEAuthorityPreparationGateway.profileRegistryFromEnvironment();
 let facturaEFeatures: FacturaEFeaturePublicationStore | null = null;
 const facturaEFeatureMutationFence = createLateBoundFacturaEFeatureMutationFence({
   enabled: () => facturaEFeatureEnabled,
@@ -305,6 +311,19 @@ const facturaEAgent = new FacturaEAgentService(
   authorityPayloadWriter,
   facturaEFeatureMutationFence,
 );
+const taxOwnedAuthorityPreparation =
+  deskFacturaEPrivateData && issuerProfileRegistry && wsfexGateway
+    ? new TaxOwnedFacturaEAuthorityPreparationGateway(
+        facturaEAgent,
+        store,
+        issuerProfileRegistry,
+        TaxOwnedFacturaEAuthorityPreparationGateway.currencyRegistryFromEnvironment(),
+        deskFacturaEPrivateData,
+        wsfexGateway,
+        arcaAuthorityEnvironment
+      )
+    : null;
+const authorityPreparation = taxOwnedAuthorityPreparation ?? externalAuthorityPreparation;
 const facturaEAuthorityStore = new FacturaEAuthorityExecutionStore(
   process.env.TAX_AUTHORITY_EXECUTION_DB_PATH ?? ':memory:',
   (process.env.NODE_ENV === 'production' || arcaProductionAuthority)
@@ -314,6 +333,8 @@ if (
   authorityRemoteEffectsEnabled
   && (!authorityPreparation || !authorityPayloadWriter || !wsfexGateway)
 ) throw new Error('TAX_ARCA_REMOTE_EFFECTS_CONFIGURATION_REQUIRED');
+if (arcaProductionAuthority && authorityRemoteEffectsEnabled && !taxOwnedAuthorityPreparation)
+  throw new Error('TAX_OWNED_ARCA_PREPARATION_REQUIRED_IN_PRODUCTION');
 const facturaEAuthorityRemoteEffect =
   authorityPreparation && authorityPayloadWriter && wsfexGateway
     ? new TaxWsfexAuthorityRemoteEffect(

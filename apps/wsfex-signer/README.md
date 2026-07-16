@@ -116,6 +116,13 @@ never in a query string; only the reference hash appears in the receipt.
 An empty `activePoints` array is authoritative blocked evidence: it must not be
 converted into a configured point or a production-ready claim.
 
+`POST /v1/wsfexv1/sequence/reservations` acquires the represented-CUIT sequence
+lease, verifies the selected FEEWS point, reads `FEXGetLast_ID` and
+`FEXGetLast_CMP`, and reserves both next values for ten minutes. The reservation
+is bound to the Tax run, frozen intent, subject, workspace, issuer profile and
+idempotency key. Invoice authorization consumes it atomically with creation of
+the durable attempt; browser- or Desk-selected counters are never accepted.
+
 ## Run
 
 ```bash
@@ -139,6 +146,7 @@ WSFEX_WSAA_BROKER_TOKEN
 WSFEX_SIGNER_DB_PATH=/data/wsfex-signer.sqlite
 WSFEX_SIGNER_VERSION=0.1.0
 WSFEX_SIGNER_PRODUCTION_APPROVED=false
+WSFEX_SEQUENCE_RESERVATIONS_REQUIRED=true
 # Cotización endpoint: service-level issuer profile for the taxpayer-agnostic ctz lookup.
 WSFEX_CTZ_WORKSPACE_ID=system
 WSFEX_CTZ_ISSUER_PROFILE_REF=vault://issuer/ctz
@@ -148,7 +156,8 @@ WSFEX_AR_HOLIDAYS=
 ```
 
 Production startup refuses to run unless `WSFEX_SIGNER_PRODUCTION_APPROVED=true`.
-It also refuses an in-memory attempt database in production. These local gates are
+It also refuses an in-memory attempt database or disabled sequence reservations
+in production. These local gates are
 necessary but not sufficient. The public homologation WSDL contract was reviewed
 on 2026-07-15 and is checked by `verify:wsdl`; it exposes every field used by the
 exact comparator, including `Cmp_asoc.Cbte_cuit`. An authenticated homologation

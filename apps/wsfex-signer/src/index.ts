@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 import { WsfexSignerService } from './service';
-import { signerRequestSchema } from './contracts';
+import { sequenceReservationRequestSchema, signerRequestSchema } from './contracts';
 import { SoapWsfexAuthorityClient } from './soap';
 import { SignerAttemptStore } from './store';
 import { HttpAuthorityPayloadVault } from './vault';
@@ -14,7 +14,9 @@ const port = Number(process.env.PORT ?? 4200);
 const hostname = process.env.WSFEX_SIGNER_HOST ?? '127.0.0.1';
 const apiToken = requiredSecretEnvironment('WSFEX_SIGNER_API_TOKEN');
 const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
+const sequenceReservationsRequired = process.env.WSFEX_SEQUENCE_RESERVATIONS_REQUIRED !== 'false';
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
+if (environment === 'production' && !sequenceReservationsRequired) throw new Error('WSFEX_SEQUENCE_RESERVATIONS_REQUIRED');
 const signerDatabasePath = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:';
 if (environment === 'production' && signerDatabasePath === ':memory:') {
   throw new Error('WSFEX_SIGNER_DURABLE_DB_REQUIRED');
@@ -28,7 +30,11 @@ const wsaa = new HttpWsaaTicketBroker({
   token: requiredSecretEnvironment('WSFEX_WSAA_BROKER_TOKEN'),
 });
 const service = new WsfexSignerService(
-  { environment, signerVersion: process.env.WSFEX_SIGNER_VERSION ?? '0.1.0' },
+  {
+    environment,
+    signerVersion: process.env.WSFEX_SIGNER_VERSION ?? '0.1.0',
+    sequenceReservationsRequired,
+  },
   new SignerAttemptStore(signerDatabasePath),
   vault,
   wsaa,
@@ -59,6 +65,14 @@ export const server = Bun.serve({
           { workspaceId, issuerProfileRef },
           new Date().toISOString()
         ));
+      }
+      if (request.method === 'POST' && url.pathname === '/v1/wsfexv1/sequence/reservations') {
+        const raw = await readBoundedBody(request, 32 * 1024, 'SIGNER_REQUEST_TOO_LARGE');
+        const body = sequenceReservationRequestSchema.parse(JSON.parse(raw));
+        const idempotencyKey = request.headers.get('idempotency-key') ?? '';
+        if (idempotencyKey !== body.idempotencyKey)
+          return json({ error: 'WSFEX_IDEMPOTENCY_KEY_MISMATCH' }, 400);
+        return json(await service.reserveSequence(body, new Date().toISOString()));
       }
       const action = url.pathname === '/v1/wsfex/authorize'
         ? 'authorize'

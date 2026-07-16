@@ -6,8 +6,10 @@ import {
   hashWsfexAuthorityIdentity,
   hashWsfexReconciliationAttestation,
   pointOfSaleDiscoverySchema,
+  sequenceReservationRequestSchema,
   signerRequestSchema,
   type AuthorityPayload,
+  type SequenceReservationReceipt,
   type SignerRequest,
   type SignerResponse,
   type WsfexReconciliationAttestation,
@@ -34,6 +36,7 @@ import {
   SignerAttemptStore,
   type SignerAttempt,
   type SignerAttemptIdentity,
+  type WsfexSequenceReservation,
 } from './store';
 import type { WsaaTicketBroker, WsfexAccessTicket } from './wsaa';
 
@@ -45,6 +48,12 @@ const DETERMINISTIC_PREFLIGHT_REJECTIONS = new Set([
   'WSFEX_ASSOCIATED_DOCUMENT_NOT_AUTHORIZED',
   'WSFEX_ADJUSTMENT_CURRENCY_QUOTE_MISMATCH',
   'WSFEX_AUTHORITY_SEQUENCE_BUSY',
+  'WSFEX_SEQUENCE_RESERVATION_REQUIRED',
+  'WSFEX_SEQUENCE_RESERVATION_CONSUMED',
+  'WSFEX_SEQUENCE_RESERVATION_EXPIRED',
+  'WSFEX_SEQUENCE_RESERVATION_BINDING_MISMATCH',
+  'WSFEX_SEQUENCE_RESERVATION_CONFLICT',
+  'WSFEX_SEQUENCE_RESERVATION_BUSY',
 ]);
 
 export class WsfexSignerService {
@@ -52,6 +61,7 @@ export class WsfexSignerService {
     private readonly config: Readonly<{
       environment: 'homologation' | 'production';
       signerVersion: string;
+      sequenceReservationsRequired?: boolean;
     }>,
     private readonly store: SignerAttemptStore,
     private readonly vault: AuthorityPayloadVault,
@@ -68,7 +78,66 @@ export class WsfexSignerService {
       wsfexVersion: '3.1.1',
       certificateDelegationConfigured: wsaa.certificateDelegationConfigured,
       wsaaReady: wsaa.wsaaReady,
+      sequenceReservationsRequired: this.config.sequenceReservationsRequired === true,
     };
+  }
+
+  async reserveSequence(rawRequest: unknown, occurredAt: string): Promise<SequenceReservationReceipt> {
+    const request = sequenceReservationRequestSchema.parse(rawRequest);
+    const ticket = await this.wsaa.getTicket({
+      environment: this.config.environment,
+      workspaceId: request.workspaceId,
+      issuerProfileRef: request.issuerProfileRef,
+    });
+    const replay = this.store.getSequenceReservationByIdempotency(
+      this.config.environment,
+      ticket.representedCuitCommitment,
+      request.idempotencyKey
+    );
+    if (replay && sequenceReservationReplayUsable(replay, occurredAt))
+      return sequenceReservationReceipt(request, replay, true);
+    const identity: SignerAttemptIdentity = {
+      environment: this.config.environment,
+      representedCuitCommitment: ticket.representedCuitCommitment,
+      requestId: '1',
+    };
+    const leaseOwner = this.store.acquireAuthoritySequenceLease(identity, new Date(occurredAt));
+    try {
+      const racedReplay = this.store.getSequenceReservationByIdempotency(
+        this.config.environment,
+        ticket.representedCuitCommitment,
+        request.idempotencyKey
+      );
+      if (racedReplay && sequenceReservationReplayUsable(racedReplay, occurredAt))
+        return sequenceReservationReceipt(request, racedReplay, true);
+      await this.authority.assertPointOfSaleActive(ticket, request.pointOfSale);
+      const [lastRequestId, lastInvoiceNumber] = await Promise.all([
+        this.authority.getLastRequestId(ticket),
+        this.authority.getLastInvoiceNumber(ticket, 19, request.pointOfSale),
+      ]);
+      const requestId = incrementAuthoritySequence(lastRequestId, 15, 'WSFEX_REQUEST_ID_EXHAUSTED');
+      const invoiceNumber = incrementAuthoritySequence(lastInvoiceNumber, 8, 'WSFEX_INVOICE_NUMBER_EXHAUSTED');
+      const expiresAt = new Date(Date.parse(occurredAt) + 10 * 60_000).toISOString();
+      const { reservation, replayed } = this.store.reserveSequence({
+        environment: this.config.environment,
+        representedCuitCommitment: ticket.representedCuitCommitment,
+        workspaceId: request.workspaceId,
+        issuerProfileRef: request.issuerProfileRef,
+        runId: request.runId,
+        intentHash: request.intentHash,
+        subjectId: request.subjectId,
+        idempotencyKey: request.idempotencyKey,
+        requestId,
+        documentType: 19,
+        pointOfSale: request.pointOfSale,
+        invoiceNumber,
+        reservedAt: occurredAt,
+        expiresAt,
+      });
+      return sequenceReservationReceipt(request, reservation, replayed);
+    } finally {
+      this.store.releaseAuthoritySequenceLease(identity, leaseOwner);
+    }
   }
 
   async authorize(
@@ -141,15 +210,26 @@ export class WsfexSignerService {
         throw error;
       }
 
-      const attempt = this.store.begin({
-        request,
-        issuerProfileRef: resolved.payload.issuerProfileRef,
-        representedCuitCommitment: ticket.representedCuitCommitment,
-        payloadReferenceHash: hashCanonical(request.authorityPayloadRef),
-        payloadHash: resolved.payloadHash,
-        invoiceNumber: resolved.payload.invoiceNumber,
-        occurredAt,
-      });
+      const begin = this.config.sequenceReservationsRequired === true
+        && request.expected.documentType === 19
+        ? this.store.beginWithSequenceReservation.bind(this.store)
+        : this.store.begin.bind(this.store);
+      let attempt: SignerAttempt;
+      try {
+        attempt = begin({
+          request,
+          issuerProfileRef: resolved.payload.issuerProfileRef,
+          representedCuitCommitment: ticket.representedCuitCommitment,
+          payloadReferenceHash: hashCanonical(request.authorityPayloadRef),
+          payloadHash: resolved.payloadHash,
+          invoiceNumber: resolved.payload.invoiceNumber,
+          occurredAt,
+        });
+      } catch (error) {
+        if (isDeterministicPreflightRejection(error))
+          return preflightRejectedResponse(request, error.message);
+        throw error;
+      }
       this.assertAttemptBinding(attempt, request, resolved.payload, ticket);
       this.assertPayloadHash(attempt, resolved.payloadHash, 'RECOVERY');
       if (attempt.response && attempt.state !== 'ambiguous') return attempt.response;
@@ -674,6 +754,58 @@ export class WsfexSignerService {
     if (request.intentHash !== payload.intentHash)
       throw new Error('WSFEX_RECOVERED_INTENT_MISMATCH');
   }
+}
+
+function incrementAuthoritySequence(value: string, maximumDigits: number, exhaustedCode: string): string {
+  if (!/^\d+$/.test(value)) throw new Error('WSFEX_AUTHORITY_SEQUENCE_INVALID');
+  const next = BigInt(value) + 1n;
+  const rendered = next.toString();
+  if (next <= 0n || rendered.length > maximumDigits) throw new Error(exhaustedCode);
+  return rendered;
+}
+
+function sequenceReservationReplayUsable(
+  reservation: WsfexSequenceReservation,
+  occurredAt: string
+): boolean {
+  return reservation.state === 'consumed'
+    || Date.parse(reservation.expiresAt) > Date.parse(occurredAt);
+}
+
+function sequenceReservationReceipt(
+  request: ReturnType<typeof sequenceReservationRequestSchema.parse>,
+  reservation: WsfexSequenceReservation,
+  replayed: boolean
+): SequenceReservationReceipt {
+  if (reservation.workspaceIdHash !== hashCanonical(request.workspaceId)
+    || reservation.issuerProfileReferenceHash !== hashCanonical(request.issuerProfileRef)
+    || reservation.runId !== request.runId
+    || reservation.intentHash !== request.intentHash
+    || reservation.subjectIdHash !== hashCanonical(request.subjectId)
+    || reservation.idempotencyKey !== request.idempotencyKey
+    || reservation.documentType !== request.documentType
+    || reservation.pointOfSale !== request.pointOfSale)
+    throw new Error('WSFEX_SEQUENCE_RESERVATION_BINDING_MISMATCH');
+  const receipt = {
+    version: 'tax-wsfex-sequence-reservation-receipt-v1' as const,
+    environment: reservation.environment,
+    workspaceId: request.workspaceId,
+    issuerProfileRef: request.issuerProfileRef,
+    issuerProfileReferenceHash: reservation.issuerProfileReferenceHash,
+    representedCuitCommitment: reservation.representedCuitCommitment,
+    runId: reservation.runId,
+    intentHash: reservation.intentHash,
+    subjectId: request.subjectId,
+    documentType: reservation.documentType,
+    pointOfSale: reservation.pointOfSale,
+    requestId: reservation.requestId,
+    invoiceNumber: reservation.invoiceNumber,
+    idempotencyKey: reservation.idempotencyKey,
+    reservedAt: reservation.reservedAt,
+    expiresAt: reservation.expiresAt,
+    replayed,
+  };
+  return { ...receipt, evidenceHash: hashCanonical(receipt) };
 }
 
 function responseFromAuthority(

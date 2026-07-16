@@ -46,6 +46,47 @@ describe('HTTP WSFEX signer boundary', () => {
     })).resolves.toEqual(expect.objectContaining({ activePoints: [4] }));
   });
 
+  test('reserves a sequence only from an exactly bound and hash-verified signer receipt', async () => {
+    const input = {
+      workspaceId: 'workspace-1',
+      issuerProfileRef: 'vault://issuer/profile-1',
+      runId: '10000000-0000-4000-8000-000000000001',
+      intentHash: 'a'.repeat(64),
+      subjectId: 'invoice-1',
+      pointOfSale: 4,
+      idempotencyKey: 'reservation:invoice-1',
+    };
+    const material = {
+      version: 'tax-wsfex-sequence-reservation-receipt-v1' as const,
+      environment: 'homologation' as const,
+      ...input,
+      issuerProfileReferenceHash: hashCanonical(input.issuerProfileRef),
+      representedCuitCommitment: 'b'.repeat(64),
+      documentType: 19 as const,
+      requestId: '101',
+      invoiceNumber: '6',
+      reservedAt: '2026-07-16T12:00:00.000Z',
+      expiresAt: '2026-07-16T12:10:00.000Z',
+      replayed: false,
+    };
+    const gateway = new HttpWsfexGateway(
+      { baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' },
+      async (target, init) => {
+        expect(String(target)).toBe('https://signer.test/v1/wsfexv1/sequence/reservations');
+        expect(new Headers(init?.headers).get('idempotency-key')).toBe(input.idempotencyKey);
+        expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+          version: 'tax-wsfex-sequence-reservation-request-v1',
+          documentType: 19,
+          ...input,
+        }));
+        return Response.json({ ...material, evidenceHash: hashCanonical(material) });
+      }
+    );
+    await expect(gateway.reserveSequence(input)).resolves.toEqual(
+      expect.objectContaining({ requestId: '101', invoiceNumber: '6' })
+    );
+  });
+
   test('rejects request IDs larger than the WSFEX N15 field before transport', async () => {
     const run = approvedRun();
     const gateway = new HttpWsfexGateway(

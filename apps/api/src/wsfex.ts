@@ -1,8 +1,10 @@
 import { hashCanonical, type FacturaEAgentRunV1 } from '@tax-engine/core';
 import {
   pointOfSaleDiscoverySchema,
+  sequenceReservationReceiptSchema,
   signerResponseSchema,
   type PointOfSaleDiscovery,
+  type SequenceReservationReceipt,
 } from '@tax-engine/wsfex-signer/contracts';
 
 export type WsfexAuthorityResult = Readonly<{
@@ -37,6 +39,18 @@ export interface WsfexPointOfSaleGateway {
   }>): Promise<PointOfSaleDiscovery>;
 }
 
+export interface WsfexSequenceGateway {
+  reserveSequence(input: Readonly<{
+    workspaceId: string;
+    issuerProfileRef: string;
+    runId: string;
+    intentHash: string;
+    subjectId: string;
+    pointOfSale: number;
+    idempotencyKey: string;
+  }>): Promise<SequenceReservationReceipt>;
+}
+
 export type WsfexInvoiceRequest = Readonly<{
   run: FacturaEAgentRunV1;
   requestId: string;
@@ -50,7 +64,7 @@ export type WsfexAdjustmentRequest = WsfexInvoiceRequest & Readonly<{
 
 type WsfexFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway {
+export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, WsfexSequenceGateway {
   readonly providerId = 'tax-engine-wsfex-signer-v1';
   readonly #baseOrigin: string;
 
@@ -99,6 +113,75 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway {
 
   recoverAdjustment(input: WsfexAdjustmentRequest): Promise<WsfexAuthorityResult> {
     return this.call('/v1/wsfex/recover', input, input.adjustmentId);
+  }
+
+  async reserveSequence(input: Readonly<{
+    workspaceId: string;
+    issuerProfileRef: string;
+    runId: string;
+    intentHash: string;
+    subjectId: string;
+    pointOfSale: number;
+    idempotencyKey: string;
+  }>): Promise<SequenceReservationReceipt> {
+    const endpoint = new URL('/v1/wsfexv1/sequence/reservations', `${this.#baseOrigin}/`);
+    if (endpoint.origin !== this.#baseOrigin) throw new Error('ARCA_SIGNER_ORIGIN_MISMATCH');
+    const body = {
+      version: 'tax-wsfex-sequence-reservation-request-v1' as const,
+      workspaceId: input.workspaceId,
+      issuerProfileRef: input.issuerProfileRef,
+      runId: input.runId,
+      intentHash: input.intentHash,
+      subjectId: input.subjectId,
+      documentType: 19 as const,
+      pointOfSale: input.pointOfSale,
+      idempotencyKey: input.idempotencyKey,
+    };
+    let response: Response;
+    try {
+      response = await this.fetcher(endpoint, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          authorization: `Bearer ${this.config.token}`,
+          'content-type': 'application/json',
+          'idempotency-key': input.idempotencyKey,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error('ARCA_SEQUENCE_RESERVATION_UNAVAILABLE');
+    }
+    if (!response.ok) {
+      await readBoundedResponseBody(response, 64 * 1024, 'ARCA_SIGNER_ERROR_RESPONSE_TOO_LARGE');
+      throw new Error(`ARCA_SEQUENCE_RESERVATION_REJECTED_${response.status}`);
+    }
+    const raw = await readBoundedResponseBody(
+      response,
+      64 * 1024,
+      'ARCA_SEQUENCE_RESERVATION_RESPONSE_TOO_LARGE'
+    );
+    let receipt: SequenceReservationReceipt;
+    try {
+      receipt = sequenceReservationReceiptSchema.parse(JSON.parse(raw));
+    } catch {
+      throw new Error('ARCA_SEQUENCE_RESERVATION_RESPONSE_INVALID');
+    }
+    if (receipt.environment !== this.config.environment
+      || receipt.workspaceId !== input.workspaceId
+      || receipt.issuerProfileRef !== input.issuerProfileRef
+      || receipt.issuerProfileReferenceHash !== hashCanonical(input.issuerProfileRef)
+      || receipt.runId !== input.runId
+      || receipt.intentHash !== input.intentHash
+      || receipt.subjectId !== input.subjectId
+      || receipt.pointOfSale !== input.pointOfSale
+      || receipt.idempotencyKey !== input.idempotencyKey)
+      throw new Error('ARCA_SEQUENCE_RESERVATION_BINDING_MISMATCH');
+    const { evidenceHash, ...material } = receipt;
+    if (evidenceHash !== hashCanonical(material))
+      throw new Error('ARCA_SEQUENCE_RESERVATION_HASH_MISMATCH');
+    return receipt;
   }
 
   async discoverPointsOfSale(input: Readonly<{
