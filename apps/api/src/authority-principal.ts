@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 export const taxAuthorityCapabilitySchema = z.enum([
   'factura-e:case:create',
+  'factura-e:case:read',
   'factura-e:intent:create',
   'factura-e:approval:register',
   'factura-e:execute',

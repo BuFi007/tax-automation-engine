@@ -152,6 +152,19 @@ export async function handleFacturaEAuthorityCorridorRoute(
       } }, 200);
     }
 
+    if (route.operation === 'read_case') {
+      if (!options.taxCases) throw new Error('TAX_CASE_CORRIDOR_CONFIGURATION_REQUIRED');
+      const runId = z.uuid().parse(decodeURIComponent(route.executionId ?? ''));
+      const run = options.taxCases.getRun(runId);
+      assertPrincipalWorkspace(principal.workspaceId, run.workspaceId);
+      return privateJson({ data: {
+        version: 'factura-e-tax-case-status-v1', runId: run.runId, workspaceId: run.workspaceId,
+        revision: run.revision, readinessState: run.readinessState, intentState: run.intentState,
+        approvalState: run.approvalState, issuanceState: run.issuanceState,
+        nextAction: run.intentState === 'missing' ? 'collect_verified_evidence' : run.approvalState === 'pending' ? 'await_separate_human_approval' : run.issuanceState === 'ready_for_wsfex' ? 'persist_authority_intent' : 'wait_for_tax_update',
+      } }, 200);
+    }
+
     if (route.operation === 'create') {
       const body = createIntentSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
@@ -217,13 +230,20 @@ export async function handleFacturaEAuthorityCorridorRoute(
 }
 
 function matchRoute(method: string, pathname: string): Readonly<{
-  operation: 'readiness' | 'status' | 'create_case' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
+  operation: 'readiness' | 'status' | 'create_case' | 'read_case' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
   capability: TaxAuthorityCapability;
   workspaceId?: string;
   executionId?: string;
 }> | null {
   if (method === 'POST' && pathname === '/v1/authority/factura-e/cases')
     return { operation: 'create_case', capability: 'factura-e:case:create' };
+  const caseStatus = pathname.match(/^\/v1\/authority\/factura-e\/cases\/([^/]+)$/);
+  if (method === 'GET' && caseStatus)
+    return {
+      operation: 'read_case',
+      capability: 'factura-e:case:read',
+      executionId: caseStatus[1]!,
+    };
   if (method === 'POST' && pathname === '/v1/authority/factura-e/intents')
     return { operation: 'create', capability: 'factura-e:intent:create' };
   const readiness = pathname.match(/^\/v1\/authority\/factura-e\/readiness\/([^/]+)$/);
