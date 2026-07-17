@@ -447,7 +447,7 @@ const arcaOnboarding = new ArcaOnboardingService(
   proofCustodyRequired,
   wsfexGateway,
 );
-const jurisdictionSchema = z.enum(['AR', 'US']);
+const jurisdictionSchema = z.enum(['AR', 'US', 'AE']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
   profileId: z.string().min(1),

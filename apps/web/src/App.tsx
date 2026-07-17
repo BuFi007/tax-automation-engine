@@ -10,6 +10,7 @@ import { ProfileSelector } from './components/ProfileSelector';
 import { TaxWidget } from './components/TaxWidget';
 import { ArcaOnboardingJourney } from './components/ArcaOnboardingJourney';
 import { LiveArcaOnboardingJourney } from './components/ArcaOnboardingJourney.live';
+import { EmaraTaxJourney } from './components/EmaraTaxJourney';
 import type { ArcaOnboardingBrowserAuthority } from './arca-api';
 
 export function App({ taxAuthority = null, arcaAuthority = null, arcaEnvironment = 'homologation', arcaRequestedServices = ['wsfex', 'wsfe'] }: Readonly<{
@@ -53,7 +54,7 @@ export function App({ taxAuthority = null, arcaAuthority = null, arcaEnvironment
       {snapshot && !loading && (
         <>
           <section className="hero-grid">
-            <div className="hero-copy"><span className="status-pill status-review_ready">Manual workflow</span><h2>One tax core.<br />Jurisdiction packs for every market.</h2><p>Argentina is the launch wedge. The U.S. pack uses the same evidence graph, obligation lifecycle, consent model, and browser-safe snapshot.</p></div>
+            <div className="hero-copy"><span className="status-pill status-review_ready">Manual workflow</span><h2>One tax core.<br />Jurisdiction packs for every market.</h2><p>Argentina is the launch wedge. U.S. entities and Dubai Free Zone companies use the same evidence graph, obligation lifecycle, consent model, and browser-safe snapshot.</p></div>
             <TaxWidget snapshot={snapshot} onOpenWorkspace={() => document.getElementById('workspace')?.scrollIntoView({ behavior: 'smooth' })} />
           </section>
           <div id="workspace" className="workspace-grid">
@@ -62,6 +63,7 @@ export function App({ taxAuthority = null, arcaAuthority = null, arcaEnvironment
             {snapshot.profile.jurisdiction === 'AR' && (arcaAuthority
               ? <LiveArcaOnboardingJourney snapshot={snapshot} authority={arcaAuthority} environment={arcaEnvironment} requestedServices={arcaRequestedServices} />
               : <ArcaOnboardingJourney />)}
+            {snapshot.profile.jurisdiction === 'AE' && <EmaraTaxJourney snapshot={snapshot} />}
             <ObligationJourney snapshot={snapshot} />
           </div>
         </>

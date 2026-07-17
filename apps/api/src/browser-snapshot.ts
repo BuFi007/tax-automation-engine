@@ -9,6 +9,7 @@ import {
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
   TAX_JURISDICTION_PROFILE_LIMITATIONS_V1,
+  TAX_AE_PROFILE_LIMITATIONS_V1,
   type TaxAuthorityReadinessV1,
   type TaxJurisdictionProfileReadinessV1,
   type TaxSnapshotProblemCodeV1,
@@ -64,6 +65,11 @@ const EXACT_OBLIGATION_KINDS = {
   'us:form-1120-s': 'us_form_1120_s',
   'us:form-1120': 'us_form_1120',
   'us:owner-income-return-review': 'us_owner_income_return_review',
+  'ae:corporate-tax-registration': 'ae_corporate_tax_registration',
+  'ae:corporate-tax-return': 'ae_corporate_tax_return',
+  'ae:vat-registration': 'ae_vat_registration',
+  'ae:vat-return': 'ae_vat_return',
+  'ae:free-zone-qualifying-status-review': 'ae_free_zone_qualifying_status_review',
 } as const satisfies Readonly<Record<string, Exclude<TaxObligationKindV1, 'unclassified'>>>;
 
 const ARCA_SERVICE_ORDER = ['wsfex', 'wsfe'] as const;
@@ -109,6 +115,7 @@ export function taxObligationKindForId(obligationId: string): TaxObligationKindV
 export function projectTaxJurisdictionProfileReadiness(
   profile: TaxProfile,
 ): TaxJurisdictionProfileReadinessV1 | undefined {
+  if (profile.jurisdiction === 'AE') return projectUaeFreeZoneProfileReadiness(profile);
   if (profile.jurisdiction !== 'US') return undefined;
 
   const provider = new UnitedStatesJurisdictionProvider();
@@ -221,6 +228,53 @@ export function projectTaxJurisdictionProfileReadiness(
     accountantReviewRequired: state !== 'confirmed',
     limitationCodes: TAX_JURISDICTION_PROFILE_LIMITATIONS_V1.filter(code => limitations.has(code)),
   });
+}
+
+function projectUaeFreeZoneProfileReadiness(profile: TaxProfile): TaxJurisdictionProfileReadinessV1 | undefined {
+  if (profile.regimeId !== 'uae_free_zone_person') return undefined;
+  const formation = uniqueProfileAnswer(profile, 'formation_emirate');
+  const corporateTax = uniqueProfileAnswer(profile, 'corporate_tax_registration');
+  const vatThreshold = uniqueProfileAnswer(profile, 'vat_threshold_state');
+  const vatRegistration = uniqueProfileAnswer(profile, 'vat_registration');
+  const entityStructure = profile.entityType === 'fzco'
+    ? 'free_zone_company'
+    : profile.entityType === 'fz_llc'
+      ? 'free_zone_llc'
+      : profile.entityType === 'branch'
+        ? 'free_zone_branch'
+        : 'unclassified';
+  const formationEmirate = formation === 'AE-DU' && profile.formationSubdivision === 'AE-DU' ? 'AE-DU' : null;
+  const corporateTaxRegistration = oneOf(corporateTax, ['not_registered', 'submitted', 'certificate_available', 'needs_review']) ?? 'unconfirmed';
+  const vatThresholdState = oneOf(vatThreshold, ['mandatory', 'voluntary', 'below', 'nonresident_taxable_supplies', 'needs_review']) ?? 'unconfirmed';
+  const projectedVatRegistration = oneOf(vatRegistration, ['not_registered', 'submitted', 'certificate_available', 'exemption_identifier_available', 'needs_review']) ?? 'unconfirmed';
+  const incomplete = formationEmirate === null || entityStructure === 'unclassified'
+    || corporateTaxRegistration === 'unconfirmed' || vatThresholdState === 'unconfirmed'
+    || projectedVatRegistration === 'unconfirmed';
+  const limitations = new Set<(typeof TAX_AE_PROFILE_LIMITATIONS_V1)[number]>([
+    'AE_FREE_ZONE_STATUS_REVIEW_REQUIRED',
+    'AE_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+  ]);
+  if (incomplete) limitations.add('AE_PROFILE_INCOMPLETE');
+  limitations.add('AE_CORPORATE_TAX_REGISTRATION_REQUIRED');
+  if (vatThresholdState === 'needs_review' || vatThresholdState === 'unconfirmed') limitations.add('AE_VAT_THRESHOLD_REVIEW_REQUIRED');
+
+  return taxJurisdictionProfileReadinessV1Schema.parse({
+    version: 'tax-jurisdiction-profile-readiness-v1',
+    kind: 'ae_free_zone_entity',
+    state: incomplete ? 'incomplete' : 'accountant_review',
+    formationEmirate,
+    entityStructure,
+    corporateTaxRegistration,
+    vatThresholdState,
+    vatRegistration: projectedVatRegistration,
+    qualifyingFreeZoneStatus: 'professional_review_required',
+    accountantReviewRequired: true,
+    limitationCodes: TAX_AE_PROFILE_LIMITATIONS_V1.filter(code => limitations.has(code)),
+  });
+}
+
+function oneOf<const T extends readonly string[]>(value: unknown, options: T): T[number] | undefined {
+  return typeof value === 'string' && options.includes(value) ? value as T[number] : undefined;
 }
 
 function uniqueProfileAnswer(profile: TaxProfile, questionId: string): TaxProfile['answers'][number]['value'] | undefined {

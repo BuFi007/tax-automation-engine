@@ -48,8 +48,8 @@ describe('manual tax workflow gates', () => {
     expect(repeated).toBe(state);
   });
 
-  test('builds browser-safe AR and US snapshots in manual-only readiness states', async () => {
-    for (const jurisdiction of ['AR', 'US'] as const) {
+  test('builds browser-safe AR, US, and UAE snapshots in manual-only readiness states', async () => {
+    for (const jurisdiction of ['AR', 'US', 'AE'] as const) {
       const snapshot = await demoSnapshot(jurisdiction);
       expect(snapshot.profile.jurisdiction).toBe(jurisdiction);
       expect(snapshot.estimate.state).not.toBe('verified');

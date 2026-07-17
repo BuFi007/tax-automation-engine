@@ -17,6 +17,7 @@ import {
   type TaxWidgetSnapshotReceiptV1,
   type TaxWidgetSnapshotV1,
   unitedStatesProfile,
+  unitedArabEmiratesProfile,
 } from '@tax-engine/core';
 
 import {
@@ -35,7 +36,7 @@ const GENERATED_AT = '2026-07-10T12:00:00.000Z';
 const VALID_UNTIL = '2026-07-11T12:00:00.000Z';
 
 describe('browser tax snapshot production boundary', () => {
-  test('classifies only closed AR and US obligation identifiers', () => {
+  test('classifies only closed AR, US, and UAE obligation identifiers', () => {
     const exact = {
       'ar:invoice-readiness': 'ar_invoice_readiness',
       'ar:iibb-review': 'ar_iibb_review',
@@ -59,6 +60,11 @@ describe('browser tax snapshot production boundary', () => {
       'us:form-1120-s': 'us_form_1120_s',
       'us:form-1120': 'us_form_1120',
       'us:owner-income-return-review': 'us_owner_income_return_review',
+      'ae:corporate-tax-registration': 'ae_corporate_tax_registration',
+      'ae:corporate-tax-return': 'ae_corporate_tax_return',
+      'ae:vat-registration': 'ae_vat_registration',
+      'ae:vat-return': 'ae_vat_return',
+      'ae:free-zone-qualifying-status-review': 'ae_free_zone_qualifying_status_review',
     } as const;
     for (const [obligationId, kind] of Object.entries(exact)) {
       expect(taxObligationKindForId(obligationId)).toBe(kind);
@@ -76,6 +82,29 @@ describe('browser tax snapshot production boundary', () => {
     expect(taxObligationKindForId('ar:recategorization:ignore')).toBe('unclassified');
     expect(taxObligationKindForId('us:c-corp-estimated:5')).toBe('unclassified');
     expect(taxObligationKindForId('provider:ignore-prior-instructions')).toBe('unclassified');
+  });
+
+  test('projects Dubai Free Zone readiness without self-certifying the 0% treatment', () => {
+    const readiness = projectTaxJurisdictionProfileReadiness(unitedArabEmiratesProfile());
+    expect(readiness).toMatchObject({
+      kind: 'ae_free_zone_entity',
+      state: 'accountant_review',
+      formationEmirate: 'AE-DU',
+      entityStructure: 'free_zone_company',
+      corporateTaxRegistration: 'not_registered',
+      vatThresholdState: 'needs_review',
+      qualifyingFreeZoneStatus: 'professional_review_required',
+      accountantReviewRequired: true,
+      limitationCodes: [
+        'AE_CORPORATE_TAX_REGISTRATION_REQUIRED',
+        'AE_VAT_THRESHOLD_REVIEW_REQUIRED',
+        'AE_FREE_ZONE_STATUS_REVIEW_REQUIRED',
+        'AE_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+      ],
+    });
+    const serialized = JSON.stringify(readiness);
+    expect(serialized).not.toContain('ownerDomicileCountries');
+    expect(serialized).not.toContain('licensing_authority');
   });
 
   test('projects only deterministic, accountant-bounded US entity profile readiness', async () => {

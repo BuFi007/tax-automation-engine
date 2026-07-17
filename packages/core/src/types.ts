@@ -1,4 +1,4 @@
-export type JurisdictionCode = 'AR' | 'US';
+export type JurisdictionCode = 'AR' | 'US' | 'AE';
 export type FounderResidency = 'local' | 'foreign';
 
 export type IsoDate = string;
@@ -108,6 +108,8 @@ export type TaxObligationCategory =
   | 'federal_income_return'
   | 'state_income_franchise_return'
   | 'sales_tax_return'
+  | 'corporate_tax_return'
+  | 'vat_return'
   | 'payroll_information_return'
   | 'estimated_tax'
   | 'registration'

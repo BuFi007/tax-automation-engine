@@ -12,7 +12,7 @@ export function ObligationJourney({ snapshot }: { snapshot: TaxWidgetSnapshotV1 
   return (
     <section className="panel" aria-labelledby="journey-heading">
       <div className="section-heading">
-        <span className="step-number">{snapshot.profile.jurisdiction === 'AR' ? '4' : '3'}</span>
+        <span className="step-number">{snapshot.profile.jurisdiction === 'US' ? '3' : '4'}</span>
         <div>
           <h2 id="journey-heading">Manual tax journey</h2>
           <p>Preparation, review, submission, acceptance, and satisfaction remain separate.</p>
