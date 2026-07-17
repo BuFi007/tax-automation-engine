@@ -194,6 +194,92 @@ describe('tax evidence batch v1', () => {
     });
   });
 
+  test('accepts privacy-safe transaction classification context without counting money', () => {
+    const proposal = classificationRecord('classification-proposed', null, 'active');
+    const parsed = parseTaxEvidenceBatchV1(classificationBatch([proposal]));
+
+    expect(parsed.records[0]).toMatchObject({
+      sourceKind: 'transaction_enrichment',
+      economicRole: 'classification_context',
+      countingDimension: 'none',
+      direction: 'neutral',
+      reviewState: 'unreviewed',
+      money: null,
+      classificationClaim: {
+        categoryId: 'software',
+        businessPurposeId: 'operating_expense',
+        decisionSource: 'model_proposal',
+      },
+    });
+  });
+
+  test('prevents model classification from reviewing itself or carrying money', () => {
+    const proposal = classificationRecord('classification-proposed', null, 'active');
+    expect(() => parseTaxEvidenceBatchV1(classificationBatch([{
+      ...proposal,
+      reviewState: 'accepted',
+    }]))).toThrow('EVIDENCE_CLASSIFICATION_MODEL_CANNOT_SELF_REVIEW');
+    expect(() => parseTaxEvidenceBatchV1(classificationBatch([{
+      ...proposal,
+      classificationClaim: {
+        ...proposal.classificationClaim!,
+        decisionSource: 'provider_rule',
+      },
+      reviewState: 'accepted',
+    }]))).toThrow('EVIDENCE_CLASSIFICATION_MODEL_CANNOT_SELF_REVIEW');
+    expect(() => parseTaxEvidenceBatchV1(classificationBatch([{
+      ...proposal,
+      classificationClaim: {
+        ...proposal.classificationClaim!,
+        decisionSource: 'human_review',
+      },
+      reviewState: 'accepted',
+      countingDimension: 'expense',
+      direction: 'outflow',
+      money: { decimal: '1', currency: 'USD' },
+      normalizedMoney: { decimal: '1', currency: 'USD' },
+    }]))).toThrow('EVIDENCE_EXPENSE_ROLE_INVALID');
+  });
+
+  test('supports reviewed classification revisions and minimized withdrawal tombstones', () => {
+    const proposal = classificationRecord('classification-proposed', null, 'active');
+    const accepted: TaxEvidenceRecord = {
+      ...proposal,
+      evidenceId: 'classification:accepted',
+      revision: 'classification-accepted',
+      sourceEventHash: hash('classification:accepted:source'),
+      artifactHash: hash('classification:accepted:artifact'),
+      classificationClaim: {
+        ...proposal.classificationClaim!,
+        decisionSource: 'human_review',
+      },
+      reviewState: 'accepted',
+      idempotencyKey: hash('classification:accepted:key'),
+      supersedesIdempotencyKey: proposal.idempotencyKey,
+    };
+    const withdrawn: TaxEvidenceRecord = {
+      ...accepted,
+      evidenceId: 'classification:withdrawn',
+      revision: 'classification-withdrawn',
+      sourceEventHash: hash('classification:withdrawn:source'),
+      artifactHash: hash('classification:withdrawn:artifact'),
+      classificationClaim: null,
+      partyClaimHash: null,
+      confidence: { extraction: null, classification: null, matching: null },
+      validityState: 'withdrawn',
+      idempotencyKey: hash('classification:withdrawn:key'),
+      supersedesIdempotencyKey: accepted.idempotencyKey,
+    };
+    const parsed = parseTaxEvidenceBatchV1(classificationBatch([
+      proposal,
+      accepted,
+      withdrawn,
+    ]));
+
+    expect(resolveActiveEvidenceRecords(parsed.records)).toEqual([withdrawn]);
+    expect(isActiveTaxEvidenceRecord(withdrawn)).toBe(false);
+  });
+
   test('rejects unsafe cash tombstones and predecessor substitution', () => {
     const active = bankCashRecord('cash-active', null, 'active');
     const withdrawn = bankCashRecord(
@@ -521,6 +607,77 @@ function bankCashRecord(
     reviewState: validityState === 'disputed' ? 'disputed' : 'accepted',
     validityState,
     idempotencyKey: hash(`bank:key:${evidenceId}`),
+    supersedesIdempotencyKey,
+  };
+}
+
+function classificationBatch(records: readonly TaxEvidenceRecord[]): TaxEvidenceBatchV1 {
+  const sourceId = 'transaction-enrichment';
+  const sourceIds = [sourceId];
+  return {
+    ...batch(),
+    source: {
+      sourceId,
+      sourceKind: 'transaction_enrichment',
+      canonicalProviderId: 'bufi',
+      adapterSchemaVersion: 'transaction-enrichment-tax-evidence-v1',
+    },
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version: 'consent-v1',
+      scopeHash: hashTaxEvidenceConsentScope('consent-v1', sourceIds),
+      sourceIds,
+    },
+    capabilities: [{
+      capability: 'classification',
+      state: 'available',
+      observedAt: '2026-07-10T00:00:00.000Z',
+      safeErrorCode: null,
+    }],
+    records,
+  };
+}
+
+function classificationRecord(
+  evidenceId: string,
+  supersedesIdempotencyKey: string | null,
+  validityState: TaxEvidenceRecord['validityState'],
+): TaxEvidenceRecord {
+  const merchantClaimHash = hash('workspace:merchant:software-vendor');
+  return {
+    ...record(),
+    evidenceId,
+    revision: evidenceId,
+    sourceId: 'transaction-enrichment',
+    sourceKind: 'transaction_enrichment',
+    canonicalProviderId: 'bufi',
+    externalReferenceHash: hash('transaction-enrichment:transaction:1'),
+    sourceEventHash: hash(`transaction-enrichment:source:${evidenceId}`),
+    artifactHash: hash(`transaction-enrichment:artifact:${evidenceId}`),
+    jurisdiction: null,
+    economicEventId: 'transaction:33333333-3333-4333-8333-333333333333',
+    economicRole: 'classification_context',
+    invoiceDocumentKind: null,
+    countingDimension: 'none',
+    direction: 'neutral',
+    money: null,
+    normalizedMoney: null,
+    fxReferenceId: null,
+    partyClaimHash: null,
+    accountReferenceHash: null,
+    classificationClaim: {
+      version: 'tax-evidence-classification-claim-v1',
+      taxonomyVersion: 'bufi-transaction-taxonomy-v1',
+      categoryId: 'software',
+      businessPurposeId: 'operating_expense',
+      merchantClaimHash,
+      classifierVersion: 'gemini-2.5-flash-lite',
+      decisionSource: 'model_proposal',
+    },
+    confidence: { extraction: '0.900000', classification: '0.950000', matching: null },
+    reviewState: 'unreviewed',
+    validityState,
+    idempotencyKey: hash(`transaction-enrichment:key:${evidenceId}`),
     supersedesIdempotencyKey,
   };
 }

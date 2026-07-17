@@ -53,6 +53,15 @@ const moneySchema = z.object({
   decimal: z.string().max(92).regex(FINANCIAL_DECIMAL_RE),
   currency: z.string().regex(/^[A-Z][A-Z0-9]{2,11}$/),
 }).strict();
+const classificationClaimSchema = z.object({
+  version: z.literal('tax-evidence-classification-claim-v1'),
+  taxonomyVersion: safeOpaqueIdSchema,
+  categoryId: safeOpaqueIdSchema,
+  businessPurposeId: safeOpaqueIdSchema.nullable(),
+  merchantClaimHash: z.string().regex(SHA256_RE).nullable(),
+  classifierVersion: safeOpaqueIdSchema,
+  decisionSource: z.enum(['model_proposal', 'human_review', 'provider_rule']),
+}).strict();
 const evidenceRecordSchema = z.object({
   evidenceId: safeOpaqueIdSchema,
   workspaceId: taxWorkspaceIdSchema,
@@ -80,6 +89,7 @@ const evidenceRecordSchema = z.object({
     'fee',
     'tax',
     'cash_movement',
+    'classification_context',
   ]),
   invoiceDocumentKind: z.enum([
     'arca_factura_e',
@@ -101,6 +111,7 @@ const evidenceRecordSchema = z.object({
   fxReferenceId: z.string().regex(SHA256_RE).nullable(),
   partyClaimHash: z.string().regex(SHA256_RE).nullable(),
   accountReferenceHash: z.string().regex(SHA256_RE).nullable(),
+  classificationClaim: classificationClaimSchema.nullable().optional(),
   confidence: z.object({
     extraction: z.string().min(1).max(32).nullable(),
     classification: z.string().min(1).max(32).nullable(),
@@ -222,6 +233,7 @@ export function resolveActiveEvidenceRecords(
       'invoice',
       'receipt',
       'cash_movement',
+      'classification_context',
     ]);
     const invoiceLifecycleIdentityMismatch = record.economicRole === 'invoice'
       && (target.invoiceAdjustmentKind !== record.invoiceAdjustmentKind
@@ -290,7 +302,7 @@ function assertBatchRecord(batch: TaxEvidenceBatchV1, record: TaxEvidenceRecord)
     const lifecycleReviewValid = record.validityState === 'withdrawn'
       ? record.reviewState === 'accepted'
       : record.validityState === 'disputed' && record.reviewState === 'disputed';
-    if (!['settlement', 'invoice', 'receipt', 'cash_movement'].includes(record.economicRole)
+    if (!['settlement', 'invoice', 'receipt', 'cash_movement', 'classification_context'].includes(record.economicRole)
       || !lifecycleReviewValid
       || record.supersedesIdempotencyKey === null
       || record.countingDimension !== 'none'
@@ -312,6 +324,7 @@ function assertBatchRecord(batch: TaxEvidenceBatchV1, record: TaxEvidenceRecord)
   if (record.invoiceDocumentKind !== null && record.economicRole !== 'invoice') {
     throw new Error('EVIDENCE_INVOICE_DOCUMENT_KIND_ROLE_INVALID');
   }
+  assertClassificationContext(record);
   assertInvoiceAdjustment(record);
   assertCountingDirection(record);
   if (['financial_analytics', 'knowledge_graph', 'transaction_enrichment'].includes(record.sourceKind)
@@ -335,7 +348,47 @@ function lifecycleSupersessionMismatchCode(
   if (role === 'settlement') return 'EVIDENCE_SETTLEMENT_SUPERSESSION_MISMATCH';
   if (role === 'receipt') return 'EVIDENCE_RECEIPT_SUPERSESSION_MISMATCH';
   if (role === 'cash_movement') return 'EVIDENCE_CASH_SUPERSESSION_MISMATCH';
+  if (role === 'classification_context') return 'EVIDENCE_CLASSIFICATION_SUPERSESSION_MISMATCH';
   return 'EVIDENCE_INVOICE_SUPERSESSION_MISMATCH';
+}
+
+function assertClassificationContext(record: TaxEvidenceRecord): void {
+  const claim = record.classificationClaim ?? null;
+  if (record.economicRole !== 'classification_context') {
+    if (claim !== null) throw new Error('EVIDENCE_CLASSIFICATION_CLAIM_ROLE_INVALID');
+    return;
+  }
+  if (record.sourceKind !== 'transaction_enrichment'
+    || record.countingDimension !== 'none'
+    || record.direction !== 'neutral'
+    || record.money !== null
+    || record.normalizedMoney !== null
+    || record.fxReferenceId !== null
+    || record.invoiceDocumentKind !== null
+    || record.invoiceAdjustmentKind !== null
+    || record.adjustsEconomicEventId !== null) {
+    throw new Error('EVIDENCE_CLASSIFICATION_CONTEXT_INVALID');
+  }
+  if (!isActiveTaxEvidenceRecord(record)) {
+    if (claim !== null) throw new Error('EVIDENCE_CLASSIFICATION_TOMBSTONE_NOT_MINIMIZED');
+    return;
+  }
+  if (claim === null) throw new Error('EVIDENCE_CLASSIFICATION_CLAIM_REQUIRED');
+  if (record.partyClaimHash !== null) {
+    throw new Error('EVIDENCE_CLASSIFICATION_PARTY_AUTHORITY_INVALID');
+  }
+  const confidence = record.confidence.classification;
+  if (confidence === null
+    || !/^(?:0(?:\.\d{1,6})?|1(?:\.0{1,6})?)$/.test(confidence)) {
+    throw new Error('EVIDENCE_CLASSIFICATION_CONFIDENCE_INVALID');
+  }
+  if (claim.decisionSource === 'human_review' && record.reviewState === 'unreviewed') {
+    throw new Error('EVIDENCE_CLASSIFICATION_REVIEW_STATE_INVALID');
+  }
+  if (['model_proposal', 'provider_rule'].includes(claim.decisionSource)
+    && record.reviewState !== 'unreviewed') {
+    throw new Error('EVIDENCE_CLASSIFICATION_MODEL_CANNOT_SELF_REVIEW');
+  }
 }
 
 function assertInvoiceAdjustment(record: TaxEvidenceRecord): void {

@@ -48,6 +48,16 @@ export type TaxEvidenceScope =
 export type EvidenceReviewState = 'unreviewed' | 'accepted' | 'rejected' | 'disputed';
 export type EvidenceValidityState = 'active' | 'withdrawn' | 'disputed';
 
+export type TaxEvidenceClassificationClaimV1 = Readonly<{
+  version: 'tax-evidence-classification-claim-v1';
+  taxonomyVersion: string;
+  categoryId: string;
+  businessPurposeId: string | null;
+  merchantClaimHash: string | null;
+  classifierVersion: string;
+  decisionSource: 'model_proposal' | 'human_review' | 'provider_rule';
+}>;
+
 export type TaxEvidenceRecord = Readonly<{
   evidenceId: string;
   workspaceId: string;
@@ -63,7 +73,7 @@ export type TaxEvidenceRecord = Readonly<{
   observedAt: IsoDateTime;
   expiresAt: IsoDateTime | null;
   economicEventId: string;
-  economicRole: 'invoice' | 'payment' | 'settlement' | 'expense' | 'receipt' | 'accounting_entry' | 'payroll_obligation' | 'payroll_settlement' | 'fee' | 'tax' | 'cash_movement';
+  economicRole: 'invoice' | 'payment' | 'settlement' | 'expense' | 'receipt' | 'accounting_entry' | 'payroll_obligation' | 'payroll_settlement' | 'fee' | 'tax' | 'cash_movement' | 'classification_context';
   invoiceDocumentKind: 'arca_factura_e' | 'arca_factura_a' | 'arca_factura_b' | 'arca_factura_c' | 'arca_fce' | 'arca_nota_debito_e' | 'arca_nota_credito_e' | 'commercial_invoice' | 'unknown' | null;
   invoiceAdjustmentKind: 'debit' | 'credit' | null;
   adjustsEconomicEventId: string | null;
@@ -74,6 +84,7 @@ export type TaxEvidenceRecord = Readonly<{
   fxReferenceId: string | null;
   partyClaimHash: string | null;
   accountReferenceHash: string | null;
+  classificationClaim?: TaxEvidenceClassificationClaimV1 | null;
   confidence: Readonly<{
     extraction: string | null;
     classification: string | null;
