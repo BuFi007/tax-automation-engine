@@ -24,7 +24,7 @@ function event(kind = 'invoice.settlement_finalized'): Record<string, unknown> {
     authentication: { method: 'internal_outbox', principalRef: 'principal_invoice_worker', credentialVersion: 'grant-v1', signatureHash: HASH },
     consent: { purpose: 'tax_workspace_processing', version: 'consent-v1', scopeHash: HASH, state: 'active' },
     evidenceHashes: [HASH],
-    ruleVersionIds: ['rule_1'],
+    ruleVersionIds: ['arca-wsfex-3.1.1'],
     policyVersionIds: ['policy_1'],
     actionRefs: ['action_review_tax_case'],
   };

@@ -10,7 +10,10 @@ import {
   type FacturaEAgentRunV1,
   type TaxDomainEventV1,
   type TaxEvidenceConsentEventV1,
+  type TaxObligation,
+  type TaxWidgetSnapshotV1,
 } from '@tax-engine/core';
+import type { EvidenceGap } from '@tax-engine/core';
 
 type ActiveConsent = Readonly<{
   version: string;
@@ -336,6 +339,69 @@ export function accountantMandateScopeForFacturaEEvent(
   return ACCOUNTANT_DECISION_SCOPES[event.action] ?? null;
 }
 
+/**
+ * Produce workspace-level notifications from the canonical durable Tax
+ * projection. The snapshot remains the source of truth; these events contain
+ * only enough information to wake a TaxCase and explain that a deterministic
+ * state transition occurred.
+ */
+export function createSnapshotTaxDomainEvents(input: Readonly<{
+  snapshot: TaxWidgetSnapshotV1;
+  previousSnapshot: TaxWidgetSnapshotV1 | null;
+  previousAsOf: string | null;
+  projectionKey: string;
+  asOf: string;
+  generatedAt: string;
+  consent: ActiveConsent;
+  commitmentSecret: string;
+}>): readonly TaxDomainEventV1[] {
+  assertCommitmentSecret(input.commitmentSecret);
+  if (
+    input.previousSnapshot
+    && input.previousSnapshot.workspaceId !== input.snapshot.workspaceId
+  ) throw new Error('TAX_DOMAIN_EVENT_SNAPSHOT_WORKSPACE_MISMATCH');
+  const events: TaxDomainEventV1[] = [];
+  const currentGaps = new Map(
+    input.snapshot.evidenceCoverage.gaps.map(gap => [gap.id, gap]),
+  );
+  const previousGaps = new Map(
+    (input.previousSnapshot?.evidenceCoverage.gaps ?? []).map(gap => [gap.id, gap]),
+  );
+  for (const gap of currentGaps.values()) {
+    const previous = previousGaps.get(gap.id);
+    if (previous && hashCanonical(previous) === hashCanonical(gap)) continue;
+    events.push(snapshotDomainEvent(input, gapEventSpec(gap)));
+  }
+  for (const gap of previousGaps.values()) {
+    if (currentGaps.has(gap.id)) continue;
+    events.push(snapshotDomainEvent(input, gapEventSpec(gap, true)));
+  }
+
+  const previousObligations = new Map(
+    (input.previousSnapshot?.obligations ?? []).map(obligation => [obligation.id, obligation]),
+  );
+  const asOf = Date.parse(input.asOf);
+  if (!Number.isFinite(asOf)) throw new Error('TAX_DOMAIN_EVENT_SNAPSHOT_AS_OF_INVALID');
+  const previousAsOf = input.previousAsOf === null
+    ? null
+    : Date.parse(input.previousAsOf);
+  if (previousAsOf !== null && !Number.isFinite(previousAsOf)) {
+    throw new Error('TAX_DOMAIN_EVENT_PREVIOUS_SNAPSHOT_AS_OF_INVALID');
+  }
+  for (const obligation of input.snapshot.obligations) {
+    if (!isDueObligation(obligation, asOf)) continue;
+    const previous = previousObligations.get(obligation.id);
+    if (
+      previous
+      && previousAsOf !== null
+      && isDueObligation(previous, previousAsOf)
+      && hashCanonical(previous) === hashCanonical(obligation)
+    ) continue;
+    events.push(snapshotDomainEvent(input, obligationEventSpec(obligation)));
+  }
+  return events;
+}
+
 export function resolveTaxDomainEventCommitmentSecret(
   configured = process.env.TAX_DOMAIN_EVENT_COMMITMENT_HMAC_SECRET,
   nodeEnvironment = process.env.NODE_ENV,
@@ -359,6 +425,147 @@ function privacyCommitment(
   return createHmac('sha256', secret)
     .update(`tax-domain-event:v1:${purpose}:${workspaceId}:${value}`)
     .digest('hex');
+}
+
+type SnapshotEventSpec = Readonly<{
+  kind: 'evidence.gap_changed' | 'obligation.due';
+  state: TaxDomainEventV1['state'];
+  subjectId: string;
+  sourceSystem: 'evidence_graph' | 'tax_engine';
+  evidenceValues: readonly string[];
+  ruleVersionIds: readonly string[];
+  actionId: string | null;
+  transitionHash: string;
+}>;
+
+function snapshotDomainEvent(
+  input: Parameters<typeof createSnapshotTaxDomainEvents>[0],
+  spec: SnapshotEventSpec,
+): TaxDomainEventV1 {
+  const workspaceId = input.snapshot.workspaceId;
+  const commit = (purpose: string, value: string) => privacyCommitment(
+    input.commitmentSecret,
+    purpose,
+    workspaceId,
+    value,
+  );
+  const eventSeed = [
+    input.projectionKey,
+    input.snapshot.period.start,
+    input.snapshot.period.end,
+    spec.kind,
+    spec.subjectId,
+    spec.transitionHash,
+  ].join(':');
+  const sourceHash = hashCanonical({
+    projectionKey: input.projectionKey,
+    period: input.snapshot.period,
+    inputHash: input.snapshot.inputHash,
+    kind: spec.kind,
+    subjectId: spec.subjectId,
+    transitionHash: spec.transitionHash,
+  });
+  return assertTaxDomainEventV1({
+    version: 'tax-domain-event-v1',
+    eventId: uuidFromCommitment(commit('event-id', eventSeed)),
+    workspaceId,
+    caseRef: null,
+    kind: spec.kind,
+    state: spec.state,
+    occurredAt: input.generatedAt,
+    idempotencyKey: 'taxevt_' + commit('idempotency', eventSeed).slice(0, 40),
+    correlationRef: 'taxprojection_' + commit(
+      'correlation',
+      `${input.projectionKey}:${input.snapshot.period.start}:${input.snapshot.period.end}`,
+    ).slice(0, 40),
+    source: {
+      system: spec.sourceSystem,
+      sourceEventHash: commit('source-event', sourceHash),
+      verifiedAt: input.asOf,
+    },
+    authentication: {
+      method: 'internal_outbox',
+      principalRef: spec.sourceSystem === 'evidence_graph'
+        ? 'tax_evidence_graph_projection'
+        : 'tax_obligation_catalogue_projection',
+      credentialVersion: 'tax-snapshot-projection-v1',
+      signatureHash: commit('authentication', sourceHash),
+    },
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version: 'consent_' + commit('consent-version', input.consent.version).slice(0, 40),
+      scopeHash: commit('consent-scope', input.consent.scopeHash),
+      state: 'active',
+    },
+    evidenceHashes: spec.evidenceValues.map(value => commit('evidence', value)),
+    ruleVersionIds: spec.ruleVersionIds,
+    policyVersionIds: ['tax-domain-event-minimization-v1'],
+    actionRefs: [
+      'tax_action_' + commit(
+        'action',
+        spec.actionId ?? spec.subjectId,
+      ).slice(0, 40),
+    ],
+  });
+}
+
+function gapEventSpec(gap: EvidenceGap, resolved = false): SnapshotEventSpec {
+  return {
+    kind: 'evidence.gap_changed',
+    state: resolved
+      ? 'verified'
+      : gap.severity === 'blocking'
+        ? 'blocked'
+        : 'pending',
+    subjectId: gap.id,
+    sourceSystem: 'evidence_graph',
+    evidenceValues: strings(
+      gap.id,
+      gap.economicEventId,
+      ...gap.safeSourceReferenceIds,
+    ),
+    ruleVersionIds: ['tax-evidence-graph-v1'],
+    actionId: gap.actionId,
+    transitionHash: hashCanonical({ gap, resolved }),
+  };
+}
+
+function obligationEventSpec(obligation: TaxObligation): SnapshotEventSpec {
+  return {
+    kind: 'obligation.due',
+    state: obligation.applicability === 'applicable' ? 'ready' : 'blocked',
+    subjectId: obligation.id,
+    sourceSystem: 'tax_engine',
+    evidenceValues: strings(
+      obligation.id,
+      obligation.dueAt,
+      obligation.applicability,
+    ),
+    ruleVersionIds: obligation.ruleVersionIds,
+    actionId: obligation.actionId,
+    transitionHash: hashCanonical({
+      id: obligation.id,
+      dueAt: obligation.dueAt,
+      applicability: obligation.applicability,
+      preparationState: obligation.preparationState,
+      submissionState: obligation.submissionState,
+      satisfactionState: obligation.satisfactionState,
+      ruleVersionIds: obligation.ruleVersionIds,
+      actionId: obligation.actionId,
+    }),
+  };
+}
+
+function isDueObligation(obligation: TaxObligation, asOf: number): boolean {
+  if (
+    obligation.applicability === 'not_applicable'
+    || obligation.dueAt === null
+    || obligation.submissionState === 'accepted'
+    || obligation.satisfactionState === 'satisfied'
+  ) return false;
+  const dueAt = Date.parse(obligation.dueAt);
+  if (!Number.isFinite(dueAt)) throw new Error('TAX_DOMAIN_EVENT_OBLIGATION_DUE_AT_INVALID');
+  return dueAt <= asOf;
 }
 
 function authoritySpec(

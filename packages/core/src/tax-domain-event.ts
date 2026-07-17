@@ -23,7 +23,7 @@ export const TAX_DOMAIN_EVENT_KINDS_V1 = [
   'factura_e_feature_published',
 ] as const;
 
-const opaqueRefSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/)
+const opaqueRefSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/)
   .refine(value => !/^\d{9,}$/.test(value), 'Opaque references cannot be raw identifiers');
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const isoDateTimeSchema = z.iso.datetime({ offset: true });

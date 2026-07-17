@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { createFacturaEAgentRun } from '@tax-engine/core';
+import { createFacturaEAgentRun, demoSnapshot } from '@tax-engine/core';
 import type {
   ArcaOnboardingEventV1,
   ArcaOnboardingRunV1,
@@ -13,6 +13,7 @@ import {
   createArcaOnboardingTaxDomainEvent,
   createConsentRevokedTaxDomainEvent,
   createFacturaEAgentTaxDomainEvents,
+  createSnapshotTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
 
@@ -386,5 +387,94 @@ describe('TaxDomainEventV1 producer minimization', () => {
     };
     expect(createFacturaEAgentTaxDomainEvents(otherWorkspace)[0]?.eventId)
       .not.toBe(createFacturaEAgentTaxDomainEvents(input)[0]?.eventId);
+  });
+
+  test('publishes only changed evidence gaps and obligations that are actually due', async () => {
+    const base = await demoSnapshot();
+    const gap = {
+      id: 'gap:invoice:opaque',
+      kind: 'factura_e_without_collection_evidence' as const,
+      severity: 'blocking' as const,
+      economicEventId: 'economic-event:opaque',
+      safeSourceReferenceIds: ['provider-reference-raw'],
+      actionId: 'resolve-evidence-gap',
+    };
+    const obligation = {
+      ...base.obligations[0]!,
+      id: 'obligation:opaque',
+      dueAt: '2026-07-16T12:00:00.000Z',
+      applicability: 'applicable' as const,
+      submissionState: 'not_submitted' as const,
+      satisfactionState: 'outstanding' as const,
+    };
+    const snapshot = {
+      ...base,
+      workspaceId: 'workspace_opaque_1',
+      evidenceCoverage: {
+        ...base.evidenceCoverage,
+        gaps: [gap],
+      },
+      obligations: [
+        obligation,
+        { ...obligation, id: 'obligation:future', dueAt: '2026-07-18T12:00:00.000Z' },
+      ],
+    };
+    const common = {
+      snapshot,
+      projectionKey: 'annual:2026',
+      asOf: T0,
+      generatedAt: T0,
+      consent: { version: 'consent-raw-v1', scopeHash: RAW_SCOPE_HASH },
+      commitmentSecret: SECRET,
+    };
+    const events = createSnapshotTaxDomainEvents({
+      ...common,
+      previousSnapshot: null,
+      previousAsOf: null,
+    });
+    expect(events.map(event => [event.kind, event.state])).toEqual([
+      ['evidence.gap_changed', 'blocked'],
+      ['obligation.due', 'ready'],
+    ]);
+    expect(events.every(event => event.source.verifiedAt === T0)).toBe(true);
+    const serialized = JSON.stringify(events);
+    for (const forbidden of [
+      gap.id,
+      gap.economicEventId,
+      gap.safeSourceReferenceIds[0]!,
+      obligation.id,
+      RAW_SCOPE_HASH,
+      'consent-raw-v1',
+    ]) expect(serialized).not.toContain(forbidden);
+
+    expect(createSnapshotTaxDomainEvents({
+      ...common,
+      previousSnapshot: snapshot,
+      previousAsOf: T0,
+    })).toEqual([]);
+    const resolved = createSnapshotTaxDomainEvents({
+      ...common,
+      snapshot: {
+        ...snapshot,
+        evidenceCoverage: { ...snapshot.evidenceCoverage, gaps: [] },
+      },
+      previousSnapshot: snapshot,
+      previousAsOf: T0,
+    });
+    expect(resolved).toEqual([
+      expect.objectContaining({
+        kind: 'evidence.gap_changed',
+        state: 'verified',
+      }),
+    ]);
+
+    const crossedDueAt = createSnapshotTaxDomainEvents({
+      ...common,
+      previousSnapshot: snapshot,
+      previousAsOf: '2026-07-16T11:59:59.000Z',
+    });
+    expect(crossedDueAt).toEqual([
+      expect.objectContaining({ kind: 'obligation.due', state: 'ready' }),
+    ]);
   });
 });

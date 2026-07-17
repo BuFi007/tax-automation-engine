@@ -44,6 +44,7 @@ import {
   createArcaOnboardingTaxDomainEvent,
   createConsentRevokedTaxDomainEvent,
   createFacturaEAgentTaxDomainEvents,
+  createSnapshotTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
 
@@ -1220,14 +1221,17 @@ export class TaxProfileStore {
       if (!configured || configured.configHash !== input.expectedProjectionConfigHash) {
         throw new Error('TAX_SNAPSHOT_CONFIG_VERSION_CONFLICT');
       }
-      const latestAsOf = this.#db.query<{ as_of: string }, [string, string, string]>(`
-        SELECT as_of
+      const latestSnapshot = this.#db.query<{
+        as_of: string;
+        snapshot_json: string;
+      }, [string, string, string]>(`
+        SELECT as_of, snapshot_json
         FROM tax_widget_snapshots
         WHERE workspace_id = ? AND projection_key = ? AND projection_config_hash = ?
         ORDER BY rowid DESC
         LIMIT 1
-      `).get(input.snapshot.workspaceId, projectionKey, input.expectedProjectionConfigHash)?.as_of;
-      if (latestAsOf && parseInstant(input.projection.asOf) < parseInstant(latestAsOf)) {
+      `).get(input.snapshot.workspaceId, projectionKey, input.expectedProjectionConfigHash);
+      if (latestSnapshot && parseInstant(input.projection.asOf) < parseInstant(latestSnapshot.as_of)) {
         throw new Error('TAX_SNAPSHOT_AS_OF_REGRESSION');
       }
       const snapshotHash = hashCanonical(input.snapshot);
@@ -1268,6 +1272,33 @@ export class TaxProfileStore {
         WHERE workspace_id = ? AND projection_key = ? AND snapshot_hash = ? AND evidence_generation = ?
       `).get(input.snapshot.workspaceId, projectionKey, snapshotHash, input.expectedEvidenceGeneration);
       if (!stored) throw new Error('TAX_SNAPSHOT_STORAGE_CONFLICT');
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.snapshot.workspaceId);
+      if (consent) {
+        const domainEvents = createSnapshotTaxDomainEvents({
+          snapshot: input.snapshot,
+          previousSnapshot: latestSnapshot
+            ? JSON.parse(latestSnapshot.snapshot_json) as TaxWidgetSnapshotV1
+            : null,
+          previousAsOf: latestSnapshot?.as_of ?? null,
+          projectionKey,
+          asOf: input.projection.asOf,
+          generatedAt: input.generatedAt,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        for (const domainEvent of domainEvents) {
+          this.#appendTaxDomainEventInTransaction(domainEvent, input.generatedAt);
+        }
+      }
       return { ...this.#snapshotReceipt(stored, input.generatedAt), replayed: false };
     })();
   }

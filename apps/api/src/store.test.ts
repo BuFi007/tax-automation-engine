@@ -972,6 +972,81 @@ describe('append-only tax storage', () => {
       .not.toContain('mandate:accountant-fx:1');
     store.close();
   });
+
+  test('commits changed gaps and actually-due obligations with the durable snapshot', async () => {
+    const store = new TaxProfileStore(
+      ':memory:',
+      'test-tax-domain-event-commitment-secret-v1',
+    );
+    const base = await demoSnapshot();
+    store.confirm({
+      profile: base.profile,
+      expectedVersion: null,
+      actorId: 'user:owner',
+      occurredAt: '2026-07-10T00:00:00.000Z',
+    });
+    grantConsent(store, ['bank:1'], base.workspaceId);
+    const configured = store.configureSnapshotProjection({
+      configuration: {
+        version: 'tax-snapshot-projection-configuration-v1',
+        workspaceId: base.workspaceId,
+        period: base.period,
+        displayCurrency: base.displayCurrency,
+        dataScope: { mode: 'all_connected' },
+      },
+      expectedConfigHash: null,
+      actorId: 'user:owner',
+      configuredAt: '2026-07-10T00:01:00.000Z',
+    });
+    const due = {
+      ...base.obligations[0]!,
+      id: 'obligation:due:opaque',
+      dueAt: '2026-07-16T12:00:00.000Z',
+      applicability: 'applicable' as const,
+      submissionState: 'not_submitted' as const,
+      satisfactionState: 'outstanding' as const,
+    };
+    const snapshot = {
+      ...base,
+      inputHash: hashCanonical('snapshot-with-domain-events'),
+      evidenceCoverage: {
+        ...base.evidenceCoverage,
+        gaps: [{
+          id: 'gap:opaque',
+          kind: 'expense_without_receipt' as const,
+          severity: 'warning' as const,
+          economicEventId: 'economic-event:opaque',
+          safeSourceReferenceIds: ['source-reference-opaque'],
+          actionId: 'resolve-gap',
+        }],
+      },
+      obligations: [due],
+    };
+    store.saveTaxWidgetSnapshot({
+      snapshot,
+      projection: {
+        version: 'test-projection',
+        asOf: '2026-07-17T00:00:00.000Z',
+        validUntil: null,
+      } as unknown as TaxEvidencePresentationProjectionV1,
+      expectedEvidenceGeneration: store.getEvidenceGeneration(base.workspaceId),
+      expectedProjectionConfigHash: configured.configHash,
+      generatedAt: '2026-07-17T00:00:00.000Z',
+    });
+    expect(store.listPendingTaxDomainEvents().map(event => [event.kind, event.state]))
+      .toEqual([
+        ['evidence.gap_changed', 'pending'],
+        ['obligation.due', 'ready'],
+      ]);
+    const serialized = JSON.stringify(store.listPendingTaxDomainEvents());
+    for (const forbidden of [
+      'gap:opaque',
+      'economic-event:opaque',
+      'source-reference-opaque',
+      'obligation:due:opaque',
+    ]) expect(serialized).not.toContain(forbidden);
+    store.close();
+  });
 });
 
 function evidenceBatch(sequence: number, records: readonly TaxEvidenceRecord[]): TaxEvidenceBatchV1 {
@@ -1086,8 +1161,15 @@ function invoiceEvidenceRecord(
   };
 }
 
-function grantConsent(store: TaxProfileStore, sourceIds: readonly string[]): void {
-  const event = consentLifecycleEvent(1, 'grant', sourceIds, '00000000-0000-4000-8000-000000000001');
+function grantConsent(
+  store: TaxProfileStore,
+  sourceIds: readonly string[],
+  workspaceId = 'workspace:1',
+): void {
+  const event = {
+    ...consentLifecycleEvent(1, 'grant', sourceIds, '00000000-0000-4000-8000-000000000001'),
+    workspaceId,
+  };
   expect(store.appendEvidenceConsentEvent(event)).toEqual(expect.objectContaining({ replayed: false }));
 }
 

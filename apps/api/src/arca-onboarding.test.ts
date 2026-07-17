@@ -82,10 +82,8 @@ describe('ARCA onboarding API service', () => {
     expect(JSON.stringify(completed.run)).not.toContain('vault-only');
     expect(vault.storedPayload).toEqual({ rawProofMarker: 'vault-only' });
     expect(service.listEvents(onboardingId).map(event => event.action)).toContain('record_zk_evidence');
-    expect(store.listPendingTaxDomainEvents().map(event => event.kind).sort()).toEqual([
-      'arca.api_verification_completed',
-      'reclaim.proof_verified',
-    ].sort());
+    expect(store.listPendingTaxDomainEvents().map(event => event.kind).sort().join(','))
+      .toBe('arca.api_verification_completed,reclaim.proof_verified');
 
     const replay = await service.ingestReclaimCallback('reclaim-onboarding-session', { rawProofMarker: 'vault-only' }, now);
     expect(replay.replayed).toBe(true);
