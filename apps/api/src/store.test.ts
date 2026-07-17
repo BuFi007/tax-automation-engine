@@ -23,6 +23,7 @@ import type {
 
 import { resolveTaxEngineDatabasePath, TaxProfileStore } from './store';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
+import { createConsentRevokedTaxDomainEvent } from './tax-domain-event-factory';
 
 describe('tax storage durability configuration', () => {
   test('keeps the in-memory default for local development and tests', () => {
@@ -257,6 +258,15 @@ describe('append-only tax storage', () => {
     store.appendEvidenceConsentEvent(granted);
     store.appendEvidenceConsentEvent(revoked);
 
+    expect(store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        kind: 'consent.revoked',
+        workspaceId: 'workspace:1',
+        state: 'revoked',
+        consent: expect.objectContaining({ state: 'revoked' }),
+      }),
+    ]);
+
     expect(() => store.appendEvidenceConsentEvent(consentLifecycleEvent(
       3,
       'grant',
@@ -265,6 +275,27 @@ describe('append-only tax storage', () => {
     ))).toThrow('EVIDENCE_CONSENT_VERSION_SCOPE_CONFLICT');
     expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
       expect.objectContaining({ version: 'consent-v1', revokedAt: revoked.occurredAt }),
+    ]);
+  });
+
+  test('rolls back consent revocation when its domain outbox append conflicts', () => {
+    const commitmentSecret = 'atomic-tax-domain-event-commitment-secret-v1';
+    const store = new TaxProfileStore(':memory:', commitmentSecret);
+    const granted = consentLifecycleEvent(1, 'grant', ['bank:1'], '00000000-0000-4000-8000-000000000011');
+    const revoked = consentLifecycleEvent(2, 'revoke', ['bank:1'], '00000000-0000-4000-8000-000000000012');
+    store.appendEvidenceConsentEvent(granted);
+    const conflicting = createConsentRevokedTaxDomainEvent({
+      event: revoked,
+      commitmentSecret,
+      eventId: '00000000-0000-4000-8000-000000000013',
+    });
+    if (!conflicting) throw new Error('Expected revocation domain event');
+    store.appendTaxDomainEvent(conflicting, revoked.occurredAt);
+
+    expect(() => store.appendEvidenceConsentEvent(revoked))
+      .toThrow('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+    expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
+      expect.objectContaining({ version: 'consent-v1', revokedAt: null }),
     ]);
   });
 

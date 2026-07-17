@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 
-import { hashCanonical, type ArcaOnboardingRunV1 } from '@tax-engine/core';
+import {
+  hashCanonical,
+  hashTaxEvidenceConsentScope,
+  type ArcaOnboardingRunV1,
+} from '@tax-engine/core';
 
 import { ArcaOnboardingService } from './arca-onboarding';
 import type {
@@ -19,6 +23,7 @@ const hash = (value: string) => hashCanonical(value);
 describe('ARCA onboarding API service', () => {
   test('completes WSFEX API verification only with an active, authority-bound FEEWS point', async () => {
     const store = new TaxProfileStore(':memory:');
+    grantTaxWorkspaceConsent(store);
     const service = new ArcaOnboardingService(store, null, null, false, new FakePointOfSaleGateway([4]));
     service.createRun({
       onboardingId, workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation',
@@ -32,10 +37,17 @@ describe('ARCA onboarding API service', () => {
     expect(result.output).toEqual(expect.objectContaining({ state: 'recorded', activePoints: [4] }));
     expect(result.run.currentStep).toBe('zk_evidence');
     expect(result.run.apiVerification.wsfex).toBe(true);
+    expect(store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        kind: 'arca.api_verification_completed',
+        workspaceId: 'workspace-1',
+      }),
+    ]);
   });
 
   test('rejects WSFEX API evidence from a different represented taxpayer binding', async () => {
     const store = new TaxProfileStore(':memory:');
+    grantTaxWorkspaceConsent(store);
     const service = new ArcaOnboardingService(store, null, null, false, new FakePointOfSaleGateway([4], hash('other-cuit')));
     service.createRun({
       onboardingId, workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation',
@@ -50,6 +62,7 @@ describe('ARCA onboarding API service', () => {
 
   test('persists the deterministic flow, verifies Reclaim, and retains only custody metadata', async () => {
     const store = new TaxProfileStore(':memory:');
+    grantTaxWorkspaceConsent(store);
     const gateway = new FakeOnboardingReclaimGateway();
     const vault = new FakeOnboardingProofVault();
     const service = new ArcaOnboardingService(store, gateway, vault, true);
@@ -69,6 +82,10 @@ describe('ARCA onboarding API service', () => {
     expect(JSON.stringify(completed.run)).not.toContain('vault-only');
     expect(vault.storedPayload).toEqual({ rawProofMarker: 'vault-only' });
     expect(service.listEvents(onboardingId).map(event => event.action)).toContain('record_zk_evidence');
+    expect(store.listPendingTaxDomainEvents().map(event => event.kind)).toEqual([
+      'arca.api_verification_completed',
+      'reclaim.proof_verified',
+    ]);
 
     const replay = await service.ingestReclaimCallback('reclaim-onboarding-session', { rawProofMarker: 'vault-only' }, now);
     expect(replay.replayed).toBe(true);
@@ -86,6 +103,26 @@ describe('ARCA onboarding API service', () => {
     expect(service.ingestReclaimCallback('reclaim-onboarding-session', {}, now)).rejects.toThrow('RECLAIM_PROOF_VAULT_CONFIGURATION_REQUIRED');
   });
 });
+
+function grantTaxWorkspaceConsent(store: TaxProfileStore): void {
+  const sourceIds = ['arca-onboarding'];
+  store.appendEvidenceConsentEvent({
+    version: 'tax-evidence-consent-event-v1',
+    eventId: '70000000-0000-4000-8000-000000000001',
+    workspaceId: 'workspace-1',
+    sequence: 1,
+    action: 'grant',
+    authoritySource: 'desk_subscription',
+    actorReferenceHash: hash('user:owner'),
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version: 'consent-v1',
+      scopeHash: hashTaxEvidenceConsentScope('consent-v1', sourceIds),
+      sourceIds,
+    },
+    occurredAt: now,
+  });
+}
 
 function advanceToApiVerification(service: ArcaOnboardingService): ArcaOnboardingRunV1 {
   advanceToApiVerificationStep(service);
