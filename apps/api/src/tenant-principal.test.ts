@@ -189,6 +189,13 @@ describe('tax tenant principal', () => {
     );
     expect(taxTenantPrincipalSecretForCapability('profile:confirm', secrets)).toBe('user-secret');
   });
+
+  test('reserves external accountant decisions for their dedicated capability', () => {
+    expect(requiredTaxTenantPrincipalCapability('POST', '/v1/accountant-decisions'))
+      .toBe('accountant:decision');
+    expect(requiredTaxTenantPrincipalCapability('GET', '/v1/accountant-decisions'))
+      .toBeNull();
+  });
 });
 
 function signedRequest(workspaceId: string, actorId: string, capability: TaxTenantCapability, expiresAt: string): Request {

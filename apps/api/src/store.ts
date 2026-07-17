@@ -14,6 +14,8 @@ import type {
   ArcaOnboardingEventV1,
   AccountantMandateV1,
   AccountantMandateScope,
+  ExternalAccountantDecisionReceiptV1,
+  ExternalAccountantDecisionV1,
   ArcaOnboardingReclaimSessionV1,
   ArcaOnboardingRunV1,
   ComplianceWorkspaceState,
@@ -37,7 +39,11 @@ import type {
 import {
   assertTaxEvidenceBatchV1,
   assertActiveAccountantMandate,
+  accountantMandateScopeForDecision,
+  assertExternalAccountantDecisionV1,
+  externalAccountantDecisionReceiptV1Schema,
   hashCanonical,
+  hashExternalAccountantDecisionV1,
   assertTaxDomainEventV1,
   hashTaxDomainEventV1,
   hashTaxEvidenceBatch,
@@ -50,6 +56,7 @@ import {
   accountantMandateScopeForFacturaEEvent,
   createArcaOnboardingTaxDomainEvent,
   createConsentRevokedTaxDomainEvent,
+  createExternalAccountantDecisionTaxDomainEvent,
   createFacturaEAgentTaxDomainEvents,
   createSnapshotTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
@@ -150,6 +157,24 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS accountant_mandates_workspace_actor
         ON accountant_mandates (workspace_id, accountant_actor_id, expires_at);
+      CREATE TABLE IF NOT EXISTS external_accountant_decisions (
+        decision_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        accountant_actor_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject_ref TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        decision_hash TEXT NOT NULL,
+        decision_json TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        recorded_at TEXT NOT NULL,
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS external_accountant_decisions_subject
+        ON external_accountant_decisions (
+          workspace_id, subject_kind, subject_ref, occurred_at DESC
+        );
       CREATE TABLE IF NOT EXISTS evidence_records (
         workspace_id TEXT NOT NULL,
         source_id TEXT NOT NULL,
@@ -696,6 +721,162 @@ export class TaxProfileStore {
   }> {
     const event = assertTaxDomainEventV1(eventInput);
     return this.#db.transaction(() => this.#appendTaxDomainEventInTransaction(event, appendedAt))();
+  }
+
+  /**
+   * Record an outside accountant's decision and its minimized agent event in
+   * one transaction. The accountant workspace owns the decision; Tax verifies
+   * mandate, consent, ordering and replay before it listens.
+   */
+  recordExternalAccountantDecision(
+    decisionInput: ExternalAccountantDecisionV1,
+    recordedAtInput: string,
+    authenticationProofHash: string,
+  ): ExternalAccountantDecisionReceiptV1 {
+    const decision = assertExternalAccountantDecisionV1(decisionInput);
+    const recordedAt = z.iso.datetime({ offset: true }).parse(recordedAtInput);
+    if (!/^[a-f0-9]{64}$/.test(authenticationProofHash)) {
+      throw new Error('ACCOUNTANT_DECISION_AUTHENTICATION_PROOF_INVALID');
+    }
+    const decisionHash = hashExternalAccountantDecisionV1(decision);
+    return this.#db.transaction(() => {
+      const existingById = this.#db.query<{
+        decision_hash: string;
+        event_id: string;
+        recorded_at: string;
+        decision_json: string;
+      }, [string]>(`
+        SELECT decision_hash, event_id, recorded_at, decision_json
+        FROM external_accountant_decisions
+        WHERE decision_id = ?
+      `).get(decision.decisionId);
+      if (existingById) {
+        if (existingById.decision_hash !== decisionHash) {
+          throw new Error('ACCOUNTANT_DECISION_IDEMPOTENCY_CONFLICT');
+        }
+        return externalAccountantDecisionReceiptV1Schema.parse({
+          version: 'external-accountant-decision-receipt-v1',
+          decisionId: decision.decisionId,
+          workspaceId: decision.workspaceId,
+          eventId: existingById.event_id,
+          decisionHash,
+          outcome: decision.outcome,
+          recordedAt: existingById.recorded_at,
+          replayed: true,
+        });
+      }
+      const existingByIdempotency = this.#db.query<{
+        decision_hash: string;
+      }, [string, string]>(`
+        SELECT decision_hash
+        FROM external_accountant_decisions
+        WHERE workspace_id = ? AND idempotency_key = ?
+      `).get(decision.workspaceId, decision.idempotencyKey);
+      if (existingByIdempotency) {
+        throw new Error('ACCOUNTANT_DECISION_IDEMPOTENCY_CONFLICT');
+      }
+
+      const latest = this.#db.query<{
+        decision_id: string;
+        occurred_at: string;
+      }, [string, string, string]>(`
+        SELECT decision_id, occurred_at
+        FROM external_accountant_decisions
+        WHERE workspace_id = ? AND subject_kind = ? AND subject_ref = ?
+        ORDER BY occurred_at DESC, decision_id DESC
+        LIMIT 1
+      `).get(decision.workspaceId, decision.subject.kind, decision.subject.ref);
+      if (latest) {
+        const comparison = Date.parse(decision.occurredAt) - Date.parse(latest.occurred_at);
+        if (comparison < 0) throw new Error('ACCOUNTANT_DECISION_STALE');
+        if (comparison === 0) throw new Error('ACCOUNTANT_DECISION_ORDER_CONFLICT');
+      }
+
+      const mandate = this.getAccountantMandate(decision.mandateId);
+      if (!mandate) throw new Error('ACCOUNTANT_MANDATE_NOT_FOUND');
+      assertActiveAccountantMandate(mandate, {
+        workspaceId: decision.workspaceId,
+        accountantActorId: decision.accountantActorId,
+        scope: accountantMandateScopeForDecision(decision),
+        at: decision.occurredAt,
+      });
+
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+        source_ids_json: string;
+      }, [string, string, string, string]>(`
+        SELECT version, scope_hash, source_ids_json
+        FROM evidence_consent_grants
+        WHERE workspace_id = ?
+          AND purpose = 'tax_workspace_processing'
+          AND granted_at <= ?
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND (revoked_at IS NULL OR revoked_at > ?)
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(
+        decision.workspaceId,
+        decision.occurredAt,
+        decision.occurredAt,
+        decision.occurredAt,
+      );
+      if (
+        !consent
+        || !(JSON.parse(consent.source_ids_json) as unknown[]).includes('accountant-workspace')
+      ) throw new Error('ACCOUNTANT_DECISION_CONSENT_REQUIRED');
+
+      const domainEvent = createExternalAccountantDecisionTaxDomainEvent({
+        decision,
+        consent: { version: consent.version, scopeHash: consent.scope_hash },
+        authenticationProofHash,
+        verifiedAt: recordedAt,
+        commitmentSecret: this.#domainEventCommitmentSecret,
+      });
+      this.#db.query(`
+        INSERT INTO external_accountant_decisions (
+          decision_id, workspace_id, accountant_actor_id, idempotency_key,
+          subject_kind, subject_ref, occurred_at, decision_hash, decision_json,
+          event_id, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        decision.decisionId,
+        decision.workspaceId,
+        decision.accountantActorId,
+        decision.idempotencyKey,
+        decision.subject.kind,
+        decision.subject.ref,
+        decision.occurredAt,
+        decisionHash,
+        JSON.stringify(decision),
+        domainEvent.eventId,
+        recordedAt,
+      );
+      this.#appendTaxDomainEventInTransaction(domainEvent, recordedAt);
+      return externalAccountantDecisionReceiptV1Schema.parse({
+        version: 'external-accountant-decision-receipt-v1',
+        decisionId: decision.decisionId,
+        workspaceId: decision.workspaceId,
+        eventId: domainEvent.eventId,
+        decisionHash,
+        outcome: decision.outcome,
+        recordedAt,
+        replayed: false,
+      });
+    })();
+  }
+
+  getExternalAccountantDecision(
+    decisionId: string,
+  ): ExternalAccountantDecisionV1 | null {
+    const row = this.#db.query<{ decision_json: string }, [string]>(`
+      SELECT decision_json
+      FROM external_accountant_decisions
+      WHERE decision_id = ?
+    `).get(decisionId);
+    return row
+      ? assertExternalAccountantDecisionV1(JSON.parse(row.decision_json) as unknown)
+      : null;
   }
 
   #appendTaxDomainEventInTransaction(

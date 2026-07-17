@@ -41,4 +41,16 @@ describe('Tax API production composition contract', () => {
       /arcaProductionAuthority && authorityRemoteEffectsEnabled && !taxOwnedAuthorityPreparation/
     );
   });
+
+  test('reads an external accountant decision once and verifies a dedicated body-bound principal', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toContain('TAX_ENGINE_ACCOUNTANT_DECISION_INGRESS_ENABLED');
+    expect(source).toContain('TAX_ENGINE_ACCOUNTANT_DECISION_PRINCIPAL_HMAC_SECRET');
+    expect(source).toMatch(
+      /url\.pathname === '\/v1\/accountant-decisions'[\s\S]*?readBoundedBody\([\s\S]*?verifyBoundTaxTenantPrincipalForRawBody\([\s\S]*?handleExternalAccountantDecisionRoute\(/,
+    );
+    expect(source).toContain("'accountant:decision'");
+    expect(source).toContain("url.pathname === '/v1/accountant-decisions'");
+    expect(source).toContain('externalAccountantDecisionIngress: accountantDecisionIngressEnabled');
+  });
 });
