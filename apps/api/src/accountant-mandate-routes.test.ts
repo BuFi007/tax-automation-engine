@@ -52,6 +52,56 @@ describe('accountant mandate routes', () => {
     });
     await expect(call(store, 'POST', '/v1/accountant-mandates/mandate%3Aother/revoke')).rejects.toThrow('ACCOUNTANT_MANDATE_WORKSPACE_UNAUTHORIZED');
   });
+
+  test('projects only active review-mandated clients for the exact firm actor', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const portfolioPrincipal: TaxTenantPrincipalV2 = {
+      ...principal,
+      workspaceId: 'firm:1',
+      actorId: 'accountant:1',
+      capability: 'accountant:portfolio',
+    };
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1',
+      mandateId: 'mandate:review',
+      workspaceId: 'workspace:1',
+      accountantActorId: 'accountant:1',
+      accountantOrganizationId: 'firm:1',
+      scopes: ['review_tax_obligation'],
+      grantedByActorId: 'user:owner',
+      grantedAt: '2026-07-15T11:00:00.000Z',
+      expiresAt: '2026-08-15T12:00:00.000Z',
+      revokedAt: null,
+    });
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1',
+      mandateId: 'mandate:other-firm',
+      workspaceId: 'workspace:other',
+      accountantActorId: 'accountant:1',
+      accountantOrganizationId: 'firm:other',
+      scopes: ['review_tax_obligation'],
+      grantedByActorId: 'user:other',
+      grantedAt: '2026-07-15T11:00:00.000Z',
+      expiresAt: '2026-08-15T12:00:00.000Z',
+      revokedAt: null,
+    });
+
+    const response = await handleAccountantMandateRoute(
+      new Request('http://localhost/v1/accountant-portfolio'),
+      new URL('http://localhost/v1/accountant-portfolio'),
+      store,
+      portfolioPrincipal,
+      NOW,
+    );
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get('cache-control')).toBe('private, no-store');
+    expect((await response?.json() as any).data).toMatchObject({
+      accountantActorId: 'accountant:1',
+      accountantOrganizationId: 'firm:1',
+      totals: { authorizedClientCount: 0 },
+      clients: [],
+    });
+  });
 });
 
 async function call(store: TaxProfileStore, method: string, path: string, body?: unknown): Promise<Response> {

@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import type { AccountantMandateScope, AccountantMandateV1 } from '@tax-engine/core';
+import {
+  buildAccountantPortfolioProjection,
+  type AccountantClientCaseSummaryV1,
+  type AccountantMandateScope,
+  type AccountantMandateV1,
+} from '@tax-engine/core';
 
 import { readBoundedBody } from './bounded-body';
 import type { TaxProfileStore } from './store';
@@ -29,6 +34,55 @@ export async function handleAccountantMandateRoute(
   principal: TaxTenantPrincipalV2 | null,
   now = new Date(),
 ): Promise<Response | null> {
+  if (request.method === 'GET' && url.pathname === '/v1/accountant-portfolio') {
+    if (!principal) throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
+    const accountantOrganizationId = principal.workspaceId;
+    const mandates = store.listAccountantMandatesForPortfolio(
+      principal.actorId,
+      accountantOrganizationId,
+    );
+    const workspaceIds = [...new Set(mandates.map(mandate => mandate.workspaceId))];
+    const clientCases = workspaceIds.flatMap(workspaceId => {
+      try {
+        const receipt = store.getLatestTaxWidgetSnapshot(workspaceId, now.toISOString());
+        if (!receipt) return [];
+        const obligations = receipt.snapshot.obligations;
+        const summary: AccountantClientCaseSummaryV1 = {
+          version: 'accountant-client-case-summary-v1',
+          workspaceId,
+          nextDueAt: obligations
+            .map(obligation => obligation.dueAt)
+            .filter((dueAt): dueAt is string => dueAt !== null)
+            .sort()[0] ?? null,
+          outstandingObligationCount: obligations.filter(
+            obligation => !['not_due', 'satisfied'].includes(obligation.satisfactionState),
+          ).length,
+          professionalReviewCount: obligations.filter(
+            obligation => obligation.preparationState === 'under_accountant_review',
+          ).length,
+          clientApprovalCount: obligations.filter(
+            obligation => obligation.preparationState === 'accountant_approved'
+              && obligation.submissionState === 'ready_for_submission',
+          ).length,
+        };
+        return [summary];
+      } catch {
+        return [];
+      }
+    });
+    const projection = buildAccountantPortfolioProjection({
+      accountantActorId: principal.actorId,
+      accountantOrganizationId,
+      at: now.toISOString(),
+      mandates,
+      clientCases,
+    });
+    return json({ data: projection }, 200, {
+      'cache-control': 'private, no-store',
+      vary: 'authorization, x-tax-tenant-principal, x-tax-tenant-signature',
+    });
+  }
+
   if (request.method === 'POST' && url.pathname === '/v1/accountant-mandates') {
     if (!principal) throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
     const body = grantSchema.parse(JSON.parse(await readBoundedBody(request, 64 * 1024, 'ACCOUNTANT_MANDATE_REQUEST_TOO_LARGE')) as unknown);
@@ -71,6 +125,9 @@ export async function handleAccountantMandateRoute(
   return null;
 }
 
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+function json(value: unknown, status = 200, headers: HeadersInit = {}): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
 }

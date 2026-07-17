@@ -2022,6 +2022,20 @@ export class TaxProfileStore {
     ).all(workspaceId).map(row => JSON.parse(row.mandate_json) as AccountantMandateV1);
   }
 
+  listAccountantMandatesForPortfolio(
+    accountantActorId: string,
+    accountantOrganizationId: string,
+  ): readonly AccountantMandateV1[] {
+    return this.#db.query<{ mandate_json: string }, [string]>(`
+      SELECT mandate_json
+      FROM accountant_mandates
+      WHERE accountant_actor_id = ?
+      ORDER BY workspace_id ASC, granted_at DESC, mandate_id ASC
+    `).all(accountantActorId)
+      .map(row => JSON.parse(row.mandate_json) as AccountantMandateV1)
+      .filter(mandate => mandate.accountantOrganizationId === accountantOrganizationId);
+  }
+
   requireAccountantMandate(input: Readonly<{
     mandateId: string;
     workspaceId: string;

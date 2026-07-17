@@ -162,6 +162,7 @@ describe('tax tenant principal', () => {
     expect(requiredTaxTenantPrincipalCapability('POST', '/v1/arca-onboarding/runs/run-1/point-of-sale-selection')).toBe('arca:onboard');
     expect(requiredTaxTenantPrincipalCapability('POST', '/v1/accountant-mandates')).toBe('accountant:mandate');
     expect(requiredTaxTenantPrincipalCapability('POST', '/v1/accountant-mandates/mandate-1/revoke')).toBe('accountant:mandate');
+    expect(requiredTaxTenantPrincipalCapability('GET', '/v1/accountant-portfolio')).toBe('accountant:portfolio');
     expect(requiredTaxTenantPrincipalCapability('GET', '/v1/snapshots/demo')).toBeNull();
   });
 
