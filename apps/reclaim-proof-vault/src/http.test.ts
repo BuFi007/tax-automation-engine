@@ -19,8 +19,9 @@ describe('proof-vault HTTP scopes', () => {
     const custody = await post(handler, '/v1/reclaim-proofs', 'w'.repeat(32), request());
     expect(custody.status).toBe(201);
     const receipt = await custody.json() as { opaqueReference: string };
-    expect((await post(handler, '/v1/reclaim-proofs/resolve', 'w'.repeat(32), { version: 'reclaim-proof-resolve-v1', opaqueReference: receipt.opaqueReference })).status).toBe(401);
-    expect((await post(handler, '/v1/reclaim-proofs/resolve', 'r'.repeat(32), { version: 'reclaim-proof-resolve-v1', opaqueReference: receipt.opaqueReference })).status).toBe(200);
+    expect((await post(handler, '/v1/reclaim-proofs/resolve', 'w'.repeat(32), { version: 'reclaim-proof-resolve-v2', workspaceId: 'workspace-1', opaqueReference: receipt.opaqueReference })).status).toBe(401);
+    expect((await post(handler, '/v1/reclaim-proofs/resolve', 'r'.repeat(32), { version: 'reclaim-proof-resolve-v2', workspaceId: 'workspace-2', opaqueReference: receipt.opaqueReference })).status).toBe(404);
+    expect((await post(handler, '/v1/reclaim-proofs/resolve', 'r'.repeat(32), { version: 'reclaim-proof-resolve-v2', workspaceId: 'workspace-1', opaqueReference: receipt.opaqueReference })).status).toBe(200);
     expect((await post(handler, '/v1/reclaim-proofs/erase', 'r'.repeat(32), { version: 'reclaim-proof-erase-v1', workspaceId: 'workspace-1', opaqueReference: receipt.opaqueReference, reason: 'request' })).status).toBe(401);
   });
 });

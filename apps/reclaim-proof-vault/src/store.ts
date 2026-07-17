@@ -97,9 +97,14 @@ export class ReclaimProofStore {
       encryptionVersion: ENCRYPTION_VERSION, retentionPolicyId: input.retentionPolicyId, storedAt: occurredAt };
   }
 
-  resolve(reference: string, occurredAt: string): Readonly<{ proofPayload: unknown; artifactHash: string; verifiedAt: string }> {
+  resolve(workspaceId: string, reference: string, occurredAt: string): Readonly<{ proofPayload: unknown; artifactHash: string; verifiedAt: string }> {
     const row = this.#db.query<ProofRow, [string]>('SELECT * FROM reclaim_proofs WHERE reference = ?').get(reference);
-    if (!row || row.erased_at || !row.wrapped_data_key) throw new Error('RECLAIM_PROOF_NOT_FOUND');
+    if (
+      !row
+      || row.workspace_id_hash !== hashCanonical(workspaceId)
+      || row.erased_at
+      || !row.wrapped_data_key
+    ) throw new Error('RECLAIM_PROOF_NOT_FOUND');
     if (Date.parse(row.expires_at) <= Date.parse(occurredAt)) {
       this.eraseRow(row, occurredAt, 'retention_expired');
       throw new Error('RECLAIM_PROOF_EXPIRED');

@@ -21,7 +21,7 @@ export function createProofVaultHandler(store: ReclaimProofStore, tokens: ProofV
       const body: unknown = JSON.parse(raw);
       if (url.pathname === '/v1/reclaim-proofs') return json(store.store(custodyRequestSchema.parse(body), occurredAt), 201);
       if (url.pathname === '/v1/reclaim-proofs/resolve') {
-        const input = proofResolveRequestSchema.parse(body); return json(store.resolve(input.opaqueReference, occurredAt));
+        const input = proofResolveRequestSchema.parse(body); return json(store.resolve(input.workspaceId, input.opaqueReference, occurredAt));
       }
       if (url.pathname === '/v1/reclaim-proofs/erase') {
         const input = proofEraseRequestSchema.parse(body); store.erase(input.workspaceId, input.opaqueReference, occurredAt, input.reason); return json({ erased: true });
