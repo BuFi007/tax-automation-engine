@@ -46,7 +46,8 @@ export const custodyReceiptSchema = z.object({
 }).strict();
 
 export const proofResolveRequestSchema = z.object({
-  version: z.literal('reclaim-proof-resolve-v1'),
+  version: z.literal('reclaim-proof-resolve-v2'),
+  workspaceId: z.string().min(1).max(200),
   opaqueReference: proofReferenceSchema,
 }).strict();
 
