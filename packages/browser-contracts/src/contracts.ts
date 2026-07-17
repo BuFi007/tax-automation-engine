@@ -656,6 +656,23 @@ export const taxWidgetSnapshotV1Schema = z.object({
   if (snapshot.cacheIdentity.caseRevision < 1) {
     context.addIssue({ code: 'custom', message: 'Cache identity requires a durable case revision', path: ['cacheIdentity', 'caseRevision'] });
   }
+  if (snapshot.authorityReadiness?.kind === 'ar_factura_e_onboarding'
+    && snapshot.profile.jurisdiction !== 'AR') {
+    context.addIssue({
+      code: 'custom',
+      message: 'Argentina authority readiness requires an Argentina profile',
+      path: ['authorityReadiness', 'kind'],
+    });
+  }
+  if (snapshot.authorityReadiness?.actionId !== null
+    && snapshot.authorityReadiness?.actionId !== undefined
+    && !snapshot.authorizedNextActions.includes(snapshot.authorityReadiness.actionId)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Authority action must be authorized by the same snapshot',
+      path: ['authorityReadiness', 'actionId'],
+    });
+  }
 });
 
 export const taxWidgetSnapshotReceiptV1Schema = z.object({

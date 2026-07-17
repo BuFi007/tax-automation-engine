@@ -66,3 +66,7 @@ safe action reference. It deliberately excludes onboarding IDs, taxpayer IDs,
 point-of-sale numbers, provider/session references, proof material, and raw
 authority evidence. Consumers must accept the optional field before Tax begins
 emitting it; absence means authority readiness was not projected.
+
+Package `0.8.1` fails closed when Argentina authority readiness is attached to
+a non-Argentina profile or references an action outside the snapshot's own
+authorized-next-action set. It does not add or expose any field.
