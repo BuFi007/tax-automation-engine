@@ -58,3 +58,11 @@ remain presentation-only and must not enter model context. Consumers accept
 the optional fields before the Tax producer emits them; missing fields mean
 that specialist conclusions are unavailable, never that an obligation is not
 applicable.
+
+Package `0.8.0` adds an optional, closed `authorityReadiness` summary to the
+Tax snapshot. The first supported kind is Argentina Factura E onboarding. It
+contains only bounded step/service states, timestamps, limitation codes, and a
+safe action reference. It deliberately excludes onboarding IDs, taxpayer IDs,
+point-of-sale numbers, provider/session references, proof material, and raw
+authority evidence. Consumers must accept the optional field before Tax begins
+emitting it; absence means authority readiness was not projected.
