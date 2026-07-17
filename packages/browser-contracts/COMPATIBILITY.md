@@ -81,3 +81,14 @@ Package `0.8.3` permits the successful intermediate `verified` state to carry
 no limitation while another bounded check is pending. Actionable, failed, and
 not-started states still require a named limitation; `ready` still requires all
 external prerequisites and no pending action.
+
+Package `0.9.0` adds optional, discriminated `jurisdictionProfileReadiness` to
+the Tax snapshot. The first supported pack is a privacy-minimized United States
+entity profile: closed entity/domicile/owner/classification/member/payroll
+states, one ISO formation subdivision, bounded state counts, accountant-review
+state, and closed limitations. It excludes taxpayer identifiers, owner
+countries, addresses, raw profile answers, monetary values, provider payloads,
+and filing conclusions. Filing applicability remains exclusively owned by
+closed obligations with rule-version citations. Consumers must accept this
+optional projection before Tax begins emitting it; absence means specialist
+profile readiness was not projected.

@@ -594,6 +594,112 @@ export const taxAuthorityReadinessV1Schema = z.object({
 
 export type TaxAuthorityReadinessV1 = z.infer<typeof taxAuthorityReadinessV1Schema>;
 
+export const TAX_JURISDICTION_PROFILE_READINESS_KINDS_V1 = [
+  'us_entity',
+] as const;
+
+export const TAX_JURISDICTION_PROFILE_LIMITATIONS_V1 = [
+  'US_PROFILE_INCOMPLETE',
+  'US_OWNER_STATUS_REVIEW_REQUIRED',
+  'US_FEDERAL_CLASSIFICATION_REVIEW_REQUIRED',
+  'US_ENTITY_STRUCTURE_REVIEW_REQUIRED',
+  'US_STATE_SCOPE_REVIEW_REQUIRED',
+  'US_PAYROLL_SCOPE_REVIEW_REQUIRED',
+  'US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+] as const;
+
+const usEntityProfileReadinessV1Schema = z.object({
+  version: z.literal('tax-jurisdiction-profile-readiness-v1'),
+  kind: z.literal('us_entity'),
+  state: z.enum(['incomplete', 'accountant_review', 'confirmed']),
+  entityStructure: z.enum([
+    'single_member_llc',
+    'multi_member_llc',
+    's_corporation',
+    'c_corporation',
+    'unclassified',
+  ]),
+  founderDomicileScope: z.enum(['us_domiciled', 'foreign_domiciled', 'unconfirmed']),
+  ownerUsPersonStatus: z.enum(['us_person', 'non_us_person', 'needs_review', 'unconfirmed']),
+  federalClassification: z.enum([
+    'disregarded_entity',
+    'partnership',
+    's_corp',
+    'c_corp',
+    'needs_review',
+    'unconfirmed',
+  ]),
+  memberStructure: z.enum(['single', 'multiple', 'not_applicable', 'unconfirmed']),
+  formationSubdivision: z.string().regex(/^US-[A-Z]{2}$/).nullable(),
+  operatingSubdivisionCount: z.number().int().nonnegative().max(100).nullable(),
+  salesSubdivisionCount: z.number().int().nonnegative().max(100).nullable(),
+  payrollState: z.enum(['present', 'absent', 'unconfirmed']),
+  accountantReviewRequired: z.boolean(),
+  limitationCodes: z.array(z.enum(TAX_JURISDICTION_PROFILE_LIMITATIONS_V1)).max(7),
+}).strict().superRefine((readiness, context) => {
+  if (new Set(readiness.limitationCodes).size !== readiness.limitationCodes.length) {
+    context.addIssue({ code: 'custom', message: 'US profile limitation codes must be unique', path: ['limitationCodes'] });
+  }
+
+  const unresolved = readiness.entityStructure === 'unclassified'
+    || readiness.founderDomicileScope === 'unconfirmed'
+    || ['needs_review', 'unconfirmed'].includes(readiness.ownerUsPersonStatus)
+    || ['needs_review', 'unconfirmed'].includes(readiness.federalClassification)
+    || readiness.memberStructure === 'unconfirmed'
+    || readiness.formationSubdivision === null
+    || readiness.operatingSubdivisionCount === null
+    || readiness.salesSubdivisionCount === null
+    || readiness.payrollState === 'unconfirmed';
+
+  const expectedMemberStructure = {
+    single_member_llc: 'single',
+    multi_member_llc: 'multiple',
+    s_corporation: 'not_applicable',
+    c_corporation: 'not_applicable',
+    unclassified: 'unconfirmed',
+  }[readiness.entityStructure];
+  const memberStructureCoherent = readiness.memberStructure === expectedMemberStructure;
+  const classificationCoherent = {
+    single_member_llc: ['disregarded_entity', 's_corp', 'c_corp'],
+    multi_member_llc: ['partnership', 's_corp', 'c_corp'],
+    s_corporation: ['s_corp'],
+    c_corporation: ['c_corp'],
+    unclassified: ['needs_review', 'unconfirmed'],
+  }[readiness.entityStructure].includes(readiness.federalClassification);
+  const sCorporationOwnerCoherent = !(
+    readiness.federalClassification === 's_corp'
+    && readiness.ownerUsPersonStatus === 'non_us_person'
+  );
+
+  if (readiness.state === 'confirmed') {
+    if (unresolved || !memberStructureCoherent || !classificationCoherent || !sCorporationOwnerCoherent) {
+      context.addIssue({ code: 'custom', message: 'Confirmed US profile readiness requires coherent, closed profile inputs', path: ['state'] });
+    }
+    if (readiness.accountantReviewRequired || readiness.limitationCodes.length > 0) {
+      context.addIssue({ code: 'custom', message: 'Confirmed US profile readiness cannot require review or carry limitations', path: ['accountantReviewRequired'] });
+    }
+    return;
+  }
+
+  if (!readiness.accountantReviewRequired || readiness.limitationCodes.length === 0) {
+    context.addIssue({ code: 'custom', message: 'Unconfirmed US profile readiness requires a named accountant-review boundary', path: ['limitationCodes'] });
+  }
+  if (readiness.state === 'incomplete'
+    && (!unresolved || !readiness.limitationCodes.includes('US_PROFILE_INCOMPLETE'))) {
+    context.addIssue({ code: 'custom', message: 'Incomplete US profile readiness requires unresolved inputs and its closed limitation', path: ['state'] });
+  }
+  if (readiness.state === 'accountant_review'
+    && !readiness.limitationCodes.includes('US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED')) {
+    context.addIssue({ code: 'custom', message: 'US accountant-review readiness requires its closed review limitation', path: ['limitationCodes'] });
+  }
+});
+
+export const taxJurisdictionProfileReadinessV1Schema = z.discriminatedUnion('kind', [
+  usEntityProfileReadinessV1Schema,
+]);
+
+export type TaxJurisdictionProfileReadinessV1 = z.infer<typeof taxJurisdictionProfileReadinessV1Schema>;
+
 export const taxWidgetSnapshotV1Schema = z.object({
   version: z.literal('tax-widget-snapshot-v1'),
   workspaceId: safeReferenceSchema,
@@ -634,6 +740,7 @@ export const taxWidgetSnapshotV1Schema = z.object({
   planningForecast: planningForecastV1Schema.optional(),
   supplementalEvidenceQuality: supplementalEvidenceQualityV1Schema.optional(),
   authorityReadiness: taxAuthorityReadinessV1Schema.optional(),
+  jurisdictionProfileReadiness: taxJurisdictionProfileReadinessV1Schema.optional(),
   authorizedNextActions: z.array(safeReferenceSchema).max(20),
   conclusions: z.array(conclusionV1Schema).max(500),
   warnings: z.array(z.string().max(500)).max(100),
@@ -676,6 +783,47 @@ export const taxWidgetSnapshotV1Schema = z.object({
       message: 'Authority action must be authorized by the same snapshot',
       path: ['authorityReadiness', 'actionId'],
     });
+  }
+  if (snapshot.jurisdictionProfileReadiness?.kind === 'us_entity') {
+    if (snapshot.profile.jurisdiction !== 'US') {
+      context.addIssue({
+        code: 'custom',
+        message: 'United States profile readiness requires a United States profile',
+        path: ['jurisdictionProfileReadiness', 'kind'],
+      });
+    }
+    const expectedStructureByRegime: Readonly<Record<string, TaxJurisdictionProfileReadinessV1['entityStructure']>> = {
+      llc_single_member: 'single_member_llc',
+      llc_single_member_domestic: 'single_member_llc',
+      llc_single_member_foreign_owned: 'single_member_llc',
+      llc_multi_member: 'multi_member_llc',
+      s_corp: 's_corporation',
+      c_corp: 'c_corporation',
+    };
+    const expectedStructure = expectedStructureByRegime[snapshot.profile.regimeId];
+    if (!expectedStructure
+      && snapshot.jurisdictionProfileReadiness.entityStructure !== 'unclassified') {
+      context.addIssue({
+        code: 'custom',
+        message: 'An unsupported United States regime cannot carry a classified entity structure',
+        path: ['jurisdictionProfileReadiness', 'entityStructure'],
+      });
+    } else if (expectedStructure
+      && snapshot.jurisdictionProfileReadiness.entityStructure !== expectedStructure) {
+      context.addIssue({
+        code: 'custom',
+        message: 'United States profile readiness structure must agree with the selected regime',
+        path: ['jurisdictionProfileReadiness', 'entityStructure'],
+      });
+    }
+    if (snapshot.jurisdictionProfileReadiness.state === 'confirmed'
+      && (!expectedStructure || snapshot.profile.confirmationState !== 'accountant_confirmed')) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Confirmed United States profile readiness requires a supported, accountant-confirmed profile',
+        path: ['jurisdictionProfileReadiness', 'state'],
+      });
+    }
   }
 });
 
