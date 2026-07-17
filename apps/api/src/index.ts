@@ -132,8 +132,6 @@ const authorityPreparationSecret =
   process.env.TAX_ENGINE_ARCA_PREPARATION_HMAC_SECRET ?? null;
 const authorityPrincipalSecrets: TaxAuthorityPrincipalSecrets = {
   motora: process.env.TAX_ENGINE_MOTORA_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null,
-  openAgentsApproval:
-    process.env.TAX_ENGINE_OPEN_AGENTS_APPROVAL_PRINCIPAL_HMAC_SECRET ?? null,
 };
 const facturaEFeatureEnabled = process.env.TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED === 'true';
 const argentinaLaunchPolicy = resolveArgentinaLaunchPolicyReadiness();
@@ -269,7 +267,6 @@ if (facturaEFeatureEnabled) {
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
     authorityPrincipalSecrets.motora,
-    authorityPrincipalSecrets.openAgentsApproval,
     facturaEFeatureCommitmentSecret,
     facturaEFeatureSignerSecret,
     facturaEFeatureEventSecret,
@@ -288,7 +285,6 @@ if (facturaEFeatureEnabled) {
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
     authorityPrincipalSecrets.motora,
-    authorityPrincipalSecrets.openAgentsApproval,
     facturaEFeaturePrincipalSecrets.deskConsent,
     facturaEFeaturePrincipalSecrets.projector,
     facturaEFeaturePrincipalSecrets.creReader,

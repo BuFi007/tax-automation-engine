@@ -22,7 +22,7 @@ const approvalRefSchema = z
   .string()
   .min(24)
   .max(240)
-  .regex(/^oa_approval_[A-Za-z0-9_-]+$/);
+  .regex(/^human_approval_[A-Za-z0-9_-]+$/);
 
 const createIntentSchema = z
   .object({

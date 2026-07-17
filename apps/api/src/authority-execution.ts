@@ -59,7 +59,7 @@ export type SafeFacturaEAuthorityExecutionReceipt = Readonly<{
     | 'rejected';
   replayed: boolean;
   nextAction:
-    | 'register_oa_approval'
+    | 'register_human_approval'
     | 'execute_with_one_use_approval'
     | 'wait'
     | 'recover_exactly'
@@ -394,7 +394,7 @@ export class FacturaEAuthorityExecutionStore {
         input.occurredAt,
         input.executionId
       );
-      this.audit(input.executionId, input.workspaceId, actorHash, 'register_oa_approval', 'approved', commandHash, input.occurredAt);
+      this.audit(input.executionId, input.workspaceId, actorHash, 'register_human_approval', 'approved', commandHash, input.occurredAt);
       return { record: this.required(input.executionId), replayed: false };
     })();
   }
@@ -937,7 +937,7 @@ export class FacturaEAuthorityExecutionService {
       authorityEnvironment: this.authorityContext.environment,
       authorityProviderId: this.authorityContext.providerId,
       intentPersistence: 'available' as const,
-      oaApproval: 'required' as const,
+      humanApproval: 'required' as const,
       remoteEffects: this.effectsEnabled && this.effect ? ('armed' as const) : ('dark' as const),
       pointOfSaleCreation: 'user_portal_handoff' as const,
       officialAuthorityReconciliation:
@@ -1155,7 +1155,7 @@ function safeReceipt(
     replayed,
     nextAction:
       state === 'intent_persisted'
-        ? 'register_oa_approval'
+        ? 'register_human_approval'
         : state === 'approved'
           ? 'execute_with_one_use_approval'
           : state === 'recovery_required'
