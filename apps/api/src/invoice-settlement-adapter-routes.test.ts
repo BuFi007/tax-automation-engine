@@ -2,22 +2,21 @@ import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, test } from 'bun:test';
 
 import { handleInvoiceSettlementAdapterRoute } from './invoice-settlement-adapter-routes';
-import type { FacturaEAgentService } from './factura-e-agent';
+import type { InvoiceSettlementInboxEvent } from './invoice-settlement-adapter-routes';
+import { TaxProfileStore } from './store';
 
 const secret = 'invoice-settlement-adapter-secret-at-least-32';
 const workspaceId = '10000000-0000-4000-8000-000000000001';
-const runId = '20000000-0000-4000-8000-000000000001';
 
-describe('canonical invoice settlement adapter route', () => {
-  test('accepts only a signed canonical event and fixes the system actor', async () => {
-    let recorded: Record<string, unknown> | null = null;
+describe('Desk invoice settlement inbox route', () => {
+  test('accepts only a signed canonical event and durably appends it', async () => {
+    let recorded: InvoiceSettlementInboxEvent | null = null;
     const service = {
-      getRun: () => ({ workspaceId }),
-      recordSettlement: (input: Record<string, unknown>) => {
+      appendInvoiceSettlementEvent: (input: InvoiceSettlementInboxEvent) => {
         recorded = input;
-        return { run: { runId, workspaceId, revision: 4 }, replayed: false };
+        return { replayed: false };
       },
-    } as unknown as FacturaEAgentService;
+    };
     const body = payload();
     const request = signedRequest(body);
 
@@ -27,34 +26,53 @@ describe('canonical invoice settlement adapter route', () => {
 
     expect(response?.status).toBe(200);
     expect(recorded).toMatchObject({
-      runId,
       idempotencyKey: body.idempotencyKey,
-      actorId: 'system:invoice-settlement-adapter',
-      occurredAt: body.event.recordedAt,
+      workspaceId,
+      invoiceId: body.event.invoiceId,
+      recordedAt: body.event.recordedAt,
       settlement: { finalityState: 'final' },
     });
     expect(await response?.json()).toEqual({
-      data: { run: { runId, workspaceId, revision: 4 }, replayed: false },
+      data: { eventId: body.event.eventId, replayed: false },
     });
   });
 
   test('rejects a signature that is not bound to the exact event body', async () => {
-    const service = { getRun: () => ({ workspaceId }), recordSettlement: () => null } as unknown as FacturaEAgentService;
+    const service = { appendInvoiceSettlementEvent: () => ({ replayed: false }) };
     const body = payload();
     const request = signedRequest({ ...body, idempotencyKey: 'invoice-settlement:other-event' }, body.idempotencyKey);
     await expect(handleInvoiceSettlementAdapterRoute(request, new URL(request.url), service, secret))
       .rejects.toThrow('INVOICE_SETTLEMENT_ADAPTER_SCOPE_UNAUTHORIZED');
   });
+
+  test('keeps an immutable, idempotent inbox before any TaxCase projection', () => {
+    const store = new TaxProfileStore(':memory:', 'settlement-inbox-test-secret-at-least-32');
+    const body = payload();
+    const event: InvoiceSettlementInboxEvent = {
+      workspaceId: body.event.teamId,
+      invoiceId: body.event.invoiceId,
+      eventId: body.event.eventId,
+      eventType: body.event.eventType,
+      replayKey: body.event.replayKey,
+      recordedAt: body.event.recordedAt,
+      idempotencyKey: body.idempotencyKey,
+      settlement: body.settlement,
+    };
+    expect(store.appendInvoiceSettlementEvent(event)).toEqual({ replayed: false });
+    expect(store.appendInvoiceSettlementEvent(event)).toEqual({ replayed: true });
+    expect(() => store.appendInvoiceSettlementEvent({ ...event, settlement: { ...event.settlement, asset: 'EUR' } }))
+      .toThrow('INVOICE_SETTLEMENT_EVENT_CONFLICT');
+  });
 });
 
 function payload() {
   return {
-    runId,
     idempotencyKey: 'invoice-settlement:30000000-0000-4000-8000-000000000001',
     event: {
       schemaVersion: 1 as const,
       eventId: '30000000-0000-4000-8000-000000000001',
       teamId: workspaceId,
+      invoiceId: '40000000-0000-4000-8000-000000000001',
       eventType: 'InvoiceSettlementFinalizedV1' as const,
       replayKey: 'a'.repeat(64),
       recordedAt: '2026-07-17T00:00:00.000Z',
@@ -77,15 +95,15 @@ function payload() {
 function signedRequest(body: ReturnType<typeof payload>, principalIdempotencyKey = body.idempotencyKey): Request {
   const rawBody = JSON.stringify(body);
   const principal = {
-    version: 'invoice-settlement-adapter-principal-v1', workspaceId,
-    adapterId: 'open-agents-invoice-settlement', method: 'POST',
-    path: '/v1/invoice-settlements/record',
+    version: 'desk-invoice-settlement-principal-v1', workspaceId,
+    adapterId: 'desk-invoice-settlement-publisher', method: 'POST',
+    path: '/v1/invoice-settlements/events',
     bodyHash: createHash('sha256').update(rawBody).digest('hex'),
     idempotencyKey: principalIdempotencyKey,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
   };
   const encoded = Buffer.from(JSON.stringify(principal)).toString('base64url');
-  return new Request('http://localhost/v1/invoice-settlements/record', {
+  return new Request('http://localhost/v1/invoice-settlements/events', {
     method: 'POST', body: rawBody,
     headers: {
       'content-type': 'application/json',

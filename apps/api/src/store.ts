@@ -65,6 +65,7 @@ import {
   createSnapshotTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
+import type { InvoiceSettlementInboxEvent } from './invoice-settlement-adapter-routes';
 
 export function resolveTaxEngineDatabasePath(
   configuredPath: string | null | undefined = process.env.TAX_ENGINE_DB_PATH,
@@ -203,6 +204,22 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS digital_asset_events_workspace_appended
         ON digital_asset_events (workspace_id, appended_at, event_id);
+      -- Desk is the authoritative Invoice 2.0 outbox publisher. Keep the
+      -- signed event durably before any TaxCase projection/binding occurs.
+      CREATE TABLE IF NOT EXISTS invoice_settlement_inbox (
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        invoice_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, event_id),
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS invoice_settlement_inbox_invoice
+        ON invoice_settlement_inbox (workspace_id, invoice_id, recorded_at);
       CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
         event_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
@@ -1202,6 +1219,30 @@ export class TaxProfileStore {
       if (appended > 0) this.#advanceEvidenceGeneration(records[0]?.workspaceId ?? null, appendedAt);
       return appended;
     })();
+  }
+
+  appendInvoiceSettlementEvent(input: InvoiceSettlementInboxEvent): { replayed: boolean } {
+    const eventHash = hashCanonical(input);
+    const existing = this.#db.query<{ event_hash: string }, [string, string]>(
+      'SELECT event_hash FROM invoice_settlement_inbox WHERE workspace_id = ? AND event_id = ?',
+    ).get(input.workspaceId, input.eventId);
+    if (existing) {
+      if (existing.event_hash !== eventHash) throw new Error('INVOICE_SETTLEMENT_EVENT_CONFLICT');
+      return { replayed: true };
+    }
+    const duplicate = this.#db.query<{ event_hash: string }, [string, string]>(
+      'SELECT event_hash FROM invoice_settlement_inbox WHERE workspace_id = ? AND idempotency_key = ?',
+    ).get(input.workspaceId, input.idempotencyKey);
+    if (duplicate) {
+      if (duplicate.event_hash !== eventHash) throw new Error('INVOICE_SETTLEMENT_IDEMPOTENCY_CONFLICT');
+      return { replayed: true };
+    }
+    this.#db.query(`
+      INSERT INTO invoice_settlement_inbox (
+        workspace_id, event_id, invoice_id, idempotency_key, event_hash, event_json, recorded_at, appended_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(input.workspaceId, input.eventId, input.invoiceId, input.idempotencyKey, eventHash, JSON.stringify(input), input.recordedAt, new Date().toISOString());
+    return { replayed: false };
   }
 
   #appendEvidenceRecords(
