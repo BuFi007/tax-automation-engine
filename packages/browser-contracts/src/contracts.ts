@@ -28,7 +28,7 @@ export const taxEvidenceScopeV1Schema = z.discriminatedUnion('mode', [
 const taxProfileSummaryV1Schema = z.object({
   profileRef: safeReferenceSchema,
   profileVersion: safeReferenceSchema,
-  jurisdiction: z.enum(['AR', 'US']),
+  jurisdiction: z.enum(['AR', 'US', 'AE']),
   entityType: z.string().min(1).max(100),
   regimeId: z.string().min(1).max(100),
   confirmationState: z.enum(['user_confirmed', 'accountant_confirmed']),
@@ -75,7 +75,7 @@ export const taxCaseV1Schema = z.object({
   revision: z.number().int().positive(),
   state: z.enum(['setup_required', 'active', 'needs_review', 'blocked', 'complete']),
   selection: z.object({
-    jurisdiction: z.enum(['AR', 'US', 'unsupported']),
+    jurisdiction: z.enum(['AR', 'US', 'AE', 'unsupported']),
     entityType: z.string().min(1).max(100).nullable(),
     regimeId: z.string().min(1).max(100).nullable(),
     confirmationState: z.enum(['suggested', 'user_confirmed', 'accountant_confirmed']),
@@ -483,6 +483,11 @@ export const TAX_OBLIGATION_KINDS_V1 = [
   'us_form_1120_s',
   'us_form_1120',
   'us_owner_income_return_review',
+  'ae_corporate_tax_registration',
+  'ae_corporate_tax_return',
+  'ae_vat_registration',
+  'ae_vat_return',
+  'ae_free_zone_qualifying_status_review',
   'unclassified',
 ] as const;
 
@@ -596,6 +601,7 @@ export type TaxAuthorityReadinessV1 = z.infer<typeof taxAuthorityReadinessV1Sche
 
 export const TAX_JURISDICTION_PROFILE_READINESS_KINDS_V1 = [
   'us_entity',
+  'ae_free_zone_entity',
 ] as const;
 
 export const TAX_JURISDICTION_PROFILE_LIMITATIONS_V1 = [
@@ -694,8 +700,55 @@ const usEntityProfileReadinessV1Schema = z.object({
   }
 });
 
+export const TAX_AE_PROFILE_LIMITATIONS_V1 = [
+  'AE_PROFILE_INCOMPLETE',
+  'AE_CORPORATE_TAX_REGISTRATION_REQUIRED',
+  'AE_VAT_THRESHOLD_REVIEW_REQUIRED',
+  'AE_FREE_ZONE_STATUS_REVIEW_REQUIRED',
+  'AE_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+] as const;
+
+const aeFreeZoneProfileReadinessV1Schema = z.object({
+  version: z.literal('tax-jurisdiction-profile-readiness-v1'),
+  kind: z.literal('ae_free_zone_entity'),
+  state: z.enum(['incomplete', 'accountant_review', 'confirmed']),
+  formationEmirate: z.literal('AE-DU').nullable(),
+  entityStructure: z.enum(['free_zone_company', 'free_zone_llc', 'free_zone_branch', 'unclassified']),
+  corporateTaxRegistration: z.enum(['not_registered', 'submitted', 'certificate_available', 'needs_review', 'unconfirmed']),
+  vatThresholdState: z.enum(['mandatory', 'voluntary', 'below', 'nonresident_taxable_supplies', 'needs_review', 'unconfirmed']),
+  vatRegistration: z.enum(['not_registered', 'submitted', 'certificate_available', 'exemption_identifier_available', 'needs_review', 'unconfirmed']),
+  qualifyingFreeZoneStatus: z.literal('professional_review_required'),
+  accountantReviewRequired: z.boolean(),
+  limitationCodes: z.array(z.enum(TAX_AE_PROFILE_LIMITATIONS_V1)).max(5),
+}).strict().superRefine((readiness, context) => {
+  if (new Set(readiness.limitationCodes).size !== readiness.limitationCodes.length) {
+    context.addIssue({ code: 'custom', message: 'UAE profile limitation codes must be unique', path: ['limitationCodes'] });
+  }
+  const incomplete = readiness.formationEmirate === null
+    || readiness.entityStructure === 'unclassified'
+    || readiness.corporateTaxRegistration === 'unconfirmed'
+    || readiness.vatThresholdState === 'unconfirmed'
+    || readiness.vatRegistration === 'unconfirmed';
+  if (readiness.state === 'confirmed') {
+    context.addIssue({ code: 'custom', message: 'A Dubai Free Zone profile cannot self-confirm qualifying tax treatment', path: ['state'] });
+  }
+  if (!readiness.accountantReviewRequired
+    || !readiness.limitationCodes.includes('AE_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED')
+    || !readiness.limitationCodes.includes('AE_FREE_ZONE_STATUS_REVIEW_REQUIRED')) {
+    context.addIssue({ code: 'custom', message: 'Dubai Free Zone readiness always requires named specialist review', path: ['limitationCodes'] });
+  }
+  if (readiness.state === 'incomplete'
+    && (!incomplete || !readiness.limitationCodes.includes('AE_PROFILE_INCOMPLETE'))) {
+    context.addIssue({ code: 'custom', message: 'Incomplete UAE readiness requires unresolved inputs and its limitation', path: ['state'] });
+  }
+  if (readiness.state === 'accountant_review' && incomplete) {
+    context.addIssue({ code: 'custom', message: 'UAE accountant review requires complete bounded profile inputs', path: ['state'] });
+  }
+});
+
 export const taxJurisdictionProfileReadinessV1Schema = z.discriminatedUnion('kind', [
   usEntityProfileReadinessV1Schema,
+  aeFreeZoneProfileReadinessV1Schema,
 ]);
 
 export type TaxJurisdictionProfileReadinessV1 = z.infer<typeof taxJurisdictionProfileReadinessV1Schema>;
@@ -822,6 +875,15 @@ export const taxWidgetSnapshotV1Schema = z.object({
         code: 'custom',
         message: 'Confirmed United States profile readiness requires a supported, accountant-confirmed profile',
         path: ['jurisdictionProfileReadiness', 'state'],
+      });
+    }
+  }
+  if (snapshot.jurisdictionProfileReadiness?.kind === 'ae_free_zone_entity') {
+    if (snapshot.profile.jurisdiction !== 'AE' || snapshot.profile.regimeId !== 'uae_free_zone_person') {
+      context.addIssue({
+        code: 'custom',
+        message: 'Dubai Free Zone readiness requires a UAE Free Zone profile',
+        path: ['jurisdictionProfileReadiness', 'kind'],
       });
     }
   }

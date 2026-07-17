@@ -61,6 +61,36 @@ export function unitedStatesProfile(): TaxProfile {
   };
 }
 
+export function unitedArabEmiratesProfile(): TaxProfile {
+  return {
+    profileId: 'profile:ae-dubai-free-zone-demo',
+    workspaceId: 'workspace:demo',
+    jurisdiction: 'AE',
+    entityType: 'fzco',
+    regimeId: 'uae_free_zone_person',
+    ownerDomicileCountries: ['AR'],
+    ownerTaxResidenceCountries: ['AR'],
+    formationSubdivision: 'AE-DU',
+    operatingSubdivisions: ['AE-DU'],
+    answers: [
+      { questionId: 'formation_emirate', value: 'AE-DU', confirmationState: 'user_confirmed' },
+      { questionId: 'licensing_authority', value: 'dubai_free_zone_authority', confirmationState: 'user_confirmed' },
+      { questionId: 'tax_period_end_month', value: 12, confirmationState: 'accountant_confirmed' },
+      { questionId: 'corporate_tax_registration', value: 'not_registered', confirmationState: 'user_confirmed' },
+      { questionId: 'vat_threshold_state', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+      { questionId: 'vat_registration', value: 'not_registered', confirmationState: 'user_confirmed' },
+      { questionId: 'adequate_substance', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+      { questionId: 'qualifying_income', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+      { questionId: 'excluded_activities', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+      { questionId: 'de_minimis_condition', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+      { questionId: 'audited_financial_statements', value: 'needs_review', confirmationState: 'accountant_confirmed' },
+    ],
+    catalogueVersion: 'ae-catalogue-2026-07-17',
+    version: 'profile-v1',
+    confirmationState: 'user_confirmed',
+  };
+}
+
 export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regimeId?: string, founderResidency: FounderResidency = 'foreign') {
   const sourceIds = ['bufi-ledger', 'quickbooks', 'magic-inbox', 'knowledge-graph', 'financial-analytics'];
   const consent: TaxConsentGrant = {
@@ -78,7 +108,7 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regime
     connectionId: null,
     consentGrants: [consent],
     period: PERIOD,
-    displayCurrency: jurisdiction === 'AR' ? 'ARS' : 'USD',
+    displayCurrency: displayCurrency(jurisdiction),
     asOf: AS_OF,
     dataScope: { mode: 'all_connected' },
   });
@@ -87,7 +117,11 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regime
 }
 
 function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefined, founderResidency: FounderResidency): TaxProfile {
-  const base = jurisdiction === 'AR' ? argentinaProfile() : unitedStatesProfile();
+  const base = jurisdiction === 'AR'
+    ? argentinaProfile()
+    : jurisdiction === 'US'
+      ? unitedStatesProfile()
+      : unitedArabEmiratesProfile();
   if (jurisdiction === 'AR') {
     if (!regimeId || regimeId === base.regimeId) return base;
     if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
@@ -104,6 +138,20 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
       regimeId,
       entityType: regimeId === 'sociedad_mipyme' ? 'company' : 'individual',
       answers: [...base.answers, ...regimeAnswers],
+    };
+  }
+
+  if (jurisdiction === 'AE') {
+    if (!regimeId || regimeId === base.regimeId) return base;
+    if (regimeId !== 'uae_mainland_company') throw new Error('UNSUPPORTED_REGIME');
+    return {
+      ...base,
+      profileId: 'profile:ae-mainland-demo',
+      regimeId,
+      entityType: 'llc',
+      answers: base.answers.filter(answer => ![
+        'adequate_substance', 'qualifying_income', 'excluded_activities', 'de_minimis_condition', 'audited_financial_statements',
+      ].includes(answer.questionId)),
     };
   }
 
@@ -136,11 +184,11 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
 }
 
 function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticAdapterInput {
-  const currency = jurisdiction === 'AR' ? 'ARS' : 'USD';
+  const currency = displayCurrency(jurisdiction);
   const sourceKind = sourceId === 'quickbooks' ? 'accounting' : sourceId === 'magic-inbox' ? 'magic_inbox' : sourceId === 'knowledge-graph' ? 'knowledge_graph' : sourceId === 'financial-analytics' ? 'financial_analytics' : 'bank';
   const records = sourceId === 'bufi-ledger' ? [
     record('invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'invoice', 'revenue', 'inflow', '10000', currency),
-    ...(jurisdiction === 'US'
+    ...(jurisdiction !== 'AR'
       ? [record('settlement-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'settlement', 'none', 'neutral', '10000', currency)]
       : []),
     record('expense-1', sourceId, sourceKind, jurisdiction, 'event:expense-1', 'expense', 'expense', 'outflow', '2500', currency),
@@ -157,6 +205,12 @@ function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticA
     capabilities: sourceKind === 'accounting' ? ['ledger_accounts', 'invoices', 'bills', 'tax_lines', 'reconciliation'] : sourceKind === 'magic_inbox' ? ['documents', 'receipts', 'classification'] : sourceKind === 'knowledge_graph' ? ['entity_resolution'] : sourceKind === 'financial_analytics' ? ['actuals', 'cash_planning'] : ['transactions', 'payments'],
     records,
   };
+}
+
+function displayCurrency(jurisdiction: JurisdictionCode): 'ARS' | 'USD' | 'AED' {
+  if (jurisdiction === 'AR') return 'ARS';
+  if (jurisdiction === 'AE') return 'AED';
+  return 'USD';
 }
 
 function record(
