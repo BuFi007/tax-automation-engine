@@ -76,3 +76,8 @@ record all requested services as false, and a failed Reclaim check may carry
 bounded TEE/custody booleans without claiming verification. Verified Reclaim
 state requires both booleans and its verification time. No field is widened to
 free text or provider material.
+
+Package `0.8.3` permits the successful intermediate `verified` state to carry
+no limitation while another bounded check is pending. Actionable, failed, and
+not-started states still require a named limitation; `ready` still requires all
+external prerequisites and no pending action.

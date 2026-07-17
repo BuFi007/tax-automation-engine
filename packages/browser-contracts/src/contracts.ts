@@ -587,7 +587,7 @@ export const taxAuthorityReadinessV1Schema = z.object({
     if (readiness.actionId !== null || readiness.limitationCodes.length > 0) {
       context.addIssue({ code: 'custom', message: 'Ready authority state cannot carry a pending action or limitation' });
     }
-  } else if (readiness.limitationCodes.length === 0) {
+  } else if (readiness.state !== 'verified' && readiness.limitationCodes.length === 0) {
     context.addIssue({ code: 'custom', message: 'Non-ready authority state requires a named limitation', path: ['limitationCodes'] });
   }
 });
