@@ -97,6 +97,13 @@ export type BackendReleaseSuiteResultV1 = Readonly<{
   durationMs: number;
 }>;
 
+export type BackendReleaseFaultResultV1 = Readonly<{
+  id: string;
+  state: 'passed' | 'failed';
+  exitCode: number;
+  durationMs: number;
+}>;
+
 export type BackendReleaseReportV1 = Readonly<{
   version: 'tax-backend-release-report-v1';
   issue: 'BU-252';
@@ -106,6 +113,7 @@ export type BackendReleaseReportV1 = Readonly<{
   softwareState: 'passed' | 'failed';
   authorityState: 'ready_for_invoice_homologation' | 'blocked';
   failedGateIds: readonly string[];
+  faultEvidence: readonly BackendReleaseFaultResultV1[];
   suites: readonly BackendReleaseSuiteResultV1[];
   fixtureDigests: Readonly<{ golden: string; scenarios: string }>;
   productionEnabled: false;
@@ -136,11 +144,54 @@ export async function assertBackendReleaseFaultEvidenceV1(
   for (const evidence of manifest.faultEvidence) {
     const file = Bun.file(`${root}/${evidence.testFile}`);
     if (!await file.exists()) throw new Error(`BACKEND_RELEASE_FAULT_TEST_MISSING:${evidence.id}`);
-    const source = await file.text();
-    if (!source.includes(`test('${evidence.testTitle}'`)
-      && !source.includes(`test(\"${evidence.testTitle}\"`)) {
-      throw new Error(`BACKEND_RELEASE_FAULT_ASSERTION_MISSING:${evidence.id}`);
-    }
+  }
+}
+
+export async function executeBackendReleaseFaultEvidenceV1(
+  manifest: BackendReleaseManifestV1,
+  root: string,
+): Promise<BackendReleaseFaultResultV1[]> {
+  const results: BackendReleaseFaultResultV1[] = [];
+  for (const evidence of manifest.faultEvidence) {
+    const startedAt = performance.now();
+    const child = Bun.spawn(['bun', 'test', evidence.testFile, '-t', evidence.testTitle], {
+      cwd: root,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...Bun.env, NODE_ENV: 'test' },
+    });
+    const stdoutPromise = new Response(child.stdout).text();
+    const stderrPromise = new Response(child.stderr).text();
+    const exitCode = await child.exited;
+    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+    const assertionPassed = `${stdout}\n${stderr}`
+      .split('\n')
+      .some(line => line.includes('(pass)') && line.includes(evidence.testTitle));
+    const state = exitCode === 0 && assertionPassed ? 'passed' as const : 'failed' as const;
+    if (state === 'failed' && stderr.trim()) console.error(stderr.trim());
+    results.push({
+      id: evidence.id,
+      state,
+      exitCode,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+  }
+  return results;
+}
+
+export type BackendReleaseJsonFileV1 = Readonly<{
+  exists(): Promise<boolean>;
+  json(): Promise<unknown>;
+}>;
+
+export async function readBackendReleaseJsonFileV1(
+  file: BackendReleaseJsonFileV1 | null,
+): Promise<unknown | null> {
+  if (!file || !await file.exists()) return null;
+  try {
+    return await file.json();
+  } catch {
+    return {};
   }
 }
 
@@ -148,6 +199,7 @@ export function buildBackendReleaseReportV1(input: Readonly<{
   manifest: BackendReleaseManifestV1;
   revision: string;
   generatedAt: string;
+  faultEvidence: readonly BackendReleaseFaultResultV1[];
   suites: readonly BackendReleaseSuiteResultV1[];
   liveSmoke: unknown;
   homologationEvidence: unknown | null;
@@ -159,10 +211,31 @@ export function buildBackendReleaseReportV1(input: Readonly<{
     || input.suites.some((suite, index) => suite.id !== expectedSuites[index])) {
     throw new Error('BACKEND_RELEASE_SUITE_SET_MISMATCH');
   }
+  const expectedFaults = input.manifest.faultEvidence.map(evidence => evidence.id);
+  if (input.faultEvidence.length !== expectedFaults.length
+    || input.faultEvidence.some((result, index) => result.id !== expectedFaults[index])) {
+    throw new Error('BACKEND_RELEASE_FAULT_RESULT_SET_MISMATCH');
+  }
   const softwareState = input.suites.every(suite => suite.state === 'passed' && suite.exitCode === 0)
+    && input.faultEvidence.every(result => result.state === 'passed' && result.exitCode === 0)
     ? 'passed' as const
     : 'failed' as const;
-  const authority = validateLiveWsfexSmoke(input.liveSmoke);
+  let authority: ReturnType<typeof validateLiveWsfexSmoke>;
+  try {
+    authority = validateLiveWsfexSmoke(input.liveSmoke);
+  } catch {
+    authority = {
+      version: 'arca-wsfex-live-smoke-validation-v1',
+      state: 'blocked',
+      failedGateIds: ['live_smoke_invalid'],
+      safeSummary: {
+        authorityEnvironment: 'homologacion',
+        activeFeeWsPointCount: 0,
+        productionEnabled: false,
+        limitation: 'The homologation smoke evidence is missing or invalid.',
+      },
+    };
+  }
   const homologationFailedGateIds: string[] = [];
   if (input.homologationEvidence === null) {
     homologationFailedGateIds.push('homologation_evidence_missing');
@@ -188,6 +261,14 @@ export function buildBackendReleaseReportV1(input: Readonly<{
   const limitations = authorityState === 'blocked'
     ? ['ARCA homologation is not certified until an active FEEWS point is discovered and the complete reviewed invoice/recovery matrix is supplied.']
     : ['This backend gate does not enable production; production remains subject to explicit owner and authority approval.'];
+  const softwareFailedGateIds = [
+    ...input.suites
+      .filter(suite => suite.state !== 'passed' || suite.exitCode !== 0)
+      .map(suite => `software:${suite.id}`),
+    ...input.faultEvidence
+      .filter(result => result.state !== 'passed' || result.exitCode !== 0)
+      .map(result => `fault:${result.id}`),
+  ];
   return {
     version: 'tax-backend-release-report-v1',
     issue: 'BU-252',
@@ -196,7 +277,12 @@ export function buildBackendReleaseReportV1(input: Readonly<{
     state,
     softwareState,
     authorityState,
-    failedGateIds: [...authority.failedGateIds, ...homologationFailedGateIds],
+    failedGateIds: [
+      ...softwareFailedGateIds,
+      ...authority.failedGateIds,
+      ...homologationFailedGateIds,
+    ],
+    faultEvidence: input.faultEvidence,
     suites: input.suites,
     fixtureDigests: {
       golden: input.manifest.contract.goldenFixtureSha256,

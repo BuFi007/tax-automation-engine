@@ -5,6 +5,7 @@ import {
   assertBackendReleaseFaultEvidenceV1,
   buildBackendReleaseReportV1,
   parseBackendReleaseManifestV1,
+  readBackendReleaseJsonFileV1,
 } from './backend-release-gate';
 
 const manifestUrl = new URL('../../../certification/backend-v1.manifest.json', import.meta.url);
@@ -28,14 +29,14 @@ describe('BU-252 backend release gate', () => {
     ]);
   });
 
-  test('rejects a fault matrix that points at an absent assertion', async () => {
+  test('rejects a fault matrix that points at an absent test file', async () => {
     const raw = await Bun.file(manifestUrl).json() as any;
-    raw.faultEvidence[0].testTitle = 'this assertion does not exist anywhere';
+    raw.faultEvidence[0].testFile = 'packages/core/src/absent-release-fault.test.ts';
     const manifest = parseBackendReleaseManifestV1(raw);
     await expect(assertBackendReleaseFaultEvidenceV1(
       manifest,
       root,
-    )).rejects.toThrow('BACKEND_RELEASE_FAULT_ASSERTION_MISSING:duplicate_events');
+    )).rejects.toThrow('BACKEND_RELEASE_FAULT_TEST_MISSING:duplicate_events');
   });
 
   test('fails the software gate when any required suite is omitted or fails', async () => {
@@ -51,6 +52,7 @@ describe('BU-252 backend release gate', () => {
       manifest,
       revision: 'a'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
       suites,
       liveSmoke: smoke,
       homologationEvidence: null,
@@ -59,6 +61,7 @@ describe('BU-252 backend release gate', () => {
       manifest,
       revision: 'a'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
       suites: suites.slice(1),
       liveSmoke: smoke,
       homologationEvidence: null,
@@ -72,6 +75,7 @@ describe('BU-252 backend release gate', () => {
       manifest,
       revision: 'b'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
       suites: manifest.softwareSuites.map(suite => ({
         id: suite.id, state: 'passed', exitCode: 0, durationMs: 1,
       })),
@@ -104,6 +108,7 @@ describe('BU-252 backend release gate', () => {
       manifest,
       revision: 'c'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
       suites,
       liveSmoke: smoke,
       homologationEvidence: null,
@@ -115,6 +120,7 @@ describe('BU-252 backend release gate', () => {
       manifest,
       revision: 'c'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
       suites,
       liveSmoke: smoke,
       homologationEvidence: validHomologationEvidence(),
@@ -125,7 +131,57 @@ describe('BU-252 backend release gate', () => {
       productionEnabled: false,
     });
   });
+
+  test('requires every named fault assertion to execute and fail-closes malformed authority JSON', async () => {
+    const manifest = parseBackendReleaseManifestV1(await Bun.file(manifestUrl).json());
+    const smoke = await Bun.file(liveSmokeUrl).json();
+    const report = buildBackendReleaseReportV1({
+      manifest,
+      revision: 'd'.repeat(40),
+      generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest).map((result, index) => index === 0
+        ? { ...result, state: 'failed' as const, exitCode: 1 }
+        : result),
+      suites: manifest.softwareSuites.map(suite => ({
+        id: suite.id, state: 'passed', exitCode: 0, durationMs: 1,
+      })),
+      liveSmoke: smoke,
+      homologationEvidence: null,
+    });
+    expect(report.state).toBe('software_failed');
+    expect(report.failedGateIds).toContain('fault:duplicate_events');
+
+    const malformed = await readBackendReleaseJsonFileV1({
+      exists: async () => true,
+      json: async () => {
+        throw new SyntaxError('truncated');
+      },
+    });
+    const malformedReport = buildBackendReleaseReportV1({
+      manifest,
+      revision: 'e'.repeat(40),
+      generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
+      suites: manifest.softwareSuites.map(suite => ({
+        id: suite.id, state: 'passed', exitCode: 0, durationMs: 1,
+      })),
+      liveSmoke: malformed,
+      homologationEvidence: malformed,
+    });
+    expect(malformedReport.state).toBe('external_authority_blocked');
+    expect(malformedReport.failedGateIds).toContain('live_smoke_invalid');
+    expect(malformedReport.failedGateIds).toContain('homologation_evidence_invalid');
+  });
 });
+
+function passingFaultEvidence(manifest: ReturnType<typeof parseBackendReleaseManifestV1>) {
+  return manifest.faultEvidence.map(evidence => ({
+    id: evidence.id,
+    state: 'passed' as const,
+    exitCode: 0,
+    durationMs: 1,
+  }));
+}
 
 function validHomologationEvidence() {
   const hash = (value: string) => Bun.CryptoHasher.hash('sha256', value, 'hex');

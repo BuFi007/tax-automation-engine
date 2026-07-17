@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 import {
   assertBackendReleaseFaultEvidenceV1,
   buildBackendReleaseReportV1,
+  executeBackendReleaseFaultEvidenceV1,
   parseBackendReleaseManifestV1,
+  readBackendReleaseJsonFileV1,
   type BackendReleaseSuiteResultV1,
 } from './backend-release-gate';
 
@@ -13,6 +15,7 @@ const manifest = parseBackendReleaseManifestV1(await Bun.file(manifestPath).json
 await assertBackendReleaseFaultEvidenceV1(manifest, root);
 const startRevision = readGitRevision();
 assertCleanWorktree();
+const faultEvidence = await executeBackendReleaseFaultEvidenceV1(manifest, root);
 const suites: BackendReleaseSuiteResultV1[] = [];
 
 for (const suite of manifest.softwareSuites) {
@@ -40,13 +43,16 @@ for (const suite of manifest.softwareSuites.slice(suites.length)) {
 const endRevision = readGitRevision();
 assertCleanWorktree();
 if (endRevision !== startRevision) throw new Error('BACKEND_RELEASE_REVISION_CHANGED_DURING_RUN');
-const liveSmoke = await Bun.file(resolve(root, manifest.externalAuthority.liveSmokePath)).json();
+const liveSmoke = await readBackendReleaseJsonFileV1(
+  Bun.file(resolve(root, manifest.externalAuthority.liveSmokePath)),
+);
 const homologationFile = Bun.file(resolve(root, manifest.externalAuthority.homologationEvidencePath));
-const homologationEvidence = await homologationFile.exists() ? await homologationFile.json() : null;
+const homologationEvidence = await readBackendReleaseJsonFileV1(homologationFile);
 const report = buildBackendReleaseReportV1({
   manifest,
   revision: startRevision,
   generatedAt: new Date().toISOString(),
+  faultEvidence,
   suites,
   liveSmoke,
   homologationEvidence,
