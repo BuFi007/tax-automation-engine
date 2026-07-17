@@ -55,7 +55,19 @@ describe('browser-safe Tax V1 contracts', () => {
     expect(taxWidgetSnapshotV1Schema.safeParse({
       ...argentinaTaxWidgetSnapshotV1Fixture,
       authorityReadiness: actionRequired,
+      authorizedNextActions: [actionRequired.actionId],
     }).success).toBe(true);
+
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...argentinaTaxWidgetSnapshotV1Fixture,
+      authorityReadiness: actionRequired,
+    }).success).toBe(false);
+
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...argentinaTaxWidgetSnapshotV1Fixture,
+      profile: { ...argentinaTaxWidgetSnapshotV1Fixture.profile, jurisdiction: 'US' },
+      authorityReadiness: { ...actionRequired, actionId: null },
+    }).success).toBe(false);
 
     const leaked = {
       ...actionRequired,
