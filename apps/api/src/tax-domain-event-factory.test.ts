@@ -309,7 +309,7 @@ describe('TaxDomainEventV1 producer minimization', () => {
           'factura_e_settlement_recorded',
           'tax_agent',
           { settlementReferenceHash: RAW_SETTLEMENT_REFERENCE, finalityState },
-          'agent:tax-settlement',
+          'system:invoice-settlement-adapter',
         ),
       });
       expect(settlement).toHaveLength(1);
@@ -326,6 +326,13 @@ describe('TaxDomainEventV1 producer minimization', () => {
         settlementReferenceHash: RAW_SETTLEMENT_REFERENCE,
         finalityState: 'observed',
       }),
+    })).toEqual([]);
+    expect(createFacturaEAgentTaxDomainEvents({
+      ...common,
+      event: facturaEEvent('factura_e_settlement_recorded', 'tax_agent', {
+        settlementReferenceHash: RAW_SETTLEMENT_REFERENCE,
+        finalityState: 'final',
+      }, 'agent:tax-settlement'),
     })).toEqual([]);
 
     const accountant = createFacturaEAgentTaxDomainEvents({

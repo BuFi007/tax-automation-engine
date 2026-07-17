@@ -44,7 +44,11 @@ const ACCOUNTANT_DECISION_SCOPES: Readonly<Record<string, AccountantMandateScope
   factura_e_tax_declared: 'record_tax_declaration',
 };
 
-const INVOICE_SETTLEMENT_AUTHORITY_ACTOR = 'agent:tax-settlement';
+/**
+ * Only the non-agent Invoice 2.0/Open Agents settlement adapter may publish
+ * settlement truth. This is deliberately distinct from every agent actor.
+ */
+const INVOICE_SETTLEMENT_AUTHORITY_ACTOR = 'system:invoice-settlement-adapter';
 
 export function createArcaOnboardingTaxDomainEvent(input: Readonly<{
   run: ArcaOnboardingRunV1;
