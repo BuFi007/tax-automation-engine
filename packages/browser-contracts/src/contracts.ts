@@ -560,15 +560,19 @@ export const taxAuthorityReadinessV1Schema = z.object({
 
   const anyApiVerified = [readiness.apiVerification.wsfex, readiness.apiVerification.wsfe]
     .some(value => value === true);
-  if (anyApiVerified !== (readiness.apiVerification.observedAt !== null)) {
-    context.addIssue({ code: 'custom', message: 'API observation time must agree with verified service state', path: ['apiVerification', 'observedAt'] });
+  if (anyApiVerified && readiness.apiVerification.observedAt === null) {
+    context.addIssue({ code: 'custom', message: 'Verified API service requires its observation time', path: ['apiVerification', 'observedAt'] });
   }
   const reclaimVerified = readiness.reclaim.state === 'verified';
-  if (reclaimVerified !== (readiness.reclaim.verifiedAt !== null)) {
+  if (reclaimVerified !== (readiness.reclaim.verifiedAt !== null)
+    || (reclaimVerified
+      && (readiness.reclaim.teeVerified === null || readiness.reclaim.custodyRecorded === null))) {
     context.addIssue({ code: 'custom', message: 'Reclaim verification time must agree with verified state', path: ['reclaim', 'verifiedAt'] });
   }
-  if (!reclaimVerified && (readiness.reclaim.teeVerified !== null || readiness.reclaim.custodyRecorded !== null)) {
-    context.addIssue({ code: 'custom', message: 'Unverified Reclaim state cannot carry verification claims', path: ['reclaim'] });
+  if (!reclaimVerified
+    && readiness.reclaim.state !== 'failed'
+    && (readiness.reclaim.teeVerified !== null || readiness.reclaim.custodyRecorded !== null)) {
+    context.addIssue({ code: 'custom', message: 'Unobserved Reclaim state cannot carry check results', path: ['reclaim'] });
   }
 
   if (readiness.state === 'ready') {
