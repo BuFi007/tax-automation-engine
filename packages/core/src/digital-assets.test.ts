@@ -79,6 +79,25 @@ describe('digital asset tax evidence ledger', () => {
     ])).toThrow('DIGITAL_ASSET_VALUATION_PAIR_MISMATCH');
   });
 
+  test('requires verified or reviewed valuations and opaque evidence references', () => {
+    expect(() => buildDigitalAssetLedger([
+      {
+        ...acquisition('acq:unreviewed-rate', '100', '100', 'event:onchain:4'),
+        valuation: { ...valuation('2026-07-10T00:00:00.000Z'), confidence: 'unreviewed' },
+      },
+    ])).toThrow('DIGITAL_ASSET_VALUATION_VERIFICATION_REQUIRED');
+
+    expect(() => buildDigitalAssetLedger([
+      {
+        ...acquisition('acq:raw-wallet-ref', '100', '100', 'event:onchain:5'),
+        provenance: {
+          economicEventId: 'event:onchain:5',
+          sourceEvidenceIds: ['0x1234567890abcdef1234567890abcdef12345678'],
+        },
+      },
+    ])).toThrow('DIGITAL_ASSET_PROVENANCE_REQUIRED');
+  });
+
   test('builds a reproducible, mandate-scoped accountant CSV package with explicit partial coverage', () => {
     const historicalAcquisition = {
       ...acquisition('acq:historical', '10', '10', 'event:historical-acquisition'),
