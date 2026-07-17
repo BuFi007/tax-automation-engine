@@ -109,8 +109,8 @@ const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISH
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
 const openAgentsAgentPrincipalSecret =
   process.env.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
-const openAgentsInvoiceSettlementPrincipalSecret =
-  process.env.TAX_ENGINE_OPEN_AGENTS_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET ?? null;
+const deskInvoiceSettlementPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET ?? null;
 const taxDomainEventDeliveryEnabled =
   process.env.TAX_DOMAIN_EVENT_DELIVERY_ENABLED === 'true';
 const taxDomainEventIngressToken =
@@ -189,8 +189,8 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
-  || !openAgentsAgentPrincipalSecret || !openAgentsInvoiceSettlementPrincipalSecret)) {
-  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_OPEN_AGENTS_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
+  || !openAgentsAgentPrincipalSecret || !deskInvoiceSettlementPrincipalSecret)) {
+  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
 }
 if (
   accountantDecisionIngressEnabled
@@ -216,7 +216,7 @@ if (taxDomainEventDeliveryEnabled) {
     taxDomainEventIngressToken,
     taxDomainEventHmacSecret,
     openAgentsAgentPrincipalSecret,
-    openAgentsInvoiceSettlementPrincipalSecret,
+    deskInvoiceSettlementPrincipalSecret,
     accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -623,7 +623,7 @@ export const server = Bun.serve({
       if (factoringBrowserResponse) return applyCors(factoringBrowserResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
-      const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, facturaEAgent, openAgentsInvoiceSettlementPrincipalSecret);
+      const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, store, deskInvoiceSettlementPrincipalSecret);
       if (settlementResponse) return applyCors(settlementResponse, request);
       const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
       if (agentResponse) return applyCors(agentResponse, request);

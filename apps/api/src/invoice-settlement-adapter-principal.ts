@@ -4,11 +4,11 @@ import { taxWorkspaceIdSchema } from '@tax-engine/core';
 import { z } from 'zod';
 
 const principalSchema = z.object({
-  version: z.literal('invoice-settlement-adapter-principal-v1'),
+  version: z.literal('desk-invoice-settlement-principal-v1'),
   workspaceId: taxWorkspaceIdSchema,
-  adapterId: z.literal('open-agents-invoice-settlement'),
+  adapterId: z.literal('desk-invoice-settlement-publisher'),
   method: z.literal('POST'),
-  path: z.literal('/v1/invoice-settlements/record'),
+  path: z.literal('/v1/invoice-settlements/events'),
   bodyHash: z.string().regex(/^[a-f0-9]{64}$/),
   idempotencyKey: z.string().min(8).max(200),
   expiresAt: z.iso.datetime({ offset: true }),
@@ -24,7 +24,7 @@ export function verifyInvoiceSettlementAdapterPrincipal(input: Readonly<{
   secret: string | null;
   now?: Date;
 }>): InvoiceSettlementAdapterPrincipalV1 {
-  if (!input.secret || Buffer.byteLength(input.secret) < 32) throw new Error('INVOICE_SETTLEMENT_ADAPTER_CONFIGURATION_REQUIRED');
+  if (!input.secret || Buffer.byteLength(input.secret) < 32) throw new Error('INVOICE_SETTLEMENT_WORKER_CONFIGURATION_REQUIRED');
   const encoded = input.request.headers.get('x-invoice-settlement-principal');
   const signature = input.request.headers.get('x-invoice-settlement-principal-signature');
   if (!encoded || encoded.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(encoded) || !signature || !/^[a-f0-9]{64}$/.test(signature)) throw new Error('INVOICE_SETTLEMENT_ADAPTER_UNAUTHORIZED');
