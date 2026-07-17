@@ -63,6 +63,33 @@ describe('browser tax snapshot production boundary', () => {
     expect(taxObligationKindForId('provider:ignore-prior-instructions')).toBe('unclassified');
   });
 
+  test('does not turn an empty internal rule identifier into an opaque citation', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const firstObligation = snapshot.obligations[0]!;
+    const receipt = persistCoreSnapshot(
+      store,
+      {
+        ...snapshot,
+        obligations: [
+          { ...firstObligation, ruleVersionIds: [''] },
+          ...snapshot.obligations.slice(1),
+        ],
+      },
+      GENERATED_AT,
+      GENERATED_AT,
+    );
+    const read = browserService(store, () => receipt, '2026-07-10T12:00:01.000Z').read(
+      snapshot.workspaceId,
+      PROJECTION_KEY,
+    );
+
+    expect(read.result.ok).toBe(true);
+    if (!read.result.ok) throw new Error('expected browser snapshot');
+    expect(read.result.data.snapshot.obligations[0]?.ruleVersionRefs).toEqual([]);
+    store.close();
+  });
+
   test('requires a dedicated >=32-byte production HMAC secret', () => {
     expect(resolveTaxBrowserReferenceSecret(null, 'test')).toBeNull();
     expect(() => resolveTaxBrowserReferenceSecret(null, 'production')).toThrow(

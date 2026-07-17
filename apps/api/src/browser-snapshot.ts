@@ -248,8 +248,9 @@ export class TaxBrowserSnapshotProjector {
         submissionState: obligation.submissionState,
         satisfactionState: obligation.satisfactionState,
         actionId: null,
-        ruleVersionRefs: obligation.ruleVersionIds.map(ruleVersionId =>
-          ref('rule-version', ruleVersionId)),
+        ruleVersionRefs: obligation.ruleVersionIds
+          .filter(ruleVersionId => ruleVersionId.trim().length > 0)
+          .map(ruleVersionId => ref('rule-version', ruleVersionId)),
       })),
       filingReadiness: {
         state: deriveFilingReadinessState(receipt.snapshot),
