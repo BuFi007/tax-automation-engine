@@ -568,6 +568,7 @@ export const server = Bun.serve({
         {
           corridorEnabled: authorityCorridorEnabled,
           secrets: authorityPrincipalSecrets,
+          taxCases: facturaEAgent,
         }
       );
       if (authorityCorridorResponse)
