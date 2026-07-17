@@ -108,6 +108,31 @@ describe('Contabilium conformance boundary', () => {
     await expect(provider.getImportCapabilities('tenant:a')).rejects.toThrow('CONTABILIUM_ACCOUNT_BINDING_MISMATCH');
   });
 
+  test('fails closed on provider rate limits and transport timeouts', async () => {
+    const config = {
+      tenantId: 'tenant:a',
+      expectedAccountCommitment: contabiliumAccountCommitment({ accountId: 807, cuit: '30708951842' }),
+      sandboxEvidenceHash: hash('sandbox'),
+      dateFrom: '2026-01-01',
+      dateTo: '2026-12-31',
+    };
+    const rateLimited = new ContabiliumRestSandboxProvider(
+      config,
+      fixedToken(),
+      async () => new Response(null, { status: 429 }),
+    );
+    await expect(rateLimited.getImportCapabilities('tenant:a'))
+      .rejects.toThrow('CONTABILIUM_API_REJECTED_429');
+
+    const timedOut = new ContabiliumRestSandboxProvider(
+      config,
+      fixedToken(),
+      async () => { throw new DOMException('timeout', 'TimeoutError'); },
+    );
+    await expect(timedOut.getImportCapabilities('tenant:a'))
+      .rejects.toThrow('CONTABILIUM_TRANSPORT_FAILED');
+  });
+
   test('obtains and caches a bounded client-credentials token without exposing credentials', async () => {
     let calls = 0;
     const source = new ContabiliumClientCredentialsTokenSource({

@@ -1,0 +1,200 @@
+{
+  "version": "tax-backend-release-manifest-v1",
+  "issue": "BU-252",
+  "contract": {
+    "browserPackageVersion": "0.6.0",
+    "goldenFixtureSha256": "703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976",
+    "scenarioFixtureSha256": "68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415",
+    "capabilityReads": 22,
+    "approvalAwareActions": 4
+  },
+  "journeys": [
+    "argentina_service_exporter",
+    "us_domestic_llc",
+    "us_foreign_owned_llc",
+    "us_c_corporation",
+    "accountant_two_client_isolation"
+  ],
+  "faultMatrix": [
+    "duplicate_events",
+    "reordered_events",
+    "worker_kill_restart",
+    "provider_429",
+    "provider_timeout",
+    "stale_rule_fx_model_catalogue",
+    "partial_capabilities",
+    "wrong_enrichment_identity",
+    "graph_collision",
+    "ambiguous_authority_result",
+    "signer_denial",
+    "accountant_rejection",
+    "consent_revocation",
+    "cross_tenant_access",
+    "corrupted_artifact",
+    "database_outage",
+    "queue_replay",
+    "kill_switch"
+  ],
+  "faultEvidence": [
+    {
+      "id": "duplicate_events",
+      "testFile": "packages/core/src/digital-assets.test.ts",
+      "testTitle": "rejects duplicate economic events and untraceable or future valuations"
+    },
+    {
+      "id": "reordered_events",
+      "testFile": "apps/api/src/store.test.ts",
+      "testTitle": "converges out-of-order batches and pending supersession targets"
+    },
+    {
+      "id": "worker_kill_restart",
+      "testFile": "apps/api/src/authority-corridor.test.ts",
+      "testTitle": "reclaims a stale recovery lease after restart and fences the killed recovery worker"
+    },
+    {
+      "id": "provider_429",
+      "testFile": "packages/erp/src/contabilium.test.ts",
+      "testTitle": "fails closed on provider rate limits and transport timeouts"
+    },
+    {
+      "id": "provider_timeout",
+      "testFile": "packages/erp/src/contabilium.test.ts",
+      "testTitle": "fails closed on provider rate limits and transport timeouts"
+    },
+    {
+      "id": "stale_rule_fx_model_catalogue",
+      "testFile": "packages/browser-contracts/src/scenario-fixtures.test.ts",
+      "testTitle": "covers stale, offline, partial, and failed providers without optimistic health"
+    },
+    {
+      "id": "partial_capabilities",
+      "testFile": "packages/erp/src/contabilium.test.ts",
+      "testTitle": "binds a real REST read to one approved sandbox account and normalizes fiscal invoices without inferring settlement"
+    },
+    {
+      "id": "wrong_enrichment_identity",
+      "testFile": "packages/core/src/evidence/evidence.test.ts",
+      "testTitle": "surfaces conflicting reviewed party identities without merging them"
+    },
+    {
+      "id": "graph_collision",
+      "testFile": "packages/core/src/evidence/evidence.test.ts",
+      "testTitle": "rejects same-currency source contradictions even when normalized totals match"
+    },
+    {
+      "id": "ambiguous_authority_result",
+      "testFile": "apps/api/src/authority-corridor.test.ts",
+      "testTitle": "replays an ambiguous recovery key without refiring and permits a new exact recovery attempt"
+    },
+    {
+      "id": "signer_denial",
+      "testFile": "apps/api/src/wsfex.test.ts",
+      "testTitle": "maps a typed signer preflight denial to deterministic rejection without ambiguity"
+    },
+    {
+      "id": "accountant_rejection",
+      "testFile": "packages/browser-contracts/src/scenario-fixtures.test.ts",
+      "testTitle": "covers accountant changes and ARCA rejection, ambiguity, and reconciliation"
+    },
+    {
+      "id": "consent_revocation",
+      "testFile": "apps/api/src/evidence-routes.test.ts",
+      "testTitle": "revokes durable consent monotonically and invalidates the latest snapshot"
+    },
+    {
+      "id": "cross_tenant_access",
+      "testFile": "apps/api/src/evidence-routes.test.ts",
+      "testTitle": "denies cross-tenant snapshot reads, writes, and forged audit actors"
+    },
+    {
+      "id": "corrupted_artifact",
+      "testFile": "apps/reclaim-proof-vault/src/store.test.ts",
+      "testTitle": "rejects hash substitution and binds one immutable artifact to a session"
+    },
+    {
+      "id": "database_outage",
+      "testFile": "apps/api/src/api-errors.test.ts",
+      "testTitle": "never converts an unexpected storage failure into a permanent client nack"
+    },
+    {
+      "id": "queue_replay",
+      "testFile": "apps/api/src/factura-e-feature-outbox.test.ts",
+      "testTitle": "nacks with a safe code and retries after deterministic backoff"
+    },
+    {
+      "id": "kill_switch",
+      "testFile": "apps/api/src/factura-e-feature-mutation-fence.test.ts",
+      "testTitle": "is a no-op only while publication is explicitly disabled"
+    }
+  ],
+  "softwareSuites": [
+    {
+      "id": "full_repository_check",
+      "command": ["bun", "run", "check"],
+      "proves": ["types", "unit_and_integration_tests", "production_builds"]
+    },
+    {
+      "id": "browser_contract_replay",
+      "command": [
+        "bun", "test",
+        "packages/browser-contracts/src/capabilities.test.ts",
+        "packages/browser-contracts/src/fixtures.test.ts",
+        "packages/browser-contracts/src/scenario-fixtures.test.ts"
+      ],
+      "proves": ["pinned_contract", "ar_us_fixture_replay", "partial_provider_projection"]
+    },
+    {
+      "id": "durability_isolation_and_provenance",
+      "command": [
+        "bun", "test",
+        "apps/api/src/store.test.ts",
+        "apps/api/src/evidence-routes.test.ts",
+        "apps/api/src/tenant-principal.test.ts",
+        "apps/api/src/accountant-mandate-routes.test.ts",
+        "packages/core/src/evidence/batch.test.ts",
+        "packages/core/src/evidence/resolver.test.ts"
+      ],
+      "proves": ["durable_store", "ordered_replay", "tenant_isolation", "consent_revocation", "provenance"]
+    },
+    {
+      "id": "authority_and_outbox_faults",
+      "command": [
+        "bun", "test",
+        "apps/api/src/authority-corridor.test.ts",
+        "apps/api/src/factura-e-authority-remote-effect.test.ts",
+        "apps/api/src/factura-e-feature-publication.test.ts",
+        "apps/api/src/factura-e-feature-outbox.test.ts",
+        "apps/wsfex-signer/src/service.test.ts",
+        "apps/wsfex-signer/src/store.test.ts"
+      ],
+      "proves": ["ambiguous_recovery", "worker_fencing", "outbox_convergence", "signer_fail_closed"]
+    },
+    {
+      "id": "jurisdiction_erp_crypto_and_factoring",
+      "command": [
+        "bun", "test",
+        "packages/core/src/catalogue/catalogue.test.ts",
+        "packages/core/src/argentina-services.test.ts",
+        "packages/core/src/stripe-tax.test.ts",
+        "packages/core/src/digital-assets.test.ts",
+        "packages/erp/src/contabilium.test.ts",
+        "packages/erp/src/workspace-bridge.test.ts",
+        "packages/core/src/factura-e-feature.test.ts",
+        "apps/api/src/factura-e-feature-reservation.test.ts"
+      ],
+      "proves": ["ar_rules", "us_rules", "erp_binding", "crypto_ledger", "factoring_lifecycle"]
+    }
+  ],
+  "externalAuthority": {
+    "environment": "homologacion",
+    "liveSmokePath": "providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json",
+    "requiredState": "ready_for_invoice_homologation",
+    "productionEnabledMustRemain": false
+  },
+  "productionInvariants": {
+    "fixtureFallbackForbidden": true,
+    "rawCredentialInputForbidden": true,
+    "productionAuthorityRequiresExplicitApproval": true,
+    "preparationReviewSubmissionAcceptancePaymentDistinct": true
+  }
+}
