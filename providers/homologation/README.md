@@ -46,7 +46,7 @@ The command exits `0` only when all of these are true:
 
 - explicit homologation authority and an approved test identity are recorded;
 - trusted user, accountant, and evidence-ingest channels are configured;
-- both Reclaim providers are configured and explicitly marked reviewed;
+- all three Reclaim provider IDs are configured and explicitly marked reviewed;
 - HTTPS callback, proof vault, and signer boundaries are configured;
 - a retention policy and WSFEX certificate delegation are confirmed; and
 - the authority environment is homologation with production disabled.
@@ -85,8 +85,11 @@ belongs in the evidence report.
 The redacted evidence JSON must satisfy `homologationEvidenceSchema` in
 `apps/api/src/homologation.ts`. It covers:
 
-- all three Reclaim purposes, provider versions, TEE policy, custody receipt,
-  and negative binding tests;
+- all four Reclaim evidence purposes—onboarding readiness, taxpayer readiness,
+  CAE constatement, and adjustment constatement—across the three reviewed
+  provider IDs, including provider versions, TEE policy, custody receipt, and
+  negative binding tests. Every provider-ID hash must match the currently
+  configured provider ID whose separate reviewed flag is true;
 - WSFEX document types 19/20/21, accepted result, deliberate ambiguity, exact
   recovery, mismatched-echo/canonical-payload rejection, encrypted payload
   inspection, and WSAA private-key isolation;

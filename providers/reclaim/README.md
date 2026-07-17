@@ -29,7 +29,10 @@ The public CAE constatement surface currently resolves through the legacy AFIP s
 Before interactive provider acceptance, `bun run homologation:preflight` requires
 the issuance provider IDs and their separate explicit reviewed flags. Onboarding
 must additionally keep `RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED=false` until
-the prover-side WITNESS acceptance matrix passes. After the browser
-runs, include only provider-ID hashes, provider versions, proof hashes, custody
-receipt hashes, TEE results, and negative-binding outcomes in the redacted
-homologation report. Validate it with `bun run homologation:validate -- <file>`.
+the prover-side WITNESS acceptance matrix passes. After the browser runs,
+include all four evidence purposes (`arca_onboarding_readiness`,
+`arca_taxpayer_readiness`, `arca_cae_constatement`, and
+`arca_adjustment_constatement`) across the three reviewed provider IDs. Store
+only provider-ID hashes, provider versions, proof hashes, custody receipt
+hashes, TEE results, and negative-binding outcomes in the redacted homologation
+report. Validate it with `bun run homologation:validate -- <file>`.
