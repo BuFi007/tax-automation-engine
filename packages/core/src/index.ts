@@ -17,3 +17,4 @@ export * from './digital-assets';
 export * from './stripe-tax';
 export * from './argentina-services';
 export * from './argentina-launch-policy';
+export * from './tax-domain-event';

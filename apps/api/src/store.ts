@@ -24,11 +24,14 @@ import type {
   TaxSnapshotProjectionConfigurationV1,
   TaxWidgetSnapshotReceiptV1,
   TaxWidgetSnapshotV1,
+  TaxDomainEventV1,
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
   assertActiveAccountantMandate,
   hashCanonical,
+  assertTaxDomainEventV1,
+  hashTaxDomainEventV1,
   hashTaxEvidenceBatch,
   normalizeTaxSnapshotProjectionKey,
   resolveActiveEvidenceRecords,
@@ -130,6 +133,21 @@ export class TaxProfileStore {
         appended_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, idempotency_key)
       );
+      CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        leased_until TEXT,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        delivered_at TEXT,
+        last_error_code TEXT,
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS tax_domain_event_outbox_pending
+        ON tax_domain_event_outbox (delivered_at, leased_until, appended_at);
       CREATE INDEX IF NOT EXISTS evidence_records_workspace_revision
         ON evidence_records (workspace_id, revision);
       CREATE TABLE IF NOT EXISTS evidence_supersessions (
@@ -568,6 +586,106 @@ export class TaxProfileStore {
 
   close(): void {
     this.#db.close();
+  }
+
+  /**
+   * Persist a privacy-minimized TaxDomainEvent before any agent workflow is
+   * notified. The workspace/idempotency uniqueness is the convergence point
+   * for retries and reordered upstream provider callbacks.
+   */
+  appendTaxDomainEvent(eventInput: TaxDomainEventV1, appendedAt: string): Readonly<{
+    event: TaxDomainEventV1;
+    replayed: boolean;
+  }> {
+    const event = assertTaxDomainEventV1(eventInput);
+    const eventHash = hashTaxDomainEventV1(event);
+    return this.#db.transaction(() => {
+      const byEventId = this.#db.query<{ event_hash: string; event_json: string }, [string]>(`
+        SELECT event_hash, event_json FROM tax_domain_event_outbox WHERE event_id = ?
+      `).get(event.eventId);
+      if (byEventId) {
+        if (byEventId.event_hash !== eventHash) throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+        return { event: assertTaxDomainEventV1(JSON.parse(byEventId.event_json)), replayed: true };
+      }
+      const byIdempotency = this.#db.query<{ event_hash: string; event_json: string }, [string, string]>(`
+        SELECT event_hash, event_json
+        FROM tax_domain_event_outbox
+        WHERE workspace_id = ? AND idempotency_key = ?
+      `).get(event.workspaceId, event.idempotencyKey);
+      if (byIdempotency) {
+        if (byIdempotency.event_hash !== eventHash) throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+        return { event: assertTaxDomainEventV1(JSON.parse(byIdempotency.event_json)), replayed: true };
+      }
+      this.#db.query(`
+        INSERT INTO tax_domain_event_outbox (
+          event_id, workspace_id, idempotency_key, event_hash, event_json, appended_at,
+          leased_until, delivery_attempts, delivered_at, last_error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL)
+      `).run(event.eventId, event.workspaceId, event.idempotencyKey, eventHash, JSON.stringify(event), appendedAt);
+      return { event, replayed: false };
+    })();
+  }
+
+  /** Lease undelivered events. A worker must ack only after target inbox persistence. */
+  leaseTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly TaxDomainEventV1[] {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('TAX_DOMAIN_EVENT_LEASE_LIMIT_INVALID');
+    if (input.leaseUntil <= input.now) throw new Error('TAX_DOMAIN_EVENT_LEASE_WINDOW_INVALID');
+    return this.#db.transaction(() => {
+      const candidates = this.#db.query<{ event_id: string; event_json: string }, [string, number]>(`
+        SELECT event_id, event_json
+        FROM tax_domain_event_outbox
+        WHERE delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
+        ORDER BY appended_at ASC, event_id ASC
+        LIMIT ?
+      `).all(input.now, input.limit);
+      const claim = this.#db.query(`
+        UPDATE tax_domain_event_outbox
+        SET leased_until = ?, delivery_attempts = delivery_attempts + 1, last_error_code = NULL
+        WHERE event_id = ? AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
+      `);
+      const leased: TaxDomainEventV1[] = [];
+      for (const candidate of candidates) {
+        if (claim.run(input.leaseUntil, candidate.event_id, input.now).changes === 1) {
+          leased.push(assertTaxDomainEventV1(JSON.parse(candidate.event_json)));
+        }
+      }
+      return leased;
+    })();
+  }
+
+  ackTaxDomainEventDelivery(eventId: string, deliveredAt: string): void {
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET delivered_at = ?, leased_until = NULL, last_error_code = NULL
+      WHERE event_id = ? AND delivered_at IS NULL
+    `).run(deliveredAt, eventId);
+    if (updated.changes !== 1) {
+      const delivered = this.#db.query<{ event_id: string }, [string]>(`
+        SELECT event_id FROM tax_domain_event_outbox WHERE event_id = ? AND delivered_at IS NOT NULL
+      `).get(eventId);
+      if (!delivered) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+    }
+  }
+
+  releaseTaxDomainEventDelivery(eventId: string, retryAt: string, errorCode: string): void {
+    if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET leased_until = ?, last_error_code = ?
+      WHERE event_id = ? AND delivered_at IS NULL
+    `).run(retryAt, errorCode, eventId);
+    if (updated.changes !== 1) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+  }
+
+  listPendingTaxDomainEvents(): readonly TaxDomainEventV1[] {
+    const rows = this.#db.query<{ event_json: string }, []>(`
+      SELECT event_json FROM tax_domain_event_outbox WHERE delivered_at IS NULL ORDER BY appended_at ASC, event_id ASC
+    `).all();
+    return rows.map(row => assertTaxDomainEventV1(JSON.parse(row.event_json)));
   }
 
   get(workspaceId: string): TaxProfile | null {
