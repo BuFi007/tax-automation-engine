@@ -80,6 +80,7 @@ function signedRequest(
   body: unknown,
   input: Readonly<{
     capability:
+      | 'factura-e:case:create'
       | 'factura-e:intent:create'
       | 'factura-e:approval:register'
       | 'factura-e:execute'
@@ -130,6 +131,44 @@ function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:use
 }
 
 describe('Tax-owned Factura E authority corridor', () => {
+  test('creates and binds a manual TaxCase without drafting, approving, or issuing', async () => {
+    const { store, service } = fixture();
+    const calls: Record<string, unknown>[] = [];
+    const taxCases = {
+      createRun: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'create', ...input });
+        return { run: { runId: input.runId, workspaceId: input.workspaceId }, replayed: false };
+      },
+      bindLedgerInvoice: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'bind', ...input });
+        return { run: { runId: input.runId, workspaceId }, replayed: false };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    const path = '/v1/authority/factura-e/cases';
+    const body = {
+      version: 'factura-e-tax-case-create-v1', workspaceId, runId,
+      ledgerInvoiceId: '33333333-3333-4333-8333-333333333333',
+      issuancePath: 'reclaim_copilot', idempotencyKey: 'motora-create-case-1',
+    } as const;
+    try {
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, { capability: 'factura-e:case:create', actorId: 'motora:user-1', secret: motoraSecret }),
+        new URL(`https://tax.test${path}`), service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({ data: {
+        version: 'factura-e-tax-case-receipt-v1', runId, workspaceId,
+        ledgerInvoiceId: body.ledgerInvoiceId, state: 'case_created', replayed: false,
+        nextAction: 'collect_verified_evidence',
+      } });
+      expect(calls).toEqual([
+        expect.objectContaining({ kind: 'create', runId, workspaceId, issuancePath: 'reclaim_copilot' }),
+        expect.objectContaining({ kind: 'bind', runId, ledgerInvoiceId: body.ledgerInvoiceId }),
+      ]);
+    } finally { store.close(); }
+  });
+
   test('persists intent, consumes a distinct one-use approval, and recovers exactly', async () => {
     const { store, service, calls } = fixture();
     try {

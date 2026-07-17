@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { classifyApiError } from './api-errors';
 import { readBoundedBody } from './bounded-body';
 import type { FacturaEAuthorityExecutionService } from './authority-execution';
+import type { FacturaEAgentService } from './factura-e-agent';
 import {
   type TaxAuthorityCapability,
   type TaxAuthorityPrincipalSecrets,
@@ -29,6 +30,17 @@ const createIntentSchema = z
     workspaceId: workspaceIdSchema,
     runId: z.uuid(),
     intentHash: sha256Schema,
+    idempotencyKey: idempotencyKeySchema,
+  })
+  .strict();
+
+const createCaseSchema = z
+  .object({
+    version: z.literal('factura-e-tax-case-create-v1'),
+    workspaceId: workspaceIdSchema,
+    runId: z.uuid(),
+    ledgerInvoiceId: z.uuid(),
+    issuancePath: z.enum(['reclaim_copilot', 'wsfex_delegated']),
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();
@@ -74,6 +86,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
   options: Readonly<{
     corridorEnabled: boolean;
     secrets: TaxAuthorityPrincipalSecrets;
+    taxCases?: FacturaEAgentService;
   }>
 ): Promise<Response | null> {
   const route = matchRoute(request.method, url.pathname);
@@ -109,6 +122,35 @@ export async function handleFacturaEAuthorityCorridorRoute(
       secrets: options.secrets,
     });
     const occurredAt = new Date().toISOString();
+
+    if (route.operation === 'create_case') {
+      if (!options.taxCases) throw new Error('TAX_CASE_CORRIDOR_CONFIGURATION_REQUIRED');
+      const body = createCaseSchema.parse(JSON.parse(rawBody) as unknown);
+      assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      const created = options.taxCases.createRun({
+        runId: body.runId,
+        workspaceId: body.workspaceId,
+        issuancePath: body.issuancePath,
+        actorId: `motora:${principal.actorId}`,
+        idempotencyKey: body.idempotencyKey,
+        occurredAt,
+      });
+      const binding = options.taxCases.bindLedgerInvoice({
+        runId: body.runId,
+        ledgerInvoiceId: body.ledgerInvoiceId,
+        idempotencyKey: `${body.idempotencyKey}:ledger-binding`,
+        occurredAt,
+      });
+      return privateJson({ data: {
+        version: 'factura-e-tax-case-receipt-v1',
+        runId: created.run.runId,
+        workspaceId: created.run.workspaceId,
+        ledgerInvoiceId: body.ledgerInvoiceId,
+        state: 'case_created',
+        replayed: created.replayed && binding.replayed,
+        nextAction: 'collect_verified_evidence',
+      } }, 200);
+    }
 
     if (route.operation === 'create') {
       const body = createIntentSchema.parse(JSON.parse(rawBody) as unknown);
@@ -175,11 +217,13 @@ export async function handleFacturaEAuthorityCorridorRoute(
 }
 
 function matchRoute(method: string, pathname: string): Readonly<{
-  operation: 'readiness' | 'status' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
+  operation: 'readiness' | 'status' | 'create_case' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
   capability: TaxAuthorityCapability;
   workspaceId?: string;
   executionId?: string;
 }> | null {
+  if (method === 'POST' && pathname === '/v1/authority/factura-e/cases')
+    return { operation: 'create_case', capability: 'factura-e:case:create' };
   if (method === 'POST' && pathname === '/v1/authority/factura-e/intents')
     return { operation: 'create', capability: 'factura-e:intent:create' };
   const readiness = pathname.match(/^\/v1\/authority\/factura-e\/readiness\/([^/]+)$/);

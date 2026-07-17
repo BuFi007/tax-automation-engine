@@ -4,6 +4,7 @@ import { taxWorkspaceIdSchema } from '@tax-engine/core';
 import { z } from 'zod';
 
 export const taxAuthorityCapabilitySchema = z.enum([
+  'factura-e:case:create',
   'factura-e:intent:create',
   'factura-e:approval:register',
   'factura-e:execute',
