@@ -102,8 +102,26 @@ export class FacturaEAgentService {
     const existing = this.store.getFacturaEAgentRun(input.runId);
     if (existing) throw new Error('AGENT_RUN_ALREADY_EXISTS');
     const created = createFacturaEAgentRun(input);
-    const run = this.persist(created.run, created.event, input.occurredAt, commandHash);
-    return result(run, false, undefined);
+    return result(this.persist(created.run, created.event, input.occurredAt, commandHash), false, undefined);
+  }
+
+  bindLedgerInvoice(input: Readonly<{
+    runId: string;
+    ledgerInvoiceId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): { run: FacturaEAgentRunV1; replayed: boolean } {
+    const run = this.getRun(input.runId);
+    return {
+      run,
+      ...this.store.bindInvoiceTaxCase({
+        workspaceId: run.workspaceId,
+        invoiceId: input.ledgerInvoiceId,
+        runId: run.runId,
+        idempotencyKey: input.idempotencyKey,
+        boundAt: input.occurredAt,
+      }),
+    };
   }
 
   getRun(runId: string): FacturaEAgentRunV1 {

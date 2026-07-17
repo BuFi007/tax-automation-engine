@@ -194,6 +194,10 @@ export const FACTURA_E_AGENT_TOOLS = [
     type: 'object', required: ['runId', 'workspaceId', 'issuancePath'], additionalProperties: false,
     properties: { runId: { type: 'string', format: 'uuid' }, workspaceId: { type: 'string' }, issuancePath: { enum: ['reclaim_copilot', 'wsfex_delegated'] } },
   }, 'automatic'),
+  tool('tax_ar_factura_e_bind_ledger_invoice', 'Bind one existing Factura E case to one BUFI Invoice 2.0 ledger invoice. This only links immutable identifiers; it never records settlement or issues an invoice.', {
+    type: 'object', required: ['runId', 'ledgerInvoiceId'], additionalProperties: false,
+    properties: { runId: { type: 'string', format: 'uuid' }, ledgerInvoiceId: { type: 'string', format: 'uuid' } },
+  }, 'automatic'),
   tool('tax_ar_factura_e_get_case', 'Read the case, its independent compliance states, and deterministic next actions.', {
     type: 'object', required: ['runId'], additionalProperties: false, properties: { runId: { type: 'string', format: 'uuid' } },
   }, 'read_only'),
@@ -483,6 +487,10 @@ async function invokeTool(
     case 'tax_ar_factura_e_create_case': {
       const input = z.object({ runId: z.uuid(), workspaceId: z.string().min(1), issuancePath: z.enum(['reclaim_copilot', 'wsfex_delegated']) }).strict().parse(body.input);
       return service.createRun({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });
+    }
+    case 'tax_ar_factura_e_bind_ledger_invoice': {
+      const input = z.object({ runId: z.uuid(), ledgerInvoiceId: z.uuid() }).strict().parse(body.input);
+      return service.bindLedgerInvoice({ ...input, idempotencyKey: body.idempotencyKey, occurredAt });
     }
     case 'tax_ar_factura_e_get_case': {
       const input = z.object({ runId: z.uuid() }).strict().parse(body.input);
