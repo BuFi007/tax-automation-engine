@@ -9,6 +9,7 @@
     "build": "bun build src/index.ts --outdir dist --target bun",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test src",
+    "certify:tax-domain-event": "bun src/tax-domain-event-certification-cli.ts",
     "homologation:preflight": "bun src/homologation-cli.ts preflight",
     "homologation:probe-signer": "bun src/homologation-cli.ts probe-signer",
     "homologation:probe-points-of-sale": "bun src/homologation-cli.ts probe-points-of-sale",

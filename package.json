@@ -19,6 +19,7 @@
     "typecheck": "bun --filter @tax-engine/browser-contracts build && bun run --filter '*' typecheck",
     "test": "bun --filter @tax-engine/browser-contracts build && bun test",
     "check": "bun run typecheck && bun run build && bun test",
+    "certify:tax-domain-event": "bun --filter @tax-engine/api certify:tax-domain-event",
     "homologation:preflight": "bun --filter @tax-engine/api homologation:preflight",
     "homologation:probe-signer": "bun --filter @tax-engine/api homologation:probe-signer",
     "homologation:probe-wsfe-signer": "bun --filter @tax-engine/api homologation:probe-wsfe-signer",
