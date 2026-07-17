@@ -131,6 +131,19 @@ describe('browser-safe Tax V1 contracts', () => {
       ...ready,
       reclaim: { ...ready.reclaim, teeVerified: null },
     }).success).toBe(false);
+
+    expect(taxAuthorityReadinessV1Schema.safeParse({
+      ...ready,
+      state: 'verified',
+      currentStep: 'zk_evidence',
+      reclaim: {
+        state: 'pending',
+        teeVerified: null,
+        custodyRecorded: null,
+        verifiedAt: null,
+      },
+      limitationCodes: [],
+    }).success).toBe(true);
   });
 
   test('keeps liability unavailable and exact activity separate', () => {
