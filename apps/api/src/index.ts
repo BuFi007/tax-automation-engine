@@ -32,6 +32,7 @@ import {
   requiredTaxTenantPrincipalCapability,
   taxTenantPrincipalSecretForCapability,
   verifyBoundTaxTenantPrincipal,
+  verifyBoundTaxTenantPrincipalForRawBody,
   verifyTaxTenantPrincipal,
 } from './tenant-principal';
 import {
@@ -74,6 +75,7 @@ import {
 import { taxDemoRoutesEnabled } from './demo-route-policy';
 import { readBoundedBody } from './bounded-body';
 import { handleAccountantMandateRoute } from './accountant-mandate-routes';
+import { handleExternalAccountantDecisionRoute } from './accountant-decision-routes';
 import {
   assertNoTaxEngineFundingAuthority,
   resolveArgentinaLaunchPolicyReadiness,
@@ -96,6 +98,10 @@ const snapshotProjectorToken = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN ?
 const userPrincipalSecret = process.env.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET ?? null;
 const motoraOnboardingPrincipalSecret =
   process.env.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
+const accountantDecisionPrincipalSecret =
+  process.env.TAX_ENGINE_ACCOUNTANT_DECISION_PRINCIPAL_HMAC_SECRET ?? null;
+const accountantDecisionIngressEnabled =
+  process.env.TAX_ENGINE_ACCOUNTANT_DECISION_INGRESS_ENABLED === 'true';
 const snapshotProjectorPrincipalSecret = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET ?? null;
 const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET ?? null;
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
@@ -182,23 +188,31 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !openAgentsAgentPrincipalSecret)) {
   throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
 }
-if (process.env.NODE_ENV === 'production'
-  && new Set([
+if (
+  accountantDecisionIngressEnabled
+  && Buffer.byteLength(accountantDecisionPrincipalSecret ?? '') < 32
+) throw new Error('TAX_ENGINE_ACCOUNTANT_DECISION_PRINCIPAL_CONFIGURATION_REQUIRED');
+if (process.env.NODE_ENV === 'production') {
+  const tenantSecrets = [
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    ...(accountantDecisionIngressEnabled ? [accountantDecisionPrincipalSecret] : []),
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
-  ]).size !== 7) {
-  throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
+  ].filter((value): value is string => Boolean(value));
+  if (new Set(tenantSecrets).size !== tenantSecrets.length) {
+    throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
+  }
 }
 if (taxDomainEventDeliveryEnabled) {
   const domainEventSecrets = [
     taxDomainEventIngressToken,
     taxDomainEventHmacSecret,
     openAgentsAgentPrincipalSecret,
+    accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
   ].filter((value): value is string => Boolean(value));
@@ -212,6 +226,7 @@ if (authorityCorridorEnabled) {
   assertTaxAuthoritySecretsDistinct(authorityPrincipalSecrets, [
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -240,6 +255,7 @@ if (facturaEFeatureEnabled) {
   assertFacturaEFeatureSecretsDistinct(facturaEFeaturePrincipalSecrets, [
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -258,6 +274,7 @@ if (facturaEFeatureEnabled) {
   assertFacturaETerminalReceiptVerifiers(facturaETerminalReceiptVerifiers, [
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -510,6 +527,33 @@ export const server = Bun.serve({
         );
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
+      if (
+        request.method === 'POST'
+        && url.pathname === '/v1/accountant-decisions'
+        && accountantDecisionIngressEnabled
+        && request.headers.has('x-tax-tenant-principal')
+      ) {
+        const rawBody = await readBoundedBody(
+          request,
+          32 * 1024,
+          'ACCOUNTANT_DECISION_REQUEST_TOO_LARGE',
+        );
+        const scopedPrincipal = verifyBoundTaxTenantPrincipalForRawBody(
+          request,
+          rawBody,
+          accountantDecisionPrincipalSecret,
+          'accountant:decision',
+        );
+        const scopedResponse = await handleExternalAccountantDecisionRoute(
+          request,
+          url,
+          store,
+          scopedPrincipal,
+          new Date(),
+          rawBody,
+        );
+        return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
       const authorityCorridorResponse = await handleFacturaEAuthorityCorridorRoute(
         request,
         url,
@@ -534,6 +578,7 @@ export const server = Bun.serve({
       if (featureResponse) return applyCors(featureResponse, request);
       if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
       const tenantCapability = /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
+        || url.pathname === '/v1/accountant-decisions'
         ? null
         : requiredTaxTenantPrincipalCapability(request.method, url.pathname);
       const tenantPrincipal = tenantCapability
@@ -620,6 +665,9 @@ export const server = Bun.serve({
                 inboxAckRequired: true,
                 pollIntervalMs: taxDomainEventPollIntervalMs,
               }
+            : { state: 'dark' },
+          externalAccountantDecisionIngress: accountantDecisionIngressEnabled
+            ? { state: 'armed', authority: 'external_accountant_workspace' }
             : { state: 'dark' },
         }), request);
       }

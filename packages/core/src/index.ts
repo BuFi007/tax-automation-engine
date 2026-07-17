@@ -14,6 +14,7 @@ export * from './factura-e-feature';
 export * from './factura-e-feature-head';
 export * from './arca-onboarding';
 export * from './accountant-mandate';
+export * from './accountant-decision';
 export * from './digital-assets';
 export * from './stripe-tax';
 export * from './argentina-services';

@@ -14,6 +14,7 @@ const capabilitySchema = z.enum([
   'arca:onboard',
   'accountant:mandate',
   'accountant:portfolio',
+  'accountant:decision',
 ]);
 const principalSchema = z.object({
   version: z.literal('tax-tenant-principal-v2'),
@@ -107,6 +108,45 @@ export async function verifyBoundTaxTenantPrincipal(
   requiredCapability: TaxTenantCapability,
   now: Date = new Date(),
 ): Promise<TaxTenantPrincipalV3> {
+  return verifyBoundTaxTenantPrincipalWithBodyHash(
+    request,
+    secret,
+    requiredCapability,
+    await boundedRequestBodyHash(request),
+    now,
+  );
+}
+
+/**
+ * Verify a body-bound principal after a route has performed one bounded read.
+ * This avoids depending on runtime-specific Request.clone body tee behavior.
+ */
+export function verifyBoundTaxTenantPrincipalForRawBody(
+  request: Request,
+  rawBody: string,
+  secret: string | null,
+  requiredCapability: TaxTenantCapability,
+  now: Date = new Date(),
+): TaxTenantPrincipalV3 {
+  if (Buffer.byteLength(rawBody, 'utf8') > 64 * 1024) {
+    throw new Error('TAX_TENANT_PRINCIPAL_SCOPE_UNAUTHORIZED');
+  }
+  return verifyBoundTaxTenantPrincipalWithBodyHash(
+    request,
+    secret,
+    requiredCapability,
+    createHash('sha256').update(rawBody, 'utf8').digest('hex'),
+    now,
+  );
+}
+
+function verifyBoundTaxTenantPrincipalWithBodyHash(
+  request: Request,
+  secret: string | null,
+  requiredCapability: TaxTenantCapability,
+  requestBodyHash: string,
+  now: Date,
+): TaxTenantPrincipalV3 {
   const decoded = decodeSignedPrincipal(request, secret);
   let principal: TaxTenantPrincipalV3;
   try {
@@ -133,7 +173,7 @@ export async function verifyBoundTaxTenantPrincipal(
   if (
     principal.method !== request.method
     || principal.path !== `${url.pathname}${url.search}`
-    || principal.bodyHash !== await boundedRequestBodyHash(request)
+    || principal.bodyHash !== requestBodyHash
   ) {
     throw new Error('TAX_TENANT_PRINCIPAL_SCOPE_UNAUTHORIZED');
   }
@@ -229,6 +269,7 @@ export function requiredTaxTenantPrincipalCapability(
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   if (method === 'GET' && pathname === '/v1/accountant-portfolio') return 'accountant:portfolio';
+  if (method === 'POST' && pathname === '/v1/accountant-decisions') return 'accountant:decision';
   return null;
 }
 

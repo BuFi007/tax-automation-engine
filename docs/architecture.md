@@ -73,3 +73,10 @@ The system models these lifecycle dimensions independently:
 5. obligation satisfaction state.
 
 An accepted authority receipt is required before an obligation can be marked satisfied.
+
+External accountant review follows the same authority rule: the accountant
+makes the decision outside the agent runtime, then Tax Engine verifies a
+request-bound principal and active scoped mandate before atomically recording
+the decision with its `accountant.decision_recorded` outbox event. Eve consumes
+that event but cannot create or upgrade it. See
+[the accountant decision boundary](external-accountant-decision-boundary.md).

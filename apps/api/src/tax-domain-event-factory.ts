@@ -6,6 +6,7 @@ import {
   type ArcaOnboardingEventV1,
   type ArcaOnboardingRunV1,
   type AccountantMandateScope,
+  type ExternalAccountantDecisionV1,
   type FacturaEFeatureV1,
   type FacturaEAgentEventV1,
   type FacturaEAgentRunV1,
@@ -165,6 +166,73 @@ export function createConsentRevokedTaxDomainEvent(input: Readonly<{
     policyVersionIds: ['tax-domain-event-minimization-v1'],
     actionRefs: [
       `consent_action_${commit('action', input.event.eventId).slice(0, 40)}`,
+    ],
+  });
+}
+
+/**
+ * Publish a decision made by an external accountant workspace only after the
+ * API has verified its request-bound principal, active mandate, and consent.
+ * The event contains privacy commitments and closed state only; it is not the
+ * source of the decision and cannot turn a reviewer note into approval.
+ */
+export function createExternalAccountantDecisionTaxDomainEvent(input: Readonly<{
+  decision: ExternalAccountantDecisionV1;
+  consent: ActiveConsent;
+  authenticationProofHash: string;
+  verifiedAt: string;
+  commitmentSecret: string;
+}>): TaxDomainEventV1 {
+  assertCommitmentSecret(input.commitmentSecret);
+  const decision = input.decision;
+  const commit = (purpose: string, value: string) => privacyCommitment(
+    input.commitmentSecret,
+    purpose,
+    decision.workspaceId,
+    value,
+  );
+  const sourceHash = hashCanonical(decision);
+  const eventSeed = `${decision.decisionId}:accountant.decision_recorded`;
+  return assertTaxDomainEventV1({
+    version: 'tax-domain-event-v1',
+    eventId: uuidFromCommitment(commit('event-id', eventSeed)),
+    workspaceId: decision.workspaceId,
+    caseRef: decision.caseRef,
+    kind: 'accountant.decision_recorded',
+    state: decision.outcome === 'approved'
+      ? 'recorded'
+      : decision.outcome === 'rejected'
+        ? 'rejected'
+        : 'blocked',
+    occurredAt: decision.occurredAt,
+    idempotencyKey: `taxevt_${commit('idempotency', decision.idempotencyKey).slice(0, 40)}`,
+    correlationRef: `taxcase_${commit('correlation', decision.caseRef).slice(0, 40)}`,
+    source: {
+      system: 'accountant_workspace',
+      sourceEventHash: commit('source-event', sourceHash),
+      verifiedAt: input.verifiedAt,
+    },
+    authentication: {
+      method: 'm2m_signed_grant',
+      principalRef: 'external_accountant_decision_ingress',
+      credentialVersion: 'tax-tenant-principal-v3',
+      signatureHash: commit('authentication', input.authenticationProofHash),
+    },
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version: `consent_${commit('consent-version', input.consent.version).slice(0, 40)}`,
+      scopeHash: commit('consent-scope', input.consent.scopeHash),
+      state: 'active',
+    },
+    evidenceHashes: [decision.mandateId, ...decision.evidenceHashes]
+      .map(value => commit('evidence', value)),
+    ruleVersionIds: decision.ruleVersionIds,
+    policyVersionIds: [
+      ...decision.policyVersionIds,
+      'tax-domain-event-minimization-v1',
+    ],
+    actionRefs: [
+      `accountant_decision_${commit('action', `${decision.subject.kind}:${decision.subject.ref}`).slice(0, 40)}`,
     ],
   });
 }
