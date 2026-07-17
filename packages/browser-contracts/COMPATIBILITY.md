@@ -51,3 +51,10 @@ retains the 0.5.x supplemental quality schema as a read-only compatibility
 branch. Consumers upgrade first; Tax emits only the new `ready` or named
 numeric-free states after Desk and Open Agents accept the package. The signal
 is explicitly separate from Payment Score and Factura E factoring.
+
+Package `0.7.0` adds optional closed obligation kinds and opaque rule-version
+references for jurisdiction specialist consumers. Free-form catalogue titles
+remain presentation-only and must not enter model context. Consumers accept
+the optional fields before the Tax producer emits them; missing fields mean
+that specialist conclusions are unavailable, never that an obligation is not
+applicable.

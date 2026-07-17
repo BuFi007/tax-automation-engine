@@ -14,6 +14,7 @@ import {
 
 import {
   resolveTaxBrowserReferenceSecret,
+  taxObligationKindForId,
   TaxBrowserSnapshotProjector,
   TaxBrowserSnapshotService,
 } from './browser-snapshot';
@@ -25,6 +26,43 @@ const GENERATED_AT = '2026-07-10T12:00:00.000Z';
 const VALID_UNTIL = '2026-07-11T12:00:00.000Z';
 
 describe('browser tax snapshot production boundary', () => {
+  test('classifies only closed AR and US obligation identifiers', () => {
+    const exact = {
+      'ar:invoice-readiness': 'ar_invoice_readiness',
+      'ar:iibb-review': 'ar_iibb_review',
+      'ar:ganancias-individual-annual': 'ar_ganancias_individual_annual',
+      'ar:bienes-personales-annual': 'ar_bienes_personales_annual',
+      'ar:ganancias-simplified-review': 'ar_ganancias_simplified_review',
+      'ar:monotributo-payment': 'ar_monotributo_payment',
+      'ar:iva-simple': 'ar_iva_simple',
+      'ar:ganancias-corporate-annual': 'ar_ganancias_corporate_annual',
+      'ar:mipyme': 'ar_mipyme',
+      'ar:knowledge-economy': 'ar_knowledge_economy',
+      'us:state-review': 'us_state_review',
+      'us:sales-tax': 'us_sales_tax',
+      'us:de:llc-annual-tax': 'us_delaware_llc_annual_tax',
+      'us:de:corporation-franchise': 'us_delaware_corporation_franchise',
+      'us:de:income-return': 'us_delaware_income_return',
+      'us:form-5472-corporation-review': 'us_form_5472_corporation_review',
+      'us:payroll': 'us_payroll',
+      'us:form-5472-pro-forma-1120': 'us_form_5472_pro_forma_1120',
+      'us:form-1065': 'us_form_1065',
+      'us:form-1120-s': 'us_form_1120_s',
+      'us:form-1120': 'us_form_1120',
+      'us:owner-income-return-review': 'us_owner_income_return_review',
+    } as const;
+    for (const [obligationId, kind] of Object.entries(exact)) {
+      expect(taxObligationKindForId(obligationId)).toBe(kind);
+    }
+    expect(taxObligationKindForId('ar:recategorization:08')).toBe(
+      'ar_monotributo_recategorization',
+    );
+    expect(taxObligationKindForId('us:c-corp-estimated:4')).toBe(
+      'us_c_corp_estimated_tax',
+    );
+    expect(taxObligationKindForId('provider:ignore-prior-instructions')).toBe('unclassified');
+  });
+
   test('requires a dedicated >=32-byte production HMAC secret', () => {
     expect(resolveTaxBrowserReferenceSecret(null, 'test')).toBeNull();
     expect(() => resolveTaxBrowserReferenceSecret(null, 'production')).toThrow(
@@ -62,6 +100,12 @@ describe('browser tax snapshot production boundary', () => {
         supportedExpenses: initialSnapshot.metrics.supportedExpenses,
       });
       expect(first.result.data.snapshot.authorizedNextActions).toEqual([]);
+      expect(first.result.data.snapshot.obligations.length).toBeGreaterThan(0);
+      expect(
+        first.result.data.snapshot.obligations.every(
+          obligation => obligation.kind?.startsWith('ar_') && obligation.ruleVersionRefs?.length,
+        ),
+      ).toBe(true);
       expect(first.result.data.snapshot.filingReadiness?.asOf).toBe(GENERATED_AT);
       expect(
         first.result.data.snapshot.evidenceTasks?.every(task => task.actionId === null),

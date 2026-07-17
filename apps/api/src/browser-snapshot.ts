@@ -8,6 +8,7 @@ import {
   taxWidgetSnapshotV1Schema,
   type TaxSnapshotProblemCodeV1,
   type TaxSnapshotReadResultV1,
+  type TaxObligationKindV1,
   type TaxWidgetSnapshotReceiptV1 as BrowserTaxWidgetSnapshotReceiptV1,
   type TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1,
 } from '@tax-engine/browser-contracts';
@@ -31,6 +32,42 @@ const BROWSER_SNAPSHOT_PROBLEM_CODES = new Set<TaxSnapshotProblemCodeV1>([
   'TAX_PROFILE_VERSION_CONFLICT',
   'TAX_SNAPSHOT_EXPIRED',
 ]);
+
+const EXACT_OBLIGATION_KINDS = {
+  'ar:invoice-readiness': 'ar_invoice_readiness',
+  'ar:iibb-review': 'ar_iibb_review',
+  'ar:ganancias-individual-annual': 'ar_ganancias_individual_annual',
+  'ar:bienes-personales-annual': 'ar_bienes_personales_annual',
+  'ar:ganancias-simplified-review': 'ar_ganancias_simplified_review',
+  'ar:monotributo-payment': 'ar_monotributo_payment',
+  'ar:iva-simple': 'ar_iva_simple',
+  'ar:ganancias-corporate-annual': 'ar_ganancias_corporate_annual',
+  'ar:mipyme': 'ar_mipyme',
+  'ar:knowledge-economy': 'ar_knowledge_economy',
+  'us:state-review': 'us_state_review',
+  'us:sales-tax': 'us_sales_tax',
+  'us:de:llc-annual-tax': 'us_delaware_llc_annual_tax',
+  'us:de:corporation-franchise': 'us_delaware_corporation_franchise',
+  'us:de:income-return': 'us_delaware_income_return',
+  'us:form-5472-corporation-review': 'us_form_5472_corporation_review',
+  'us:payroll': 'us_payroll',
+  'us:form-5472-pro-forma-1120': 'us_form_5472_pro_forma_1120',
+  'us:form-1065': 'us_form_1065',
+  'us:form-1120-s': 'us_form_1120_s',
+  'us:form-1120': 'us_form_1120',
+  'us:owner-income-return-review': 'us_owner_income_return_review',
+} as const satisfies Readonly<Record<string, Exclude<TaxObligationKindV1, 'unclassified'>>>;
+
+export function taxObligationKindForId(obligationId: string): TaxObligationKindV1 {
+  if (obligationId.startsWith('ar:recategorization:')) {
+    return 'ar_monotributo_recategorization';
+  }
+  if (obligationId.startsWith('us:c-corp-estimated:')) {
+    return 'us_c_corp_estimated_tax';
+  }
+  return EXACT_OBLIGATION_KINDS[obligationId as keyof typeof EXACT_OBLIGATION_KINDS]
+    ?? 'unclassified';
+}
 
 type SnapshotReader = Pick<TaxEvidenceWorkspaceService, 'latestSnapshot'>;
 
@@ -204,12 +241,15 @@ export class TaxBrowserSnapshotProjector {
       },
       obligations: receipt.snapshot.obligations.map(obligation => ({
         obligationRef: ref('obligation', obligation.id),
+        kind: taxObligationKindForId(obligation.id),
         title: obligation.title,
         dueAt: obligation.dueAt,
         preparationState: obligation.preparationState,
         submissionState: obligation.submissionState,
         satisfactionState: obligation.satisfactionState,
         actionId: null,
+        ruleVersionRefs: obligation.ruleVersionIds.map(ruleVersionId =>
+          ref('rule-version', ruleVersionId)),
       })),
       filingReadiness: {
         state: deriveFilingReadinessState(receipt.snapshot),

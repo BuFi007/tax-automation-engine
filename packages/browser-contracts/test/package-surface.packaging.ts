@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes the frozen root and bounded feature entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.6.0');
+    expect(packageJson.version).toBe('0.7.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);

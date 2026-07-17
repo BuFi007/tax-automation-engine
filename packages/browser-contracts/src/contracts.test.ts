@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   FACTURA_E_FACTORING_STATES_V1,
+  TAX_OBLIGATION_KINDS_V1,
   deriveTaxSourceHealthStateV1,
   facturaEFactoringProjectionV1Schema,
   facturaEFactoringProjectionReadResultV1Schema,
@@ -17,6 +18,17 @@ import {
 } from './fixtures';
 
 describe('browser-safe Tax V1 contracts', () => {
+  test('accepts closed specialist obligation semantics without changing legacy fixture bytes', () => {
+    const specialist = structuredClone(argentinaTaxWidgetSnapshotV1Fixture) as any;
+    specialist.obligations[0].kind = 'ar_invoice_readiness';
+    specialist.obligations[0].ruleVersionRefs = ['rule-version:opaque'];
+    expect(taxWidgetSnapshotV1Schema.safeParse(specialist).success).toBe(true);
+
+    specialist.obligations[0].kind = 'arbitrary_prompt_text';
+    expect(taxWidgetSnapshotV1Schema.safeParse(specialist).success).toBe(false);
+    expect(TAX_OBLIGATION_KINDS_V1).toContain('us_form_5472_pro_forma_1120');
+  });
+
   test('keeps liability unavailable and exact activity separate', () => {
     expect(argentinaTaxWidgetSnapshotV1Fixture.taxPosition).toEqual({
       state: 'unavailable',

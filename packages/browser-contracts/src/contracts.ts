@@ -453,6 +453,42 @@ export const taxCacheIdentityV1Schema = z.object({
   snapshotRevision: opaqueRevisionSchema,
 }).strict();
 
+/**
+ * Closed semantic identifiers for deterministic obligations. These labels are
+ * safe for specialist routing and explanation; catalogue titles and internal
+ * obligation IDs remain outside the model/browser trust boundary.
+ */
+export const TAX_OBLIGATION_KINDS_V1 = [
+  'ar_invoice_readiness',
+  'ar_iibb_review',
+  'ar_ganancias_individual_annual',
+  'ar_bienes_personales_annual',
+  'ar_ganancias_simplified_review',
+  'ar_monotributo_payment',
+  'ar_monotributo_recategorization',
+  'ar_iva_simple',
+  'ar_ganancias_corporate_annual',
+  'ar_mipyme',
+  'ar_knowledge_economy',
+  'us_state_review',
+  'us_sales_tax',
+  'us_delaware_llc_annual_tax',
+  'us_delaware_corporation_franchise',
+  'us_delaware_income_return',
+  'us_c_corp_estimated_tax',
+  'us_form_5472_corporation_review',
+  'us_payroll',
+  'us_form_5472_pro_forma_1120',
+  'us_form_1065',
+  'us_form_1120_s',
+  'us_form_1120',
+  'us_owner_income_return_review',
+  'unclassified',
+] as const;
+
+export const taxObligationKindV1Schema = z.enum(TAX_OBLIGATION_KINDS_V1);
+export type TaxObligationKindV1 = z.infer<typeof taxObligationKindV1Schema>;
+
 export const taxWidgetSnapshotV1Schema = z.object({
   version: z.literal('tax-widget-snapshot-v1'),
   workspaceId: safeReferenceSchema,
@@ -478,12 +514,14 @@ export const taxWidgetSnapshotV1Schema = z.object({
   capabilityManifest: taxCapabilityManifestV1Schema,
   obligations: z.array(z.object({
     obligationRef: safeReferenceSchema,
+    kind: taxObligationKindV1Schema.optional(),
     title: z.string().min(1).max(200),
     dueAt: isoDateTimeSchema.nullable(),
     preparationState: z.string().min(1).max(100),
     submissionState: z.string().min(1).max(100),
     satisfactionState: z.string().min(1).max(100),
     actionId: safeReferenceSchema.nullable(),
+    ruleVersionRefs: z.array(safeReferenceSchema).max(100).optional(),
   }).strict()).max(500),
   filingReadiness: filingReadinessV1Schema.optional(),
   evidenceTasks: z.array(evidenceTaskV1Schema).max(500).optional(),
