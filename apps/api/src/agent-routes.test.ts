@@ -63,7 +63,7 @@ describe('Factura E agent HTTP tools', () => {
     const manifest = await route(service, options, 'GET', '/v1/agent/tools');
     expect(manifest.status).toBe(200);
     const manifestJson = await manifest.json() as any;
-    expect(manifestJson.data.tools).toHaveLength(13);
+    expect(manifestJson.data.tools).toHaveLength(12);
     expect(JSON.stringify(manifestJson)).not.toContain('approveIntent');
     expect(JSON.stringify(manifestJson)).not.toContain('submit_wsfex');
     expect(JSON.stringify(manifestJson)).not.toContain('recover_wsfex');
@@ -74,10 +74,7 @@ describe('Factura E agent HTTP tools', () => {
       'arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement',
     ]);
     expect(reclaimTool.function.parameters.properties.subjectId).toBeDefined();
-    const settlementTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_factura_e_record_settlement');
-    expect(settlementTool.function.parameters.properties.settlement.properties.evidence.anyOf).toEqual(expect.arrayContaining([
-      expect.objectContaining({ properties: expect.objectContaining({ version: expect.objectContaining({ const: 'factura-e-settlement-evidence-v1' }) }) }),
-    ]));
+    expect(manifestJson.data.tools.some((candidate: any) => candidate.function.name === 'tax_ar_factura_e_record_settlement')).toBe(false);
     const preflight = await invoke(service, options, 'tax_ar_homologation_get_preflight', 'read-homologation-preflight-1', {});
     expect(preflight.data).toEqual(expect.objectContaining({ state: 'blocked', productionActivationAllowed: false }));
     expect(JSON.stringify(preflight.data)).not.toContain('user-token-kept-outside-agent');
@@ -316,31 +313,6 @@ describe('Factura E agent HTTP tools', () => {
       }, validHeaders),
     ).rejects.toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
 
-    const settlementToolId = 'tax_ar_factura_e_record_settlement';
-    const settlementPath = `/v1/agent/tools/${settlementToolId}/invoke`;
-    const unauthorizedSettlement = {
-      actorId: 'agent:tax',
-      idempotencyKey: 'principal-settlement-authority-1',
-      input: { runId },
-    };
-    const unauthorizedSettlementHeaders = createTaxAgentPrincipalHeaders({
-      secret: agentPrincipalSecret,
-      workspaceId,
-      actorId: unauthorizedSettlement.actorId,
-      toolId: settlementToolId,
-      path: settlementPath,
-      rawBody: JSON.stringify(unauthorizedSettlement),
-      idempotencyKey: unauthorizedSettlement.idempotencyKey,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    expect(route(
-      service,
-      options,
-      'POST',
-      settlementPath,
-      unauthorizedSettlement,
-      unauthorizedSettlementHeaders,
-    )).rejects.toThrow('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
   });
 
   test('rejects oversized public Reclaim callbacks before parsing them', async () => {

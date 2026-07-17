@@ -8,6 +8,7 @@ import { z } from 'zod';
 
 import { applyCors } from './cors';
 import { handleAgentRoute } from './agent-routes';
+import { handleInvoiceSettlementAdapterRoute } from './invoice-settlement-adapter-routes';
 import { FacturaEAgentService } from './factura-e-agent';
 import { HttpReclaimProofVault } from './proof-vault';
 import { ReclaimProtocolGateway } from './reclaim';
@@ -108,6 +109,8 @@ const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISH
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
 const openAgentsAgentPrincipalSecret =
   process.env.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
+const openAgentsInvoiceSettlementPrincipalSecret =
+  process.env.TAX_ENGINE_OPEN_AGENTS_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET ?? null;
 const taxDomainEventDeliveryEnabled =
   process.env.TAX_DOMAIN_EVENT_DELIVERY_ENABLED === 'true';
 const taxDomainEventIngressToken =
@@ -186,8 +189,8 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
-  || !openAgentsAgentPrincipalSecret)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
+  || !openAgentsAgentPrincipalSecret || !openAgentsInvoiceSettlementPrincipalSecret)) {
+  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_OPEN_AGENTS_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
 }
 if (
   accountantDecisionIngressEnabled
@@ -619,6 +622,8 @@ export const server = Bun.serve({
       if (factoringBrowserResponse) return applyCors(factoringBrowserResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
+      const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, facturaEAgent, openAgentsInvoiceSettlementPrincipalSecret);
+      if (settlementResponse) return applyCors(settlementResponse, request);
       const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
