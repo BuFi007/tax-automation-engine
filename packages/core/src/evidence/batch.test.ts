@@ -139,6 +139,31 @@ describe('tax evidence batch v1', () => {
     }))).toThrow('EVIDENCE_NON_ACTIVE_POINTER_INVALID');
   });
 
+  test('does not let a wallet proof impersonate Invoice 2.0 settlement finality', () => {
+    const finalized = settlementRecord('settlement-wallet-proof', null, 'active');
+    const sourceId = 'wallet-proof:verified-1';
+    expect(() => parseTaxEvidenceBatchV1(batch({
+      source: {
+        sourceId,
+        sourceKind: 'wallet',
+        canonicalProviderId: 'onchain-verifier',
+        adapterSchemaVersion: 'onchain-tax-evidence-v1',
+      },
+      consent: {
+        purpose: 'tax_workspace_processing',
+        version: 'consent-v1',
+        sourceIds: [sourceId],
+        scopeHash: hashTaxEvidenceConsentScope('consent-v1', [sourceId]),
+      },
+      records: [{
+        ...finalized,
+        sourceId,
+        sourceKind: 'wallet',
+        canonicalProviderId: 'onchain-verifier',
+      }],
+    }))).toThrow('EVIDENCE_SETTLEMENT_POINTER_INVALID');
+  });
+
   test('accepts a non-monetary Magic Inbox receipt withdrawal tombstone', () => {
     const receipt = magicInboxReceipt('receipt-active', null, 'active');
     const withdrawn = magicInboxReceipt(
