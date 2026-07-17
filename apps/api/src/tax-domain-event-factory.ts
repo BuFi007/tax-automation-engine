@@ -6,6 +6,7 @@ import {
   type ArcaOnboardingEventV1,
   type ArcaOnboardingRunV1,
   type AccountantMandateScope,
+  type FacturaEFeatureV1,
   type FacturaEAgentEventV1,
   type FacturaEAgentRunV1,
   type TaxDomainEventV1,
@@ -400,6 +401,94 @@ export function createSnapshotTaxDomainEvents(input: Readonly<{
     events.push(snapshotDomainEvent(input, obligationEventSpec(obligation)));
   }
   return events;
+}
+
+/**
+ * Translate the bound factoring-consumer receipt into the final event in the
+ * canonical TaxDomainEventV1 vocabulary. The caller must append this event in
+ * the same transaction that acknowledges the Factura E feature outbox row.
+ */
+export function createFacturaEFeaturePublishedTaxDomainEvent(input: Readonly<{
+  feature: FacturaEFeatureV1;
+  caseRef: string;
+  workspaceId: string;
+  receipt: Readonly<{
+    version: 'factura-e-feature-event-receipt-v1';
+    eventId: string;
+    featureHash: string;
+    accepted: true;
+  }>;
+  occurredAt: string;
+  commitmentSecret: string;
+}>): TaxDomainEventV1 {
+  assertCommitmentSecret(input.commitmentSecret);
+  if (
+    input.receipt.eventId !== input.feature.eventId
+    || input.receipt.featureHash !== input.feature.featureHash
+  ) throw new Error('TAX_DOMAIN_EVENT_FACTURA_E_FEATURE_RECEIPT_MISMATCH');
+  const commit = (purpose: string, value: string) => privacyCommitment(
+    input.commitmentSecret,
+    purpose,
+    input.workspaceId,
+    value,
+  );
+  const sourceReceiptHash = hashCanonical({
+    version: input.receipt.version,
+    eventId: input.receipt.eventId,
+    featureHash: input.receipt.featureHash,
+    accepted: input.receipt.accepted,
+  });
+  const eventSeed = `${input.feature.eventId}:factura_e_feature_published`;
+  return assertTaxDomainEventV1({
+    version: 'tax-domain-event-v1',
+    eventId: uuidFromCommitment(commit('event-id', eventSeed)),
+    workspaceId: input.workspaceId,
+    caseRef: input.caseRef,
+    kind: 'factura_e_feature_published',
+    state: input.feature.lifecycle === 'active' ? 'verified' : 'revoked',
+    occurredAt: input.occurredAt,
+    idempotencyKey: 'taxevt_' + commit('idempotency', eventSeed).slice(0, 40),
+    correlationRef: 'factura_feature_' + commit(
+      'correlation',
+      input.feature.featureId,
+    ).slice(0, 40),
+    source: {
+      system: 'factoring',
+      sourceEventHash: commit('source-event', sourceReceiptHash),
+      verifiedAt: input.occurredAt,
+    },
+    authentication: {
+      method: 'internal_outbox',
+      principalRef: 'factura_e_feature_delivery_worker',
+      credentialVersion: 'factura-e-feature-event-receipt-v1',
+      signatureHash: commit('authentication', sourceReceiptHash),
+    },
+    consent: {
+      purpose: 'factura_e_factoring',
+      version: 'consent_' + commit(
+        'consent-version',
+        input.feature.consent.version,
+      ).slice(0, 40),
+      scopeHash: commit(
+        'consent-scope',
+        [
+          input.feature.purpose,
+          input.feature.workspaceCommitment,
+          input.feature.invoiceCommitment,
+        ].join(':'),
+      ),
+      state: input.feature.consent.state === 'active' ? 'active' : 'revoked',
+    },
+    evidenceHashes: [commit('evidence', input.feature.featureHash)],
+    ruleVersionIds: [input.feature.schemaVersion, input.feature.policyVersion],
+    policyVersionIds: ['tax-domain-event-minimization-v1'],
+    actionRefs: [
+      'tax_action_' + commit(
+        'action',
+        `${input.feature.eventId}:${input.feature.lifecycle}`,
+      ).slice(0, 40),
+    ],
+  });
 }
 
 export function resolveTaxDomainEventCommitmentSecret(

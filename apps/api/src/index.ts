@@ -700,10 +700,17 @@ async function tickTaxDomainEvents(): Promise<void> {
   if (taxDomainEventTickRunning || !taxDomainEventPublisher) return;
   taxDomainEventTickRunning = true;
   try {
-    await drainTaxDomainEventOutbox(store, taxDomainEventPublisher, {
-      limit: 50,
-      leaseSeconds: 30,
-    });
+    const outboxes = facturaEFeatures ? [store, facturaEFeatures] : [store];
+    for (const outbox of outboxes) {
+      try {
+        await drainTaxDomainEventOutbox(outbox, taxDomainEventPublisher, {
+          limit: 50,
+          leaseSeconds: 30,
+        });
+      } catch (error) {
+        console.error('Tax domain event outbox failed:', classifyApiError(error).code);
+      }
+    }
   } catch (error) {
     console.error('Tax domain event worker failed:', classifyApiError(error).code);
   } finally {

@@ -7,8 +7,6 @@ import {
 } from '@tax-engine/core';
 import { z } from 'zod';
 
-import type { TaxProfileStore } from './store';
-
 const MAX_RESPONSE_BYTES = 16 * 1024;
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -27,6 +25,26 @@ export interface TaxDomainEventPublisher {
     event: TaxDomainEventV1,
     deliveredAt: string
   ): Promise<Readonly<{ eventId: string; payloadHash: string }>>;
+}
+
+export interface TaxDomainEventOutboxStore {
+  claimTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly Readonly<{
+    event: TaxDomainEventV1;
+    eventHash: string;
+    leaseToken: string;
+    attempt: number;
+  }>[];
+  ackTaxDomainEventClaim(eventId: string, leaseToken: string, deliveredAt: string): void;
+  releaseTaxDomainEventClaim(
+    eventId: string,
+    leaseToken: string,
+    retryAt: string,
+    errorCode: string,
+  ): void;
 }
 
 /** HTTP boundary from the canonical Tax Engine outbox to Open Agents. */
@@ -101,7 +119,7 @@ export class HttpTaxDomainEventPublisher implements TaxDomainEventPublisher {
 }
 
 export async function drainTaxDomainEventOutbox(
-  store: TaxProfileStore,
+  store: TaxDomainEventOutboxStore,
   publisher: TaxDomainEventPublisher,
   input: Readonly<{ now?: Date; limit?: number; leaseSeconds?: number }> = {}
 ): Promise<Readonly<{ claimed: number; delivered: number; retried: number }>> {

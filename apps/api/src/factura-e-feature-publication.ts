@@ -5,16 +5,24 @@ import { resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 
 import {
+  assertTaxDomainEventV1,
   deriveFacturaEFeatureDecision,
   hashCanonical,
+  hashTaxDomainEventV1,
   parseFacturaEFeatureV1,
   parseTaxFacturaEFeatureHeadV1,
   signFacturaEFeatureV1,
   signTaxFacturaEFeatureHeadV1,
   type FacturaEFeatureSigningGateway,
   type FacturaEFeatureV1,
+  type TaxDomainEventV1,
   type TaxFacturaEFeatureHeadV1,
 } from '@tax-engine/core';
+
+import {
+  createFacturaEFeaturePublishedTaxDomainEvent,
+  resolveTaxDomainEventCommitmentSecret,
+} from './tax-domain-event-factory';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const HEX32 = /^0x(?!0{64}$)[a-f0-9]{64}$/;
@@ -183,6 +191,7 @@ export interface FacturaEFeaturePublicationDependencies {
   readSource(executionId: string): PrivateFacturaEFeatureSource;
   signer: FacturaEFeatureSigningGateway;
   commitmentSecret: string;
+  domainEventCommitmentSecret?: string;
   policyVersion: string;
   databasePath?: string;
   requireDurable?: boolean;
@@ -194,6 +203,7 @@ export class FacturaEFeaturePublicationStore {
   readonly #readSource: FacturaEFeaturePublicationDependencies['readSource'];
   readonly #signer: FacturaEFeatureSigningGateway;
   readonly #secret: string;
+  readonly #domainEventCommitmentSecret: string;
   readonly #policyVersion: string;
   readonly #restrictedHeadLocks = new Map<string, Promise<void>>();
 
@@ -216,6 +226,8 @@ export class FacturaEFeaturePublicationStore {
     this.#readSource = dependencies.readSource;
     this.#signer = dependencies.signer;
     this.#secret = dependencies.commitmentSecret;
+    this.#domainEventCommitmentSecret = dependencies.domainEventCommitmentSecret
+      ?? resolveTaxDomainEventCommitmentSecret();
     this.#policyVersion = dependencies.policyVersion;
     this.#db = new Database(path, { create: true });
     this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -298,6 +310,22 @@ export class FacturaEFeaturePublicationStore {
       );
       CREATE INDEX IF NOT EXISTS factura_e_feature_outbox_claim_idx
         ON factura_e_feature_outbox (state, next_attempt_at, created_at);
+      CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        leased_until TEXT,
+        lease_token TEXT,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        delivered_at TEXT,
+        last_error_code TEXT,
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS tax_domain_event_outbox_pending
+        ON tax_domain_event_outbox (delivered_at, leased_until, appended_at);
       CREATE UNIQUE INDEX IF NOT EXISTS factura_e_feature_head_feature_id_idx
         ON factura_e_feature_heads (feature_id);
       CREATE TABLE IF NOT EXISTS factura_e_feature_restricted_heads (
@@ -1301,14 +1329,49 @@ export class FacturaEFeaturePublicationStore {
     validateReference(eventId, 'FACTURA_E_FEATURE_OUTBOX_EVENT_ID_INVALID');
     validateReference(leaseToken, 'FACTURA_E_FEATURE_OUTBOX_LEASE_TOKEN_INVALID');
     validateTimestamp(occurredAt, 'FACTURA_E_FEATURE_OUTBOX_TIMESTAMP_INVALID');
-    const result = this.#db.query(`
-      UPDATE factura_e_feature_outbox
-      SET state = 'delivered', delivered_at = ?, lease_token = NULL,
-          lease_expires_at = NULL, updated_at = ?
-      WHERE event_id = ? AND state = 'inflight' AND lease_token = ?
-        AND lease_expires_at > ?
-    `).run(occurredAt, occurredAt, eventId, leaseToken, occurredAt);
-    if (result.changes !== 1) throw new Error('FACTURA_E_FEATURE_OUTBOX_ACK_FENCE_REJECTED');
+    this.#db.transaction(() => {
+      const row = this.#db.query<{
+        execution_id: string;
+        workspace_id: string;
+        feature_json: string;
+      }, [string, string, string]>(`
+        SELECT execution_id, workspace_id, feature_json
+        FROM factura_e_feature_outbox
+        WHERE event_id = ? AND state = 'inflight' AND lease_token = ?
+          AND lease_expires_at > ?
+      `).get(eventId, leaseToken, occurredAt);
+      if (!row) throw new Error('FACTURA_E_FEATURE_OUTBOX_ACK_FENCE_REJECTED');
+      const feature = parseFacturaEFeatureV1(JSON.parse(row.feature_json));
+      const source = this.#readSource(row.execution_id);
+      validateSource(source, row.execution_id);
+      assertSourceScope(source, row.workspace_id);
+      const result = this.#db.query(`
+        UPDATE factura_e_feature_outbox
+        SET state = 'delivered', delivered_at = ?, lease_token = NULL,
+            lease_expires_at = NULL, updated_at = ?
+        WHERE event_id = ? AND state = 'inflight' AND lease_token = ?
+          AND lease_expires_at > ?
+      `).run(occurredAt, occurredAt, eventId, leaseToken, occurredAt);
+      if (result.changes !== 1) {
+        throw new Error('FACTURA_E_FEATURE_OUTBOX_ACK_FENCE_REJECTED');
+      }
+      this.#appendTaxDomainEventInTransaction(
+        createFacturaEFeaturePublishedTaxDomainEvent({
+          feature,
+          caseRef: source.runId,
+          workspaceId: row.workspace_id,
+          receipt: {
+            version: 'factura-e-feature-event-receipt-v1',
+            eventId,
+            featureHash: feature.featureHash,
+            accepted: true,
+          },
+          occurredAt,
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        }),
+        occurredAt,
+      );
+    })();
   }
 
   nackOutbox(
@@ -1356,6 +1419,165 @@ export class FacturaEFeaturePublicationStore {
         throw new Error('FACTURA_E_FEATURE_OUTBOX_NACK_FENCE_REJECTED');
       }
     })();
+  }
+
+  claimTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly Readonly<{
+    event: TaxDomainEventV1;
+    eventHash: string;
+    leaseToken: string;
+    attempt: number;
+  }>[] {
+    validateTimestamp(input.now, 'TAX_DOMAIN_EVENT_LEASE_TIME_INVALID');
+    validateTimestamp(input.leaseUntil, 'TAX_DOMAIN_EVENT_LEASE_TIME_INVALID');
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new Error('TAX_DOMAIN_EVENT_LEASE_LIMIT_INVALID');
+    }
+    if (input.leaseUntil <= input.now) {
+      throw new Error('TAX_DOMAIN_EVENT_LEASE_WINDOW_INVALID');
+    }
+    return this.#db.transaction(() => {
+      const candidates = this.#db.query<{
+        event_id: string;
+        event_hash: string;
+        event_json: string;
+        delivery_attempts: number;
+      }, [string, number]>(`
+        SELECT event_id, event_hash, event_json, delivery_attempts
+        FROM tax_domain_event_outbox
+        WHERE delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
+        ORDER BY appended_at ASC, event_id ASC
+        LIMIT ?
+      `).all(input.now, input.limit);
+      const claim = this.#db.query(`
+        UPDATE tax_domain_event_outbox
+        SET leased_until = ?, lease_token = ?, delivery_attempts = delivery_attempts + 1,
+            last_error_code = NULL
+        WHERE event_id = ? AND delivered_at IS NULL
+          AND (leased_until IS NULL OR leased_until <= ?)
+      `);
+      const leased: Array<Readonly<{
+        event: TaxDomainEventV1;
+        eventHash: string;
+        leaseToken: string;
+        attempt: number;
+      }>> = [];
+      for (const candidate of candidates) {
+        const claimToken = randomUUID();
+        if (claim.run(
+          input.leaseUntil,
+          claimToken,
+          candidate.event_id,
+          input.now,
+        ).changes !== 1) continue;
+        leased.push({
+          event: assertTaxDomainEventV1(JSON.parse(candidate.event_json)),
+          eventHash: candidate.event_hash,
+          leaseToken: claimToken,
+          attempt: candidate.delivery_attempts + 1,
+        });
+      }
+      return leased;
+    })();
+  }
+
+  ackTaxDomainEventClaim(eventId: string, leaseToken: string, deliveredAt: string): void {
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET delivered_at = ?, leased_until = NULL, lease_token = NULL,
+          last_error_code = NULL
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(deliveredAt, eventId, leaseToken);
+    if (updated.changes === 1) return;
+    const row = this.#db.query<{ delivered_at: string | null }, [string]>(`
+      SELECT delivered_at FROM tax_domain_event_outbox WHERE event_id = ?
+    `).get(eventId);
+    if (!row) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+    if (row.delivered_at !== null) return;
+    throw new Error('TAX_DOMAIN_EVENT_OUTBOX_ACK_FENCE_REJECTED');
+  }
+
+  releaseTaxDomainEventClaim(
+    eventId: string,
+    leaseToken: string,
+    retryAt: string,
+    errorCode: string,
+  ): void {
+    if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) {
+      throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
+    }
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET leased_until = ?, lease_token = NULL, last_error_code = ?
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(retryAt, errorCode, eventId, leaseToken);
+    if (updated.changes !== 1) {
+      throw new Error('TAX_DOMAIN_EVENT_OUTBOX_NACK_FENCE_REJECTED');
+    }
+  }
+
+  listPendingTaxDomainEvents(): readonly TaxDomainEventV1[] {
+    return this.#db.query<{ event_json: string }, []>(`
+      SELECT event_json FROM tax_domain_event_outbox
+      WHERE delivered_at IS NULL ORDER BY appended_at ASC, event_id ASC
+    `).all().map(row => assertTaxDomainEventV1(JSON.parse(row.event_json)));
+  }
+
+  #appendTaxDomainEventInTransaction(
+    eventInput: TaxDomainEventV1,
+    appendedAt: string,
+  ): Readonly<{ event: TaxDomainEventV1; replayed: boolean }> {
+    const event = assertTaxDomainEventV1(eventInput);
+    const eventHash = hashTaxDomainEventV1(event);
+    const byEventId = this.#db.query<{
+      event_hash: string;
+      event_json: string;
+    }, [string]>(`
+      SELECT event_hash, event_json FROM tax_domain_event_outbox WHERE event_id = ?
+    `).get(event.eventId);
+    if (byEventId) {
+      if (byEventId.event_hash !== eventHash) {
+        throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+      }
+      return {
+        event: assertTaxDomainEventV1(JSON.parse(byEventId.event_json)),
+        replayed: true,
+      };
+    }
+    const byIdempotency = this.#db.query<{
+      event_hash: string;
+      event_json: string;
+    }, [string, string]>(`
+      SELECT event_hash, event_json FROM tax_domain_event_outbox
+      WHERE workspace_id = ? AND idempotency_key = ?
+    `).get(event.workspaceId, event.idempotencyKey);
+    if (byIdempotency) {
+      if (byIdempotency.event_hash !== eventHash) {
+        throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+      }
+      return {
+        event: assertTaxDomainEventV1(JSON.parse(byIdempotency.event_json)),
+        replayed: true,
+      };
+    }
+    this.#db.query(`
+      INSERT INTO tax_domain_event_outbox (
+        event_id, workspace_id, idempotency_key, event_hash, event_json,
+        appended_at, leased_until, lease_token, delivery_attempts,
+        delivered_at, last_error_code
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL)
+    `).run(
+      event.eventId,
+      event.workspaceId,
+      event.idempotencyKey,
+      eventHash,
+      JSON.stringify(event),
+      appendedAt,
+    );
+    return { event, replayed: false };
   }
 
   #finalize(
