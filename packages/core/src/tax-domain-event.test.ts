@@ -48,13 +48,24 @@ describe('TaxDomainEventV1', () => {
   });
 
   test('fails closed on raw fiscal fields, amounts, or transport tampering', () => {
-    expect(() => assertTaxDomainEventV1({ ...event(), cuit: '20123456789' })).toThrow();
+    expect(() => assertTaxDomainEventV1({ ...event(), cuit: '9'.repeat(11) })).toThrow();
     expect(() => assertTaxDomainEventV1({ ...event(), amount: { decimal: '1', currency: 'USD' } })).toThrow();
-    expect(() => assertTaxDomainEventV1({ ...event(), caseRef: '20965240390' })).toThrow();
+    expect(() => assertTaxDomainEventV1({ ...event(), caseRef: '9'.repeat(11) })).toThrow();
     expect(() => createTaxDomainEventDeliveryV1({
       deliveryId: '00000000-0000-4000-8000-000000000002',
       event: assertTaxDomainEventV1(event()),
       deliveredAt: 'not-an-instant',
     })).toThrow();
+  });
+
+  test('accepts opaque UUID workspace and TaxCase references used in production', () => {
+    expect(assertTaxDomainEventV1({
+      ...event(),
+      workspaceId: '10000000-0000-4000-8000-000000000001',
+      caseRef: '20000000-0000-4000-8000-000000000001',
+    })).toMatchObject({
+      workspaceId: '10000000-0000-4000-8000-000000000001',
+      caseRef: '20000000-0000-4000-8000-000000000001',
+    });
   });
 });
