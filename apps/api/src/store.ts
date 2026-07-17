@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 
 import type { TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
 
@@ -141,6 +142,7 @@ export class TaxProfileStore {
         event_json TEXT NOT NULL,
         appended_at TEXT NOT NULL,
         leased_until TEXT,
+        lease_token TEXT,
         delivery_attempts INTEGER NOT NULL DEFAULT 0,
         delivered_at TEXT,
         last_error_code TEXT,
@@ -331,6 +333,12 @@ export class TaxProfileStore {
         bound_at TEXT NOT NULL
       );
     `);
+    const taxDomainOutboxColumns = this.#db
+      .query<{ name: string }, []>('PRAGMA table_info(tax_domain_event_outbox)')
+      .all();
+    if (!taxDomainOutboxColumns.some(column => column.name === 'lease_token')) {
+      this.#db.exec('ALTER TABLE tax_domain_event_outbox ADD COLUMN lease_token TEXT');
+    }
     this.#db.transaction(() => {
       const evidenceColumns = this.#db.query<{ name: string; notnull: number }, []>('PRAGMA table_info(evidence_records)').all();
       const sourceColumn = evidenceColumns.find(column => column.name === 'source_id');
@@ -619,8 +627,8 @@ export class TaxProfileStore {
       this.#db.query(`
         INSERT INTO tax_domain_event_outbox (
           event_id, workspace_id, idempotency_key, event_hash, event_json, appended_at,
-          leased_until, delivery_attempts, delivered_at, last_error_code
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL)
+          leased_until, lease_token, delivery_attempts, delivered_at, last_error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL)
       `).run(event.eventId, event.workspaceId, event.idempotencyKey, eventHash, JSON.stringify(event), appendedAt);
       return { event, replayed: false };
     })();
@@ -632,11 +640,33 @@ export class TaxProfileStore {
     leaseUntil: string;
     limit: number;
   }>): readonly TaxDomainEventV1[] {
+    return this.claimTaxDomainEvents(input).map(claim => claim.event);
+  }
+
+  /**
+   * Fenced claim used by the network relay. A stale worker cannot acknowledge
+   * or release a lease after another worker has taken it over.
+   */
+  claimTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly Readonly<{
+    event: TaxDomainEventV1;
+    eventHash: string;
+    leaseToken: string;
+    attempt: number;
+  }>[] {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('TAX_DOMAIN_EVENT_LEASE_LIMIT_INVALID');
     if (input.leaseUntil <= input.now) throw new Error('TAX_DOMAIN_EVENT_LEASE_WINDOW_INVALID');
     return this.#db.transaction(() => {
-      const candidates = this.#db.query<{ event_id: string; event_json: string }, [string, number]>(`
-        SELECT event_id, event_json
+      const candidates = this.#db.query<{
+        event_id: string;
+        event_hash: string;
+        event_json: string;
+        delivery_attempts: number;
+      }, [string, number]>(`
+        SELECT event_id, event_hash, event_json, delivery_attempts
         FROM tax_domain_event_outbox
         WHERE delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
         ORDER BY appended_at ASC, event_id ASC
@@ -644,23 +674,65 @@ export class TaxProfileStore {
       `).all(input.now, input.limit);
       const claim = this.#db.query(`
         UPDATE tax_domain_event_outbox
-        SET leased_until = ?, delivery_attempts = delivery_attempts + 1, last_error_code = NULL
+        SET leased_until = ?, lease_token = ?, delivery_attempts = delivery_attempts + 1,
+            last_error_code = NULL
         WHERE event_id = ? AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
       `);
-      const leased: TaxDomainEventV1[] = [];
+      const leased: Array<Readonly<{
+        event: TaxDomainEventV1;
+        eventHash: string;
+        leaseToken: string;
+        attempt: number;
+      }>> = [];
       for (const candidate of candidates) {
-        if (claim.run(input.leaseUntil, candidate.event_id, input.now).changes === 1) {
-          leased.push(assertTaxDomainEventV1(JSON.parse(candidate.event_json)));
+        const leaseToken = randomUUID();
+        if (claim.run(input.leaseUntil, leaseToken, candidate.event_id, input.now).changes === 1) {
+          leased.push({
+            event: assertTaxDomainEventV1(JSON.parse(candidate.event_json)),
+            eventHash: candidate.event_hash,
+            leaseToken,
+            attempt: candidate.delivery_attempts + 1,
+          });
         }
       }
       return leased;
     })();
   }
 
+  ackTaxDomainEventClaim(eventId: string, leaseToken: string, deliveredAt: string): void {
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET delivered_at = ?, leased_until = NULL, lease_token = NULL, last_error_code = NULL
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(deliveredAt, eventId, leaseToken);
+    if (updated.changes === 1) return;
+    const row = this.#db.query<{ delivered_at: string | null }, [string]>(`
+      SELECT delivered_at FROM tax_domain_event_outbox WHERE event_id = ?
+    `).get(eventId);
+    if (!row) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+    if (row.delivered_at !== null) return;
+    throw new Error('TAX_DOMAIN_EVENT_OUTBOX_ACK_FENCE_REJECTED');
+  }
+
+  releaseTaxDomainEventClaim(
+    eventId: string,
+    leaseToken: string,
+    retryAt: string,
+    errorCode: string
+  ): void {
+    if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET leased_until = ?, lease_token = NULL, last_error_code = ?
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(retryAt, errorCode, eventId, leaseToken);
+    if (updated.changes !== 1) throw new Error('TAX_DOMAIN_EVENT_OUTBOX_NACK_FENCE_REJECTED');
+  }
+
   ackTaxDomainEventDelivery(eventId: string, deliveredAt: string): void {
     const updated = this.#db.query(`
       UPDATE tax_domain_event_outbox
-      SET delivered_at = ?, leased_until = NULL, last_error_code = NULL
+      SET delivered_at = ?, leased_until = NULL, lease_token = NULL, last_error_code = NULL
       WHERE event_id = ? AND delivered_at IS NULL
     `).run(deliveredAt, eventId);
     if (updated.changes !== 1) {
@@ -675,7 +747,7 @@ export class TaxProfileStore {
     if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
     const updated = this.#db.query(`
       UPDATE tax_domain_event_outbox
-      SET leased_until = ?, last_error_code = ?
+      SET leased_until = ?, lease_token = NULL, last_error_code = ?
       WHERE event_id = ? AND delivered_at IS NULL
     `).run(retryAt, errorCode, eventId);
     if (updated.changes !== 1) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
