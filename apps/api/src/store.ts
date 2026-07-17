@@ -36,6 +36,8 @@ import type {
   TaxWidgetSnapshotReceiptV1,
   TaxWidgetSnapshotV1,
   TaxDomainEventV1,
+  DigitalAssetEventV1,
+  DigitalAssetLedgerV1,
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
@@ -50,6 +52,7 @@ import {
   hashTaxEvidenceBatch,
   normalizeTaxSnapshotProjectionKey,
   resolveActiveEvidenceRecords,
+  buildDigitalAssetLedger,
 } from '@tax-engine/core';
 
 import { assertCatalogueSafeProfile } from './profile-validation';
@@ -187,6 +190,19 @@ export class TaxProfileStore {
         appended_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, idempotency_key)
       );
+      -- Tax owns the derived crypto-lot ledger, but only stores opaque event
+      -- references. Wallet addresses and provider payloads remain at the
+      -- verifier/evidence boundary.
+      CREATE TABLE IF NOT EXISTS digital_asset_events (
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS digital_asset_events_workspace_appended
+        ON digital_asset_events (workspace_id, appended_at, event_id);
       CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
         event_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
@@ -1397,6 +1413,47 @@ export class TaxProfileStore {
       this.#advanceEvidenceGeneration(batch.workspaceId, appendedAt);
       return batchReceipt(batch, batchHash, appendedRecords, false);
     })();
+  }
+
+  appendDigitalAssetEvent(event: DigitalAssetEventV1, appendedAt: string): Readonly<{
+    workspaceId: string;
+    eventId: string;
+    ledgerHash: string;
+    replayed: boolean;
+  }> {
+    const eventHash = hashCanonical(event);
+    return this.#db.transaction(() => {
+      const existing = this.#db.query<{ event_hash: string }, [string, string]>(
+        'SELECT event_hash FROM digital_asset_events WHERE workspace_id = ? AND event_id = ?',
+      ).get(event.workspaceId, event.eventId);
+      if (existing) {
+        if (existing.event_hash !== eventHash) throw new Error('DIGITAL_ASSET_EVENT_IDEMPOTENCY_CONFLICT');
+        return { workspaceId: event.workspaceId, eventId: event.eventId, ledgerHash: hashCanonical(this.getDigitalAssetLedger(event.workspaceId)), replayed: true };
+      }
+      const activeEvidenceIds = new Set(this.listEvidence(event.workspaceId)
+        .filter(record => record.validityState === 'active')
+        .map(record => record.evidenceId));
+      const references = event.kind === 'disposal_reversal'
+        ? event.provenance.sourceEvidenceIds
+        : [...event.provenance.sourceEvidenceIds, event.valuation.evidenceId];
+      if (references.some(reference => !activeEvidenceIds.has(reference))) {
+        throw new Error('DIGITAL_ASSET_EVIDENCE_REFERENCE_UNAVAILABLE');
+      }
+      const prior = this.#db.query<{ event_json: string }, [string]>(
+        'SELECT event_json FROM digital_asset_events WHERE workspace_id = ? ORDER BY appended_at ASC, event_id ASC',
+      ).all(event.workspaceId).map(row => JSON.parse(row.event_json) as DigitalAssetEventV1);
+      const ledger = buildDigitalAssetLedger([...prior, event]);
+      this.#db.query('INSERT INTO digital_asset_events (workspace_id, event_id, event_hash, event_json, appended_at) VALUES (?, ?, ?, ?, ?)')
+        .run(event.workspaceId, event.eventId, eventHash, JSON.stringify(event), appendedAt);
+      return { workspaceId: event.workspaceId, eventId: event.eventId, ledgerHash: hashCanonical(ledger), replayed: false };
+    })();
+  }
+
+  getDigitalAssetLedger(workspaceId: string): DigitalAssetLedgerV1 | null {
+    const rows = this.#db.query<{ event_json: string }, [string]>(
+      'SELECT event_json FROM digital_asset_events WHERE workspace_id = ? ORDER BY appended_at ASC, event_id ASC',
+    ).all(workspaceId);
+    return rows.length === 0 ? null : buildDigitalAssetLedger(rows.map(row => JSON.parse(row.event_json) as DigitalAssetEventV1));
   }
 
   listEvidenceSourceManifests(workspaceId: string): readonly TaxEvidenceSourceManifestV1[] {
