@@ -63,7 +63,7 @@ describe('Factura E agent HTTP tools', () => {
     const manifest = await route(service, options, 'GET', '/v1/agent/tools');
     expect(manifest.status).toBe(200);
     const manifestJson = await manifest.json() as any;
-    expect(manifestJson.data.tools).toHaveLength(12);
+    expect(manifestJson.data.tools).toHaveLength(13);
     expect(JSON.stringify(manifestJson)).not.toContain('approveIntent');
     expect(JSON.stringify(manifestJson)).not.toContain('submit_wsfex');
     expect(JSON.stringify(manifestJson)).not.toContain('recover_wsfex');
@@ -83,6 +83,10 @@ describe('Factura E agent HTTP tools', () => {
       runId, workspaceId, issuancePath: 'reclaim_copilot',
     });
     expect(created.data.run.issuanceState).toBe('not_ready');
+    const bound = await invoke(service, options, 'tax_ar_factura_e_bind_ledger_invoice', 'bind-ledger-invoice-1', {
+      runId, ledgerInvoiceId: '50000000-0000-4000-8000-000000000001',
+    });
+    expect(bound.data).toMatchObject({ run: { runId, workspaceId }, replayed: false });
 
     const readiness = await invoke(service, options, 'tax_ar_reclaim_start', 'start-readiness-1', {
       runId, purpose: 'arca_taxpayer_readiness',

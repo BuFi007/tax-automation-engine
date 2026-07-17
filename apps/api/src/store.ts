@@ -220,6 +220,18 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS invoice_settlement_inbox_invoice
         ON invoice_settlement_inbox (workspace_id, invoice_id, recorded_at);
+      -- A TaxCase can be explicitly bound to a BUFI ledger invoice. The
+      -- binding lives beside the durable inbox, never in an agent workspace.
+      CREATE TABLE IF NOT EXISTS invoice_tax_case_bindings (
+        workspace_id TEXT NOT NULL,
+        invoice_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        bound_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, invoice_id),
+        UNIQUE (workspace_id, run_id),
+        UNIQUE (workspace_id, idempotency_key)
+      );
       CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
         event_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
@@ -1242,6 +1254,37 @@ export class TaxProfileStore {
         workspace_id, event_id, invoice_id, idempotency_key, event_hash, event_json, recorded_at, appended_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(input.workspaceId, input.eventId, input.invoiceId, input.idempotencyKey, eventHash, JSON.stringify(input), input.recordedAt, new Date().toISOString());
+    return { replayed: false };
+  }
+
+  bindInvoiceTaxCase(input: Readonly<{
+    workspaceId: string;
+    invoiceId: string;
+    runId: string;
+    idempotencyKey: string;
+    boundAt: string;
+  }>): { replayed: boolean } {
+    const existing = this.#db.query<{
+      invoice_id: string; run_id: string; idempotency_key: string;
+    }, [string, string]>(`
+      SELECT invoice_id, run_id, idempotency_key
+      FROM invoice_tax_case_bindings WHERE workspace_id = ? AND invoice_id = ?
+    `).get(input.workspaceId, input.invoiceId);
+    if (existing) {
+      if (existing.run_id !== input.runId || existing.idempotency_key !== input.idempotencyKey) {
+        throw new Error('INVOICE_TAX_CASE_BINDING_CONFLICT');
+      }
+      return { replayed: true };
+    }
+    const runBinding = this.#db.query<{ invoice_id: string }, [string, string]>(`
+      SELECT invoice_id FROM invoice_tax_case_bindings WHERE workspace_id = ? AND run_id = ?
+    `).get(input.workspaceId, input.runId);
+    if (runBinding) throw new Error('TAX_CASE_ALREADY_BOUND_TO_ANOTHER_INVOICE');
+    this.#db.query(`
+      INSERT INTO invoice_tax_case_bindings (
+        workspace_id, invoice_id, run_id, idempotency_key, bound_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(input.workspaceId, input.invoiceId, input.runId, input.idempotencyKey, input.boundAt);
     return { replayed: false };
   }
 
