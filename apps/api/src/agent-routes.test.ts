@@ -315,6 +315,32 @@ describe('Factura E agent HTTP tools', () => {
         idempotencyKey: 'principal-scope-read-2',
       }, validHeaders),
     ).rejects.toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
+
+    const settlementToolId = 'tax_ar_factura_e_record_settlement';
+    const settlementPath = `/v1/agent/tools/${settlementToolId}/invoke`;
+    const unauthorizedSettlement = {
+      actorId: 'agent:tax',
+      idempotencyKey: 'principal-settlement-authority-1',
+      input: { runId },
+    };
+    const unauthorizedSettlementHeaders = createTaxAgentPrincipalHeaders({
+      secret: agentPrincipalSecret,
+      workspaceId,
+      actorId: unauthorizedSettlement.actorId,
+      toolId: settlementToolId,
+      path: settlementPath,
+      rawBody: JSON.stringify(unauthorizedSettlement),
+      idempotencyKey: unauthorizedSettlement.idempotencyKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(route(
+      service,
+      options,
+      'POST',
+      settlementPath,
+      unauthorizedSettlement,
+      unauthorizedSettlementHeaders,
+    )).rejects.toThrow('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
   });
 
   test('rejects oversized public Reclaim callbacks before parsing them', async () => {

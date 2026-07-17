@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   argentinaProfile,
   buildEvidenceGraph,
+  createFacturaEAgentRun,
   demoSnapshot,
   hashCanonical,
   hashTaxEvidenceConsentScope,
@@ -23,7 +24,10 @@ import type {
 
 import { resolveTaxEngineDatabasePath, TaxProfileStore } from './store';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
-import { createConsentRevokedTaxDomainEvent } from './tax-domain-event-factory';
+import {
+  createConsentRevokedTaxDomainEvent,
+  createFacturaEAgentTaxDomainEvents,
+} from './tax-domain-event-factory';
 
 describe('tax storage durability configuration', () => {
   test('keeps the in-memory default for local development and tests', () => {
@@ -796,6 +800,177 @@ describe('append-only tax storage', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test('commits Factura E truth and its domain outbox event atomically', () => {
+    const createStore = () => {
+      const store = new TaxProfileStore(
+        ':memory:',
+        'test-tax-domain-event-commitment-secret-v1',
+      );
+      grantConsent(store, ['bufi-invoice']);
+      const created = createFacturaEAgentRun({
+        runId: 'taxcase:factura-e:1',
+        workspaceId: 'workspace:1',
+        issuancePath: 'wsfex_delegated',
+        actorId: 'agent:1',
+        occurredAt: '2026-07-10T00:00:00.000Z',
+        idempotencyKey: 'create-run',
+      });
+      store.appendFacturaEAgentRevision({
+        ...created,
+        stateHash: hashCanonical(created.run),
+        commandHash: hashCanonical({ operation: 'create-run' }),
+        appendedAt: created.event.occurredAt,
+      });
+      return { store, created };
+    };
+    const transition = (created: ReturnType<typeof createFacturaEAgentRun>) => {
+      const event = {
+        eventId: '70000000-0000-4000-8000-000000000001',
+        runId: created.run.runId,
+        workspaceId: created.run.workspaceId,
+        actorId: 'wsfex:verifier',
+        actorKind: 'wsfex' as const,
+        action: 'wsfex_accepted',
+        occurredAt: '2026-07-10T00:01:00.000Z',
+        idempotencyKey: 'authority-accepted',
+        safeMetadata: {
+          receiptHash: 'a'.repeat(64),
+        },
+      };
+      const run = {
+        ...created.run,
+        revision: created.run.revision + 1,
+        updatedAt: event.occurredAt,
+        issuanceState: 'arca_authorized' as const,
+        authority: {
+          ...created.run.authority,
+          receiptHash: 'a'.repeat(64),
+          authorizedAt: event.occurredAt,
+        },
+        eventIds: [...created.run.eventIds, event.eventId],
+      };
+      return { run, event };
+    };
+
+    const successful = createStore();
+    const accepted = transition(successful.created);
+    successful.store.appendFacturaEAgentRevision({
+      ...accepted,
+      stateHash: hashCanonical(accepted.run),
+      commandHash: hashCanonical({ operation: 'authority-accepted' }),
+      appendedAt: accepted.event.occurredAt,
+    });
+    expect(successful.store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        workspaceId: 'workspace:1',
+        caseRef: 'taxcase:factura-e:1',
+        kind: 'factura_e.authority_verified',
+        state: 'verified',
+      }),
+    ]);
+    successful.store.close();
+
+    const conflicted = createStore();
+    const rejected = transition(conflicted.created);
+    const [derived] = createFacturaEAgentTaxDomainEvents({
+      ...rejected,
+      consent: {
+        version: 'consent-v1',
+        scopeHash: hashTaxEvidenceConsentScope('consent-v1', ['bufi-invoice']),
+      },
+      commitmentSecret: 'test-tax-domain-event-commitment-secret-v1',
+    });
+    if (!derived) throw new Error('FACTURA_E_DOMAIN_EVENT_REQUIRED');
+    conflicted.store.appendTaxDomainEvent(
+      { ...derived, state: 'blocked' },
+      rejected.event.occurredAt,
+    );
+    expect(() => conflicted.store.appendFacturaEAgentRevision({
+      ...rejected,
+      stateHash: hashCanonical(rejected.run),
+      commandHash: hashCanonical({ operation: 'authority-accepted' }),
+      appendedAt: rejected.event.occurredAt,
+    })).toThrow('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+    expect(conflicted.store.getFacturaEAgentRun(rejected.run.runId)?.revision).toBe(1);
+    conflicted.store.close();
+  });
+
+  test('rolls back an accountant decision unless its exact mandate is active', () => {
+    const store = new TaxProfileStore(
+      ':memory:',
+      'test-tax-domain-event-commitment-secret-v1',
+    );
+    grantConsent(store, ['accountant-workspace']);
+    const created = createFacturaEAgentRun({
+      runId: 'taxcase:accountant-decision:1',
+      workspaceId: 'workspace:1',
+      issuancePath: 'wsfex_delegated',
+      actorId: 'agent:1',
+      occurredAt: '2026-07-10T00:00:00.000Z',
+      idempotencyKey: 'create-accountant-run',
+    });
+    store.appendFacturaEAgentRevision({
+      ...created,
+      stateHash: hashCanonical(created.run),
+      commandHash: hashCanonical({ operation: 'create-accountant-run' }),
+      appendedAt: created.event.occurredAt,
+    });
+    const event = {
+      eventId: '71000000-0000-4000-8000-000000000001',
+      runId: created.run.runId,
+      workspaceId: created.run.workspaceId,
+      actorId: 'accountant:1',
+      actorKind: 'accountant' as const,
+      action: 'factura_e_fx_ingress_verified',
+      occurredAt: '2026-07-10T00:02:00.000Z',
+      idempotencyKey: 'accountant-fx-decision',
+      safeMetadata: { evidenceHash: 'f'.repeat(64) },
+    };
+    const run = {
+      ...created.run,
+      revision: 2,
+      updatedAt: event.occurredAt,
+      fxIngressState: 'verified' as const,
+      fxIngressEvidenceHash: 'f'.repeat(64),
+      eventIds: [...created.run.eventIds, event.eventId],
+    };
+    const append = () => store.appendFacturaEAgentRevision({
+      run,
+      event,
+      stateHash: hashCanonical(run),
+      commandHash: hashCanonical({ operation: 'accountant-fx-decision' }),
+      appendedAt: event.occurredAt,
+    });
+
+    expect(append).toThrow('ACCOUNTANT_MANDATE_REQUIRED_FOR_DOMAIN_EVENT');
+    expect(store.getFacturaEAgentRun(run.runId)?.revision).toBe(1);
+
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1',
+      mandateId: 'mandate:accountant-fx:1',
+      workspaceId: run.workspaceId,
+      accountantActorId: event.actorId,
+      accountantOrganizationId: 'accounting-firm:1',
+      scopes: ['verify_fx_ingress'],
+      grantedByActorId: 'user:1',
+      grantedAt: '2026-07-10T00:01:00.000Z',
+      expiresAt: '2026-07-11T00:00:00.000Z',
+      revokedAt: null,
+    });
+    expect(append().revision).toBe(2);
+    expect(store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        kind: 'accountant.decision_recorded',
+        state: 'recorded',
+        workspaceId: run.workspaceId,
+        caseRef: run.runId,
+      }),
+    ]);
+    expect(JSON.stringify(store.listPendingTaxDomainEvents()))
+      .not.toContain('mandate:accountant-fx:1');
+    store.close();
   });
 });
 

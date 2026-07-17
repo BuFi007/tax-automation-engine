@@ -40,8 +40,10 @@ import {
 
 import { assertCatalogueSafeProfile } from './profile-validation';
 import {
+  accountantMandateScopeForFacturaEEvent,
   createArcaOnboardingTaxDomainEvent,
   createConsentRevokedTaxDomainEvent,
+  createFacturaEAgentTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
 
@@ -1771,9 +1773,61 @@ export class TaxProfileStore {
         INSERT INTO factura_e_agent_idempotency_commands (run_id, idempotency_key, command_hash, recorded_at)
         VALUES (?, ?, ?, ?)
       `).run(input.run.runId, input.event.idempotencyKey, input.commandHash, input.appendedAt);
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.run.workspaceId);
+      if (consent) {
+        const accountantMandate = this.#activeMandateForFacturaEEvent(input.event);
+        const domainEvents = createFacturaEAgentTaxDomainEvents({
+          run: input.run,
+          event: input.event,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          accountantMandate,
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        for (const domainEvent of domainEvents) {
+          this.#appendTaxDomainEventInTransaction(domainEvent, input.appendedAt);
+        }
+      }
       return input.run;
     });
     return transaction();
+  }
+
+  #activeMandateForFacturaEEvent(
+    event: FacturaEAgentEventV1,
+  ): Readonly<{ mandateId: string }> | null {
+    const scope = accountantMandateScopeForFacturaEEvent(event);
+    if (!scope) return null;
+    const rows = this.#db.query<{ mandate_json: string }, [string, string]>(`
+      SELECT mandate_json
+      FROM accountant_mandates
+      WHERE workspace_id = ? AND accountant_actor_id = ?
+      ORDER BY granted_at DESC, mandate_id ASC
+    `).all(event.workspaceId, event.actorId);
+    for (const row of rows) {
+      const mandate = JSON.parse(row.mandate_json) as AccountantMandateV1;
+      try {
+        assertActiveAccountantMandate(mandate, {
+          workspaceId: event.workspaceId,
+          accountantActorId: event.actorId,
+          scope,
+          at: event.occurredAt,
+        });
+        return { mandateId: mandate.mandateId };
+      } catch {
+        // Continue looking: an older mandate can still be active after a
+        // newer, narrower grant expired or was revoked.
+      }
+    }
+    throw new Error('ACCOUNTANT_MANDATE_REQUIRED_FOR_DOMAIN_EVENT');
   }
 
   getFacturaEAgentRun(runId: string): FacturaEAgentRunV1 | null {
