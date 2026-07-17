@@ -21,9 +21,11 @@ bun run release:backend
 The full command exits `2` while external authority evidence is incomplete.
 Today the checked-in live smoke is correctly blocked because ARCA returned no
 active FEEWS point of sale. Creating the point in the represented taxpayer's
-portal and rerunning the isolated `FEXGetPARAM_PtoVenta` probe is required; a
-fixture, Reclaim proof, portal screenshot, signer health response, or Linear
-status cannot substitute for that API result.
+portal and rerunning the isolated `FEXGetPARAM_PtoVenta` probe is required. The
+gate then also requires the complete redacted `arca-homologation-evidence-v1`
+matrix, including reviewed WSFEX 19/20/21, WSFE 11/12/13, ambiguous recovery,
+Reclaim custody and independent human reviews. A fixture, portal screenshot,
+signer health response, or Linear status cannot substitute for those results.
 
 The report always keeps `productionEnabled: false`. Passing this gate makes the
 backend eligible for the human-product gate; it does not approve production or

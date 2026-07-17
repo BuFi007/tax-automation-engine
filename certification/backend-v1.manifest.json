@@ -188,6 +188,7 @@
   "externalAuthority": {
     "environment": "homologacion",
     "liveSmokePath": "providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json",
+    "homologationEvidencePath": "providers/homologation/evidence/arca-homologation-evidence-v1.json",
     "requiredState": "ready_for_invoice_homologation",
     "productionEnabledMustRemain": false
   },

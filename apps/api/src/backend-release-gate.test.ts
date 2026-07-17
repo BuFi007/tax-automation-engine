@@ -53,6 +53,7 @@ describe('BU-252 backend release gate', () => {
       generatedAt: '2026-07-16T12:00:00.000Z',
       suites,
       liveSmoke: smoke,
+      homologationEvidence: null,
     })).toMatchObject({ state: 'software_failed', softwareState: 'failed', productionEnabled: false });
     expect(() => buildBackendReleaseReportV1({
       manifest,
@@ -60,6 +61,7 @@ describe('BU-252 backend release gate', () => {
       generatedAt: '2026-07-16T12:00:00.000Z',
       suites: suites.slice(1),
       liveSmoke: smoke,
+      homologationEvidence: null,
     })).toThrow('BACKEND_RELEASE_SUITE_SET_MISMATCH');
   });
 
@@ -74,6 +76,7 @@ describe('BU-252 backend release gate', () => {
         id: suite.id, state: 'passed', exitCode: 0, durationMs: 1,
       })),
       liveSmoke: smoke,
+      homologationEvidence: null,
     });
     expect(report).toMatchObject({
       state: 'external_authority_blocked',
@@ -82,9 +85,10 @@ describe('BU-252 backend release gate', () => {
       productionEnabled: false,
     });
     expect(report.failedGateIds).toContain('feews_point_of_sale_missing');
+    expect(report.failedGateIds).toContain('homologation_evidence_missing');
   });
 
-  test('becomes eligible for the human-product gate only with passing software and active homologation PDV evidence', async () => {
+  test('requires both active PDV discovery and the complete reviewed homologation matrix', async () => {
     const manifest = parseBackendReleaseManifestV1(await Bun.file(manifestUrl).json());
     const smoke = await Bun.file(liveSmokeUrl).json() as any;
     smoke.feeWsPointOfSale = {
@@ -93,14 +97,27 @@ describe('BU-252 backend release gate', () => {
       responseErrorCode: '0',
       gateState: 'ready',
     };
+    const suites = manifest.softwareSuites.map(suite => ({
+      id: suite.id, state: 'passed' as const, exitCode: 0, durationMs: 1,
+    }));
+    const missingMatrix = buildBackendReleaseReportV1({
+      manifest,
+      revision: 'c'.repeat(40),
+      generatedAt: '2026-07-16T12:00:00.000Z',
+      suites,
+      liveSmoke: smoke,
+      homologationEvidence: null,
+    });
+    expect(missingMatrix.state).toBe('external_authority_blocked');
+    expect(missingMatrix.failedGateIds).toContain('homologation_evidence_missing');
+
     const report = buildBackendReleaseReportV1({
       manifest,
       revision: 'c'.repeat(40),
       generatedAt: '2026-07-16T12:00:00.000Z',
-      suites: manifest.softwareSuites.map(suite => ({
-        id: suite.id, state: 'passed', exitCode: 0, durationMs: 1,
-      })),
+      suites,
       liveSmoke: smoke,
+      homologationEvidence: validHomologationEvidence(),
     });
     expect(report).toMatchObject({
       state: 'ready_for_human_product_gate',
@@ -109,3 +126,27 @@ describe('BU-252 backend release gate', () => {
     });
   });
 });
+
+function validHomologationEvidence() {
+  const hash = (value: string) => Bun.CryptoHasher.hash('sha256', value, 'hex');
+  return {
+    version: 'arca-homologation-evidence-v1',
+    executedAt: '2026-07-16T12:00:00.000Z',
+    authorityEnvironment: 'homologacion',
+    effectiveRuleVersionIds: ['ar-rg-4401-factura-e-v1', 'arca-wsfex-3.1.1', 'bcra-a8330-service-exports-v1'],
+    reclaim: [
+      { purpose: 'arca_taxpayer_readiness', providerIdHash: hash('provider-readiness'), providerVersion: '1.0.0', proofHash: hash('readiness-proof'), custodyReceiptHash: hash('readiness-custody'), teeRequired: false, teeVerified: false, negativeBindingCasesRejected: true },
+      { purpose: 'arca_cae_constatement', providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('invoice-proof'), custodyReceiptHash: hash('invoice-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
+      { purpose: 'arca_adjustment_constatement', providerIdHash: hash('provider-adjustment'), providerVersion: '1.0.0', proofHash: hash('adjustment-proof'), custodyReceiptHash: hash('adjustment-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
+    ],
+    wsfex: ([19, 20, 21] as const).map(documentType => ({ documentType, acceptedReceiptHash: hash(`accepted-${documentType}`), ambiguousOutcomeObserved: true, exactRecoveryReceiptHash: hash(`recovery-${documentType}`), mismatchedEchoRejected: true, canonicalPayloadMismatchRejected: true, encryptedPayloadAtRestVerified: true, wsaaKeyIsolationVerified: true })),
+    wsfe: ([11, 12, 13] as const).map(documentType => ({ documentType, acceptedReceiptHash: hash(`wsfe-accepted-${documentType}`), ambiguousOutcomeObserved: true, exactRecoveryReceiptHash: hash(`wsfe-recovery-${documentType}`), reprocessObservedForResend: true, mismatchedEchoRejected: true, caeAloneRejected: true, sequenceConflictRejected: true, encryptedPayloadAtRestVerified: true, wsaaKeyIsolationVerified: true })),
+    journeys: [
+      { path: 'reclaim_copilot', eventSequenceHash: hash('reclaim-events'), accountingAttestationPacketHash: hash('reclaim-packet'), separateSettlementFxTaxStatesObserved: true },
+      { path: 'wsfex_delegated', eventSequenceHash: hash('wsfex-events'), accountingAttestationPacketHash: hash('wsfex-packet'), separateSettlementFxTaxStatesObserved: true },
+    ],
+    reviews: { accountantAccepted: true, securityAccepted: true, ownerAcceptedForProductionReview: true, redactedEvidenceReferenceHash: hash('reviews') },
+    secretsDetected: false,
+    productionEnabled: false,
+  };
+}

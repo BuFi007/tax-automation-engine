@@ -6,7 +6,7 @@ import { TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 } from '@tax-engine/browser-contr
 import { TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 } from '@tax-engine/browser-contracts/scenarios';
 import { z } from 'zod';
 
-import { validateLiveWsfexSmoke } from './homologation';
+import { validateHomologationEvidence, validateLiveWsfexSmoke } from './homologation';
 
 const suiteSchema = z.object({
   id: z.string().regex(/^[a-z0-9_]+$/),
@@ -62,6 +62,7 @@ export const backendReleaseManifestV1Schema = z.object({
   externalAuthority: z.object({
     environment: z.literal('homologacion'),
     liveSmokePath: z.string().min(1),
+    homologationEvidencePath: z.string().min(1),
     requiredState: z.literal('ready_for_invoice_homologation'),
     productionEnabledMustRemain: z.literal(false),
   }).strict(),
@@ -149,6 +150,7 @@ export function buildBackendReleaseReportV1(input: Readonly<{
   generatedAt: string;
   suites: readonly BackendReleaseSuiteResultV1[];
   liveSmoke: unknown;
+  homologationEvidence: unknown | null;
 }>): BackendReleaseReportV1 {
   if (!/^[a-f0-9]{7,64}$/.test(input.revision)) throw new Error('BACKEND_RELEASE_REVISION_INVALID');
   if (!Number.isFinite(Date.parse(input.generatedAt))) throw new Error('BACKEND_RELEASE_GENERATED_AT_INVALID');
@@ -161,13 +163,30 @@ export function buildBackendReleaseReportV1(input: Readonly<{
     ? 'passed' as const
     : 'failed' as const;
   const authority = validateLiveWsfexSmoke(input.liveSmoke);
+  const homologationFailedGateIds: string[] = [];
+  if (input.homologationEvidence === null) {
+    homologationFailedGateIds.push('homologation_evidence_missing');
+  } else {
+    try {
+      const homologation = validateHomologationEvidence(input.homologationEvidence);
+      if (homologation.state !== 'structurally_complete_for_human_production_review') {
+        homologationFailedGateIds.push(...homologation.failedGateIds.map(id => `homologation:${id}`));
+      }
+    } catch {
+      homologationFailedGateIds.push('homologation_evidence_invalid');
+    }
+  }
+  const authorityState = authority.state === 'ready_for_invoice_homologation'
+    && homologationFailedGateIds.length === 0
+    ? 'ready_for_invoice_homologation' as const
+    : 'blocked' as const;
   const state = softwareState === 'failed'
     ? 'software_failed' as const
-    : authority.state === 'blocked'
+    : authorityState === 'blocked'
       ? 'external_authority_blocked' as const
       : 'ready_for_human_product_gate' as const;
-  const limitations = authority.state === 'blocked'
-    ? ['ARCA homologation is not certified until an active FEEWS point is discovered and the invoice matrix is rerun.']
+  const limitations = authorityState === 'blocked'
+    ? ['ARCA homologation is not certified until an active FEEWS point is discovered and the complete reviewed invoice/recovery matrix is supplied.']
     : ['This backend gate does not enable production; production remains subject to explicit owner and authority approval.'];
   return {
     version: 'tax-backend-release-report-v1',
@@ -176,8 +195,8 @@ export function buildBackendReleaseReportV1(input: Readonly<{
     generatedAt: input.generatedAt,
     state,
     softwareState,
-    authorityState: authority.state,
-    failedGateIds: authority.failedGateIds,
+    authorityState,
+    failedGateIds: [...authority.failedGateIds, ...homologationFailedGateIds],
     suites: input.suites,
     fixtureDigests: {
       golden: input.manifest.contract.goldenFixtureSha256,
