@@ -6,7 +6,7 @@ import { TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 } from '@tax-engine/browser-contr
 import { TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 } from '@tax-engine/browser-contracts/scenarios';
 import { z } from 'zod';
 
-import { validateHomologationEvidence, validateLiveWsfexSmoke } from './homologation';
+import { validateHomologationEvidence, validateLiveWsfexSmoke, type EnvironmentSource } from './homologation';
 
 const suiteSchema = z.object({
   id: z.string().regex(/^[a-z0-9_]+$/),
@@ -203,6 +203,7 @@ export function buildBackendReleaseReportV1(input: Readonly<{
   suites: readonly BackendReleaseSuiteResultV1[];
   liveSmoke: unknown;
   homologationEvidence: unknown | null;
+  homologationEnvironment?: EnvironmentSource;
 }>): BackendReleaseReportV1 {
   if (!/^[a-f0-9]{7,64}$/.test(input.revision)) throw new Error('BACKEND_RELEASE_REVISION_INVALID');
   if (!Number.isFinite(Date.parse(input.generatedAt))) throw new Error('BACKEND_RELEASE_GENERATED_AT_INVALID');
@@ -241,7 +242,10 @@ export function buildBackendReleaseReportV1(input: Readonly<{
     homologationFailedGateIds.push('homologation_evidence_missing');
   } else {
     try {
-      const homologation = validateHomologationEvidence(input.homologationEvidence);
+      const homologation = validateHomologationEvidence(
+        input.homologationEvidence,
+        input.homologationEnvironment,
+      );
       if (homologation.state !== 'structurally_complete_for_human_production_review') {
         homologationFailedGateIds.push(...homologation.failedGateIds.map(id => `homologation:${id}`));
       }

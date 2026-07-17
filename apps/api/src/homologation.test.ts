@@ -41,7 +41,7 @@ describe('ARCA homologation acceptance harness', () => {
   });
 
   test('accepts only redacted evidence with complete Reclaim, WSFEX, journey, and human-review coverage', () => {
-    const accepted = validateHomologationEvidence(validEvidence());
+    const accepted = validateHomologationEvidence(validEvidence(), readyEnvironment());
     expect(accepted).toEqual(expect.objectContaining({ state: 'structurally_complete_for_human_production_review', failedGateIds: [] }));
     expect(accepted.safeSummary.productionEnabled).toBe(false);
     expect(accepted.safeSummary.wsfeDocumentTypes).toEqual([11, 12, 13]);
@@ -50,7 +50,7 @@ describe('ARCA homologation acceptance harness', () => {
     const evidence = validEvidence();
     const rejected = validateHomologationEvidence({
       ...evidence,
-      reclaim: [evidence.reclaim[0], evidence.reclaim[0], evidence.reclaim[2]],
+      reclaim: [evidence.reclaim[1], evidence.reclaim[1], evidence.reclaim[2], evidence.reclaim[3]],
       wsfex: evidence.wsfex.map(item => item.documentType === 21
         ? { ...item, mismatchedEchoRejected: false }
         : item.documentType === 20 ? { ...item, canonicalPayloadMismatchRejected: false } : item),
@@ -58,12 +58,28 @@ describe('ARCA homologation acceptance harness', () => {
         ? { ...item, caeAloneRejected: false }
         : item.documentType === 12 ? { ...item, reprocessObservedForResend: false } : item),
       reviews: { ...evidence.reviews, securityAccepted: false },
-    });
+    }, readyEnvironment());
     expect(rejected.state).toBe('rejected');
     expect(rejected.failedGateIds).toEqual(expect.arrayContaining([
       'reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'wsfex_boundary_gate',
       'wsfe_recovery_or_echo_gate', 'wsfe_domestic_discipline_gate', 'human_review_gate',
     ]));
+    expect(accepted.safeSummary.reclaimPurposes).toEqual([
+      'arca_onboarding_readiness',
+      'arca_taxpayer_readiness',
+      'arca_cae_constatement',
+      'arca_adjustment_constatement',
+    ]);
+
+    expect(validateHomologationEvidence(validEvidence(), {}).failedGateIds).toContain(
+      'reclaim_provider_review_binding',
+    );
+    expect(validateHomologationEvidence({
+      ...validEvidence(),
+      reclaim: validEvidence().reclaim.map(item => item.purpose === 'arca_onboarding_readiness'
+        ? { ...item, providerIdHash: hashCanonical('another-provider') }
+        : item),
+    }, readyEnvironment()).failedGateIds).toContain('reclaim_provider_identity_binding');
   });
 
   test('probes only a homologation signer that reports delegated certificate and WSAA readiness', async () => {
@@ -171,6 +187,7 @@ function validEvidence() {
     authorityEnvironment: 'homologacion' as const,
     effectiveRuleVersionIds: ['ar-rg-4401-factura-e-v1', 'arca-wsfex-3.1.1', 'bcra-a8330-service-exports-v1'],
     reclaim: [
+      { purpose: 'arca_onboarding_readiness' as const, providerIdHash: hash('provider-onboarding'), providerVersion: '1.0.0', proofHash: hash('onboarding-proof'), custodyReceiptHash: hash('onboarding-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
       { purpose: 'arca_taxpayer_readiness' as const, providerIdHash: hash('provider-readiness'), providerVersion: '1.0.0', proofHash: hash('readiness-proof'), custodyReceiptHash: hash('readiness-custody'), teeRequired: false, teeVerified: false, negativeBindingCasesRejected: true },
       { purpose: 'arca_cae_constatement' as const, providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('invoice-proof'), custodyReceiptHash: hash('invoice-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
       { purpose: 'arca_adjustment_constatement' as const, providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('adjustment-proof'), custodyReceiptHash: hash('adjustment-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },

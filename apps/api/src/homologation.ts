@@ -1,7 +1,7 @@
 import { hashCanonical } from '@tax-engine/core';
 import { z } from 'zod';
 
-type EnvironmentSource = Readonly<Record<string, string | undefined>>;
+export type EnvironmentSource = Readonly<Record<string, string | undefined>>;
 
 export type HomologationGateV1 = Readonly<{
   id: string;
@@ -20,7 +20,12 @@ export type HomologationPreflightV1 = Readonly<{
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const reclaimResultSchema = z.object({
-  purpose: z.enum(['arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement']),
+  purpose: z.enum([
+    'arca_onboarding_readiness',
+    'arca_taxpayer_readiness',
+    'arca_cae_constatement',
+    'arca_adjustment_constatement',
+  ]),
   providerIdHash: hashSchema,
   providerVersion: z.string().min(1),
   proofHash: hashSchema,
@@ -64,7 +69,7 @@ export const homologationEvidenceSchema = z.object({
   executedAt: z.iso.datetime({ offset: true }),
   authorityEnvironment: z.literal('homologacion'),
   effectiveRuleVersionIds: z.array(z.string().min(1)).min(3),
-  reclaim: z.array(reclaimResultSchema).length(3),
+  reclaim: z.array(reclaimResultSchema).length(4),
   wsfex: z.array(wsfexResultSchema).length(3),
   wsfe: z.array(wsfeResultSchema).length(3),
   journeys: z.array(journeySchema).length(2),
@@ -190,7 +195,10 @@ export function buildHomologationPreflight(environment: EnvironmentSource = proc
   };
 }
 
-export function validateHomologationEvidence(input: unknown): Readonly<{
+export function validateHomologationEvidence(
+  input: unknown,
+  environment: EnvironmentSource = process.env,
+): Readonly<{
   version: 'arca-homologation-validation-v1';
   state: 'structurally_complete_for_human_production_review' | 'rejected';
   failedGateIds: readonly string[];
@@ -205,10 +213,28 @@ export function validateHomologationEvidence(input: unknown): Readonly<{
 }> {
   const evidence = homologationEvidenceSchema.parse(input);
   const failed: string[] = [];
-  requireUniqueCoverage('reclaim_coverage', evidence.reclaim.map(item => item.purpose), ['arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement'], failed);
+  requireUniqueCoverage(
+    'reclaim_coverage',
+    evidence.reclaim.map(item => item.purpose),
+    [
+      'arca_onboarding_readiness',
+      'arca_taxpayer_readiness',
+      'arca_cae_constatement',
+      'arca_adjustment_constatement',
+    ],
+    failed,
+  );
   requireUniqueCoverage('wsfex_coverage', evidence.wsfex.map(item => item.documentType), [19, 20, 21], failed);
   requireUniqueCoverage('wsfe_coverage', evidence.wsfe.map(item => item.documentType), [11, 12, 13], failed);
   requireUniqueCoverage('journey_coverage', evidence.journeys.map(item => item.path), ['reclaim_copilot', 'wsfex_delegated'], failed);
+  const reviewedProviderIds = reviewedReclaimProviderIds(environment);
+  if (!reviewedProviderIds) {
+    failed.push('reclaim_provider_review_binding');
+  } else if (evidence.reclaim.some(item => (
+    item.providerIdHash !== hashCanonical(reviewedProviderIds[item.purpose])
+  ))) {
+    failed.push('reclaim_provider_identity_binding');
+  }
   if (evidence.reclaim.some(item => !item.negativeBindingCasesRejected || (item.teeRequired && !item.teeVerified))) failed.push('reclaim_negative_or_tee_gate');
   if (evidence.wsfex.some(item => !item.ambiguousOutcomeObserved || !item.mismatchedEchoRejected)) failed.push('wsfex_recovery_or_echo_gate');
   if (evidence.wsfex.some(item => !item.canonicalPayloadMismatchRejected || !item.encryptedPayloadAtRestVerified || !item.wsaaKeyIsolationVerified)) failed.push('wsfex_boundary_gate');
@@ -325,4 +351,24 @@ function safeEnvironmentGate(authorityEnvironment: 'homologacion' | 'production'
 function requireUniqueCoverage<T extends string | number>(id: string, actual: readonly T[], expected: readonly T[], failed: string[]): void {
   const values = new Set(actual);
   if (values.size !== expected.length || expected.some(value => !values.has(value))) failed.push(id);
+}
+
+function reviewedReclaimProviderIds(environment: EnvironmentSource): Readonly<Record<HomologationEvidenceV1['reclaim'][number]['purpose'], string>> | null {
+  const onboarding = environment.RECLAIM_ARCA_ONBOARDING_PROVIDER_ID;
+  const taxpayer = environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_ID;
+  const cae = environment.RECLAIM_ARCA_CAE_PROVIDER_ID;
+  if (
+    environment.RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED !== 'true'
+    || environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_REVIEWED !== 'true'
+    || environment.RECLAIM_ARCA_CAE_PROVIDER_REVIEWED !== 'true'
+    || !onboarding
+    || !taxpayer
+    || !cae
+  ) return null;
+  return {
+    arca_onboarding_readiness: onboarding,
+    arca_taxpayer_readiness: taxpayer,
+    arca_cae_constatement: cae,
+    arca_adjustment_constatement: cae,
+  };
 }

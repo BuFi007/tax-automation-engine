@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 
+import { hashCanonical } from '@tax-engine/core';
+
 import {
   assertBackendReleaseFaultEvidenceV1,
   buildBackendReleaseReportV1,
@@ -124,12 +126,31 @@ describe('BU-252 backend release gate', () => {
       suites,
       liveSmoke: smoke,
       homologationEvidence: validHomologationEvidence(),
+      homologationEnvironment: reviewedProviderEnvironment(),
     });
     expect(report).toMatchObject({
       state: 'ready_for_human_product_gate',
       authorityState: 'ready_for_invoice_homologation',
       productionEnabled: false,
     });
+
+    const mismatchedProvider = buildBackendReleaseReportV1({
+      manifest,
+      revision: 'c'.repeat(40),
+      generatedAt: '2026-07-16T12:00:00.000Z',
+      faultEvidence: passingFaultEvidence(manifest),
+      suites,
+      liveSmoke: smoke,
+      homologationEvidence: validHomologationEvidence(),
+      homologationEnvironment: {
+        ...reviewedProviderEnvironment(),
+        RECLAIM_ARCA_ONBOARDING_PROVIDER_ID: 'another-onboarding-provider',
+      },
+    });
+    expect(mismatchedProvider.state).toBe('external_authority_blocked');
+    expect(mismatchedProvider.failedGateIds).toContain(
+      'homologation:reclaim_provider_identity_binding',
+    );
   });
 
   test('requires every named fault assertion to execute and fail-closes malformed authority JSON', async () => {
@@ -184,16 +205,17 @@ function passingFaultEvidence(manifest: ReturnType<typeof parseBackendReleaseMan
 }
 
 function validHomologationEvidence() {
-  const hash = (value: string) => Bun.CryptoHasher.hash('sha256', value, 'hex');
+  const hash = (value: string) => hashCanonical(value);
   return {
     version: 'arca-homologation-evidence-v1',
     executedAt: '2026-07-16T12:00:00.000Z',
     authorityEnvironment: 'homologacion',
     effectiveRuleVersionIds: ['ar-rg-4401-factura-e-v1', 'arca-wsfex-3.1.1', 'bcra-a8330-service-exports-v1'],
     reclaim: [
+      { purpose: 'arca_onboarding_readiness', providerIdHash: hash('provider-onboarding'), providerVersion: '1.0.0', proofHash: hash('onboarding-proof'), custodyReceiptHash: hash('onboarding-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
       { purpose: 'arca_taxpayer_readiness', providerIdHash: hash('provider-readiness'), providerVersion: '1.0.0', proofHash: hash('readiness-proof'), custodyReceiptHash: hash('readiness-custody'), teeRequired: false, teeVerified: false, negativeBindingCasesRejected: true },
       { purpose: 'arca_cae_constatement', providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('invoice-proof'), custodyReceiptHash: hash('invoice-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
-      { purpose: 'arca_adjustment_constatement', providerIdHash: hash('provider-adjustment'), providerVersion: '1.0.0', proofHash: hash('adjustment-proof'), custodyReceiptHash: hash('adjustment-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
+      { purpose: 'arca_adjustment_constatement', providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('adjustment-proof'), custodyReceiptHash: hash('adjustment-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
     ],
     wsfex: ([19, 20, 21] as const).map(documentType => ({ documentType, acceptedReceiptHash: hash(`accepted-${documentType}`), ambiguousOutcomeObserved: true, exactRecoveryReceiptHash: hash(`recovery-${documentType}`), mismatchedEchoRejected: true, canonicalPayloadMismatchRejected: true, encryptedPayloadAtRestVerified: true, wsaaKeyIsolationVerified: true })),
     wsfe: ([11, 12, 13] as const).map(documentType => ({ documentType, acceptedReceiptHash: hash(`wsfe-accepted-${documentType}`), ambiguousOutcomeObserved: true, exactRecoveryReceiptHash: hash(`wsfe-recovery-${documentType}`), reprocessObservedForResend: true, mismatchedEchoRejected: true, caeAloneRejected: true, sequenceConflictRejected: true, encryptedPayloadAtRestVerified: true, wsaaKeyIsolationVerified: true })),
@@ -204,5 +226,16 @@ function validHomologationEvidence() {
     reviews: { accountantAccepted: true, securityAccepted: true, ownerAcceptedForProductionReview: true, redactedEvidenceReferenceHash: hash('reviews') },
     secretsDetected: false,
     productionEnabled: false,
+  };
+}
+
+function reviewedProviderEnvironment() {
+  return {
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_ID: 'provider-onboarding',
+    RECLAIM_ARCA_TAXPAYER_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_TAXPAYER_PROVIDER_ID: 'provider-readiness',
+    RECLAIM_ARCA_CAE_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_CAE_PROVIDER_ID: 'provider-cae',
   };
 }
