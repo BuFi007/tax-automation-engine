@@ -1,5 +1,6 @@
 import type { TaxObligation, TaxProfile } from '../types';
 import type { JurisdictionCatalogue, TaxJurisdictionProvider, WorkflowBuildContext } from './types';
+import Decimal from 'decimal.js';
 
 const RULES = {
   registration: 'ae-fta-corporate-tax-registration-2026-v1',
@@ -13,6 +14,77 @@ const REVIEW = [
   { value: 'no', label: 'No' },
   { value: 'needs_review', label: 'Needs professional review' },
 ] as const;
+
+export type UaeVatThresholdAssessment = Readonly<{
+  state: 'mandatory' | 'voluntary' | 'below' | 'nonresident_taxable_supplies' | 'needs_review';
+  basis: 'resident_turnover' | 'resident_expenses' | 'nonresident_supply' | 'insufficient_evidence';
+  thresholdAed: '375000' | '187500' | '0' | null;
+  ruleVersionId: typeof RULES.vatRegistration;
+  limitationCodes: readonly string[];
+}>;
+
+export type UaeVatThresholdInput = Readonly<{
+  isResidentInUae: boolean | null;
+  makesTaxableSuppliesInUae: boolean | null;
+  anotherUaePartyResponsibleForVat: boolean | null;
+  taxableSuppliesAndImportsPast12MonthsAed: string | null;
+  taxableSuppliesAndImportsNext30DaysAed: string | null;
+  taxableExpensesPast12MonthsAed: string | null;
+  taxableExpensesNext30DaysAed: string | null;
+}>;
+
+/** Exact, evidence-fed threshold routing. This does not register, file, or certify FTA status. */
+export function assessUaeVatRegistrationThreshold(input: UaeVatThresholdInput): UaeVatThresholdAssessment {
+  if (input.isResidentInUae === null || input.makesTaxableSuppliesInUae === null) return review('UAE_VAT_RESIDENCY_OR_SUPPLY_SCOPE_MISSING');
+  if (!input.isResidentInUae) {
+    if (!input.makesTaxableSuppliesInUae) return review('UAE_VAT_NONRESIDENT_SUPPLY_NOT_ESTABLISHED');
+    if (input.anotherUaePartyResponsibleForVat === null) return review('UAE_VAT_RESPONSIBLE_PARTY_MISSING');
+    if (input.anotherUaePartyResponsibleForVat) return review('UAE_VAT_OTHER_RESPONSIBLE_PARTY_REVIEW_REQUIRED');
+    return { state: 'nonresident_taxable_supplies', basis: 'nonresident_supply', thresholdAed: '0', ruleVersionId: RULES.vatRegistration, limitationCodes: [] };
+  }
+  if (!input.makesTaxableSuppliesInUae) return review('UAE_VAT_RESIDENT_TAXABLE_SUPPLY_NOT_ESTABLISHED');
+
+  const values = [
+    input.taxableSuppliesAndImportsPast12MonthsAed,
+    input.taxableSuppliesAndImportsNext30DaysAed,
+    input.taxableExpensesPast12MonthsAed,
+    input.taxableExpensesNext30DaysAed,
+  ];
+  if (values.some(value => value === null)) return review('UAE_VAT_LEDGER_WINDOW_INCOMPLETE');
+  let exact: readonly [Decimal, Decimal, Decimal, Decimal];
+  try {
+    exact = [
+      exactNonNegativeAed(values[0]!),
+      exactNonNegativeAed(values[1]!),
+      exactNonNegativeAed(values[2]!),
+      exactNonNegativeAed(values[3]!),
+    ];
+  } catch {
+    return review('UAE_VAT_LEDGER_AMOUNT_INVALID');
+  }
+  const [pastSupplies, expectedSupplies, pastExpenses, expectedExpenses] = exact;
+  if (pastSupplies.gt(375000) || expectedSupplies.gt(375000)) {
+    return { state: 'mandatory', basis: 'resident_turnover', thresholdAed: '375000', ruleVersionId: RULES.vatRegistration, limitationCodes: [] };
+  }
+  if (pastSupplies.gt(187500) || expectedSupplies.gt(187500)) {
+    return { state: 'voluntary', basis: 'resident_turnover', thresholdAed: '187500', ruleVersionId: RULES.vatRegistration, limitationCodes: [] };
+  }
+  if (pastExpenses.gt(187500) || expectedExpenses.gt(187500)) {
+    return { state: 'voluntary', basis: 'resident_expenses', thresholdAed: '187500', ruleVersionId: RULES.vatRegistration, limitationCodes: [] };
+  }
+  return { state: 'below', basis: 'resident_turnover', thresholdAed: '187500', ruleVersionId: RULES.vatRegistration, limitationCodes: [] };
+}
+
+function exactNonNegativeAed(value: string): Decimal {
+  if (!/^(0|[1-9]\d*)(\.\d{1,2})?$/.test(value)) throw new Error('UAE_VAT_AMOUNT_INVALID');
+  const decimal = new Decimal(value);
+  if (!decimal.isFinite() || decimal.isNegative()) throw new Error('UAE_VAT_AMOUNT_INVALID');
+  return decimal;
+}
+
+function review(code: string): UaeVatThresholdAssessment {
+  return { state: 'needs_review', basis: 'insufficient_evidence', thresholdAed: null, ruleVersionId: RULES.vatRegistration, limitationCodes: [code] };
+}
 
 export const unitedArabEmiratesCatalogue: JurisdictionCatalogue = {
   jurisdiction: 'AE',
