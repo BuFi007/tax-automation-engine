@@ -1,4 +1,8 @@
-import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
+import {
+  arcaOnboardingBrowserMutationV1Schema,
+  arcaOnboardingBrowserRunV1Schema,
+  type ArcaOnboardingBrowserRunV1,
+} from '@tax-engine/browser-contracts';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4100';
 
@@ -15,25 +19,25 @@ export class ArcaOnboardingApiClient {
     private readonly apiUrl = API_URL,
   ) {}
 
-  async listRuns(): Promise<readonly ArcaOnboardingRunV1[]> {
+  async listRuns(): Promise<readonly ArcaOnboardingBrowserRunV1[]> {
     const response = await this.request(`/v1/arca-onboarding/runs?${new URLSearchParams({
       workspaceId: this.authority.workspaceId,
     })}`);
-    return response as readonly ArcaOnboardingRunV1[];
+    return arcaOnboardingBrowserRunV1Schema.array().parse(response);
   }
 
   async createRun(input: Readonly<{
     taxpayerReference: string;
     environment: 'homologation' | 'production';
     requestedServices: readonly ('wsfex' | 'wsfe')[];
-  }>): Promise<ArcaOnboardingRunV1> {
+  }>): Promise<ArcaOnboardingBrowserRunV1> {
     const onboardingId = crypto.randomUUID();
     const taxpayerReferenceHash = await hashBrowserAssertion({
       purpose: 'arca_taxpayer_reference',
       workspaceId: this.authority.workspaceId,
       reference: input.taxpayerReference,
     });
-    const result = await this.request('/v1/arca-onboarding/runs', {
+    const result = arcaOnboardingBrowserMutationV1Schema.parse(await this.request('/v1/arca-onboarding/runs', {
       onboardingId,
       workspaceId: this.authority.workspaceId,
       taxpayerReferenceHash,
@@ -41,11 +45,11 @@ export class ArcaOnboardingApiClient {
       requestedServices: input.requestedServices,
       actorId: this.authority.actorId,
       idempotencyKey: `create-${onboardingId}`,
-    }) as { run: ArcaOnboardingRunV1 };
+    }));
     return result.run;
   }
 
-  async completeLoginHandoff(run: ArcaOnboardingRunV1): Promise<ArcaOnboardingRunV1> {
+  async completeLoginHandoff(run: ArcaOnboardingBrowserRunV1): Promise<ArcaOnboardingBrowserRunV1> {
     this.assertRunScope(run);
     const browserSessionReferenceHash = await hashBrowserAssertion({
       purpose: 'arca_user_controlled_login_handoff',
@@ -55,7 +59,25 @@ export class ArcaOnboardingApiClient {
     return this.applyStep(run, 'login_handoff', { browserSessionReferenceHash });
   }
 
-  async confirmServiceAdherence(run: ArcaOnboardingRunV1): Promise<ArcaOnboardingRunV1> {
+  async completeHumanAuth(run: ArcaOnboardingBrowserRunV1): Promise<ArcaOnboardingBrowserRunV1> {
+    this.assertRunScope(run);
+    const completedAt = new Date().toISOString();
+    const completionReceiptHash = await hashBrowserAssertion({
+      purpose: 'arca_human_auth_completion',
+      onboardingId: run.onboardingId,
+      workspaceId: run.workspaceId,
+      revision: run.revision,
+      capturePolicyHash: run.humanAuth.capturePolicyHash,
+      nonce: crypto.randomUUID(),
+    });
+    return this.applyStep(run, 'human_auth', {
+      completionReceiptHash,
+      capturePolicyHash: run.humanAuth.capturePolicyHash,
+      completedAt,
+    });
+  }
+
+  async confirmServiceAdherence(run: ArcaOnboardingBrowserRunV1): Promise<ArcaOnboardingBrowserRunV1> {
     this.assertRunScope(run);
     const evidenceHash = await hashBrowserAssertion({
       kind: 'arca_service_adherence_user_confirmation',
@@ -70,7 +92,7 @@ export class ArcaOnboardingApiClient {
     });
   }
 
-  async recordPointOfSale(run: ArcaOnboardingRunV1, pointOfSale: number): Promise<ArcaOnboardingRunV1> {
+  async recordPointOfSale(run: ArcaOnboardingBrowserRunV1, pointOfSale: number): Promise<ArcaOnboardingBrowserRunV1> {
     this.assertRunScope(run);
     const evidenceHash = await hashBrowserAssertion({
       kind: 'arca_point_of_sale_creation_confirmation',
@@ -79,7 +101,7 @@ export class ArcaOnboardingApiClient {
       pointOfSale,
       revision: run.revision,
     });
-    const result = await this.request(
+    const result = arcaOnboardingBrowserMutationV1Schema.parse(await this.request(
       `/v1/arca-onboarding/runs/${encodeURIComponent(run.onboardingId)}/steps/point_of_sale_creation`,
       {
         actorId: this.authority.actorId,
@@ -87,36 +109,36 @@ export class ArcaOnboardingApiClient {
         evidenceHash,
         idempotencyKey: crypto.randomUUID(),
       },
-    ) as { run: ArcaOnboardingRunV1 };
+    ));
     return result.run;
   }
 
-  async selectPointOfSale(run: ArcaOnboardingRunV1, pointOfSale: number): Promise<ArcaOnboardingRunV1> {
+  async selectPointOfSale(run: ArcaOnboardingBrowserRunV1, pointOfSale: number): Promise<ArcaOnboardingBrowserRunV1> {
     this.assertRunScope(run);
-    const result = await this.request(
+    const result = arcaOnboardingBrowserMutationV1Schema.parse(await this.request(
       `/v1/arca-onboarding/runs/${encodeURIComponent(run.onboardingId)}/point-of-sale-selection`,
       {
         actorId: this.authority.actorId,
         exportPointOfSale: pointOfSale,
         idempotencyKey: crypto.randomUUID(),
       },
-    ) as { run: ArcaOnboardingRunV1 };
+    ));
     return result.run;
   }
 
-  private assertRunScope(run: ArcaOnboardingRunV1): void {
+  private assertRunScope(run: ArcaOnboardingBrowserRunV1): void {
     if (run.workspaceId !== this.authority.workspaceId) throw new Error('ARCA_ONBOARDING_WORKSPACE_MISMATCH');
   }
 
   private async applyStep(
-    run: ArcaOnboardingRunV1,
+    run: ArcaOnboardingBrowserRunV1,
     step: string,
     fields: Readonly<Record<string, unknown>>,
-  ): Promise<ArcaOnboardingRunV1> {
-    const result = await this.request(
+  ): Promise<ArcaOnboardingBrowserRunV1> {
+    const result = arcaOnboardingBrowserMutationV1Schema.parse(await this.request(
       `/v1/arca-onboarding/runs/${encodeURIComponent(run.onboardingId)}/steps/${step}`,
       { ...fields, actorId: this.authority.actorId, idempotencyKey: crypto.randomUUID() },
-    ) as { run: ArcaOnboardingRunV1 };
+    ));
     return result.run;
   }
 

@@ -25,11 +25,13 @@ import {
   TaxBrowserSnapshotService,
 } from './browser-snapshot';
 import { handleTaxBrowserSnapshotRoute } from './browser-snapshot-routes';
+import { handleFacturaEFactoringBrowserRoute } from './factura-e-factoring-browser-routes';
 import { classifyApiError } from './api-errors';
 import {
   assertTaxTenantPrincipalScope,
   requiredTaxTenantPrincipalCapability,
   taxTenantPrincipalSecretForCapability,
+  verifyBoundTaxTenantPrincipal,
   verifyTaxTenantPrincipal,
 } from './tenant-principal';
 import {
@@ -55,6 +57,10 @@ import {
 } from './factura-e-feature-outbox';
 import { HttpFacturaEAuthorityPreparationGateway } from './factura-e-authority-preparation';
 import { TaxWsfexAuthorityRemoteEffect } from './factura-e-authority-remote-effect';
+import {
+  HttpDeskFacturaEPrivateDataGateway,
+  TaxOwnedFacturaEAuthorityPreparationGateway,
+} from './tax-owned-factura-e-authority-preparation';
 import {
   FACTURA_E_FEATURE_RENEWAL_WINDOW_MS,
   facturaEFeatureRenewalCadenceReady,
@@ -88,6 +94,8 @@ const evidenceIngestToken = process.env.TAX_ENGINE_EVIDENCE_INGEST_TOKEN ?? null
 const consentEventToken = process.env.TAX_ENGINE_CONSENT_EVENT_TOKEN ?? null;
 const snapshotProjectorToken = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN ?? null;
 const userPrincipalSecret = process.env.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET ?? null;
+const motoraOnboardingPrincipalSecret =
+  process.env.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
 const snapshotProjectorPrincipalSecret = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET ?? null;
 const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET ?? null;
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
@@ -167,21 +175,23 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !consentEventToken
   || !snapshotProjectorToken
   || !userPrincipalSecret
+  || !motoraOnboardingPrincipalSecret
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
   || !openAgentsAgentPrincipalSecret)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
+  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
 }
 if (process.env.NODE_ENV === 'production'
   && new Set([
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
-  ]).size !== 6) {
+  ]).size !== 7) {
   throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
 }
 if (taxDomainEventDeliveryEnabled) {
@@ -201,6 +211,7 @@ if (taxDomainEventDeliveryEnabled) {
 if (authorityCorridorEnabled) {
   assertTaxAuthoritySecretsDistinct(authorityPrincipalSecrets, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -228,6 +239,7 @@ if (
 if (facturaEFeatureEnabled) {
   assertFacturaEFeatureSecretsDistinct(facturaEFeaturePrincipalSecrets, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -245,6 +257,7 @@ if (facturaEFeatureEnabled) {
   ]);
   assertFacturaETerminalReceiptVerifiers(facturaETerminalReceiptVerifiers, [
     userPrincipalSecret,
+    motoraOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -299,10 +312,13 @@ if (taxDomainEventDeliveryEnabled && !taxDomainEventPublisher) {
   throw new Error('TAX_DOMAIN_EVENT_DELIVERY_CONFIGURATION_REQUIRED');
 }
 const taxEvidenceWorkspace = new TaxEvidenceWorkspaceService(store);
+const taxBrowserSnapshotProjector = browserReferenceSecret
+  ? new TaxBrowserSnapshotProjector(browserReferenceSecret)
+  : null;
 const taxBrowserSnapshots = new TaxBrowserSnapshotService(
   store,
   taxEvidenceWorkspace,
-  browserReferenceSecret ? new TaxBrowserSnapshotProjector(browserReferenceSecret) : null,
+  taxBrowserSnapshotProjector,
 );
 const argentinaErp = new ContabiliumSandboxProvider(null);
 const reclaimGateway = ReclaimProtocolGateway.fromEnvironment();
@@ -311,7 +327,9 @@ const arcaEnvironment = arcaProductionAuthority ? 'production' as const : 'homol
 const proofVault = HttpReclaimProofVault.fromEnvironment();
 const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
 const authorityPayloadWriter = HttpAuthorityPayloadWriter.fromEnvironment();
-const authorityPreparation = HttpFacturaEAuthorityPreparationGateway.fromEnvironment();
+const externalAuthorityPreparation = HttpFacturaEAuthorityPreparationGateway.fromEnvironment();
+const deskFacturaEPrivateData = HttpDeskFacturaEPrivateDataGateway.fromEnvironment();
+const issuerProfileRegistry = TaxOwnedFacturaEAuthorityPreparationGateway.profileRegistryFromEnvironment();
 let facturaEFeatures: FacturaEFeaturePublicationStore | null = null;
 const facturaEFeatureMutationFence = createLateBoundFacturaEFeatureMutationFence({
   enabled: () => facturaEFeatureEnabled,
@@ -326,6 +344,19 @@ const facturaEAgent = new FacturaEAgentService(
   authorityPayloadWriter,
   facturaEFeatureMutationFence,
 );
+const taxOwnedAuthorityPreparation =
+  deskFacturaEPrivateData && issuerProfileRegistry && wsfexGateway
+    ? new TaxOwnedFacturaEAuthorityPreparationGateway(
+        facturaEAgent,
+        store,
+        issuerProfileRegistry,
+        TaxOwnedFacturaEAuthorityPreparationGateway.currencyRegistryFromEnvironment(),
+        deskFacturaEPrivateData,
+        wsfexGateway,
+        arcaAuthorityEnvironment
+      )
+    : null;
+const authorityPreparation = taxOwnedAuthorityPreparation ?? externalAuthorityPreparation;
 const facturaEAuthorityStore = new FacturaEAuthorityExecutionStore(
   process.env.TAX_AUTHORITY_EXECUTION_DB_PATH ?? ':memory:',
   (process.env.NODE_ENV === 'production' || arcaProductionAuthority)
@@ -335,6 +366,8 @@ if (
   authorityRemoteEffectsEnabled
   && (!authorityPreparation || !authorityPayloadWriter || !wsfexGateway)
 ) throw new Error('TAX_ARCA_REMOTE_EFFECTS_CONFIGURATION_REQUIRED');
+if (arcaProductionAuthority && authorityRemoteEffectsEnabled && !taxOwnedAuthorityPreparation)
+  throw new Error('TAX_OWNED_ARCA_PREPARATION_REQUIRED_IN_PRODUCTION');
 const facturaEAuthorityRemoteEffect =
   authorityPreparation && authorityPayloadWriter && wsfexGateway
     ? new TaxWsfexAuthorityRemoteEffect(
@@ -464,9 +497,9 @@ export const server = Bun.serve({
         /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
         && request.headers.has('x-tax-tenant-principal')
       ) {
-        const scopedPrincipal = verifyTaxTenantPrincipal(
+        const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
           request,
-          userPrincipalSecret,
+          motoraOnboardingPrincipalSecret,
           'arca:onboard',
         );
         const scopedResponse = await handleArcaOnboardingRoute(
@@ -515,10 +548,22 @@ export const server = Bun.serve({
         : null;
       const accountantMandateResponse = await handleAccountantMandateRoute(request, url, store, tenantPrincipal);
       if (accountantMandateResponse) return applyCors(accountantMandateResponse, request);
-      const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken, tenantPrincipal });
+      const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, {
+        userApprovalToken,
+        evidenceIngestToken,
+        tenantPrincipal: null,
+      });
       if (onboardingResponse) return applyCors(onboardingResponse, request);
       const browserSnapshotResponse = handleTaxBrowserSnapshotRoute(request, url, taxBrowserSnapshots, tenantPrincipal);
       if (browserSnapshotResponse) return applyCors(browserSnapshotResponse, request);
+      const factoringBrowserResponse = await handleFacturaEFactoringBrowserRoute(
+        request,
+        url,
+        store,
+        taxBrowserSnapshotProjector,
+        tenantPrincipal,
+      );
+      if (factoringBrowserResponse) return applyCors(factoringBrowserResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
       const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });

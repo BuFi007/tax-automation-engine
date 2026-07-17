@@ -8,6 +8,7 @@ test('renders the deterministic ARCA onboarding order and credential boundary', 
   const html = renderToStaticMarkup(<ArcaOnboardingJourney />);
   expect(ARCA_ONBOARDING_UI_STEPS.map(step => step.id)).toEqual([
     'login_handoff',
+    'human_auth',
     'service_adherence',
     'point_of_sale_discovery',
     'point_of_sale_creation',
@@ -17,6 +18,7 @@ test('renders the deterministic ARCA onboarding order and credential boundary', 
     'ready',
   ]);
   expect(html).toContain('Clave Fiscal stays between you and ARCA');
+  expect(html).toContain('Motora pauses capture while you authenticate');
   expect(html).toContain('Reclaim no puede crear el punto ni la delegación');
   expect(html).toContain('Export + local · WSFEX and WSFE');
   expect(html).toContain('Creá el punto para Factura E por Webservices');

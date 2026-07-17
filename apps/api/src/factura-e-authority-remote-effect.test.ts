@@ -62,8 +62,17 @@ describe('Tax-owned WSFEX authority remote effect', () => {
       },
     };
     const wsfex = fakeWsfex(calls, run);
+    let projected: Record<string, unknown> | null = null;
     const effect = new TaxWsfexAuthorityRemoteEffect(
-      { getRun: () => run }, preparations, payloads, wsfex, 'production'
+      {
+        getRun: () => run,
+        recordAuthorityCorridorReconciliation(input) { projected = input; },
+      },
+      preparations,
+      payloads,
+      wsfex,
+      'production',
+      () => new Date(now)
     );
     const prepared = await effect.prepare({
       executionId: '44444444-4444-4444-8444-444444444444',
@@ -80,6 +89,14 @@ describe('Tax-owned WSFEX authority remote effect', () => {
     const official = await effect.reconcile(prepared);
     expect(official).toMatchObject({ status: 'officially_reconciled' });
     expect(official.authorityIdentityHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(projected).toMatchObject({
+      runId: run.runId,
+      requestId: '101',
+      invoiceNumber: '6',
+      cae: '12345678901234',
+      currencyId: 'DOL',
+      actorId: 'authority:wsfex-reconciliation',
+    });
     expect(calls).toEqual({ prepare: 1, store: 1, authorize: 1, recover: 0, reconcile: 1 });
   });
 
@@ -88,7 +105,10 @@ describe('Tax-owned WSFEX authority remote effect', () => {
     const calls = { prepare: 0, store: 0, authorize: 0, recover: 0, reconcile: 0 };
     const wsfex = fakeWsfex(calls, run, 'ambiguous');
     const effect = new TaxWsfexAuthorityRemoteEffect(
-      { getRun: () => run },
+      {
+        getRun: () => run,
+        recordAuthorityCorridorReconciliation() {},
+      },
       { async prepare(input) { return privatePreparation(run, input.executionId, input.idempotencyKey); } },
       {
         async store(input) {

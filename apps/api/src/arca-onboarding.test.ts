@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  HUMAN_AUTH_CAPTURE_POLICY_HASH,
   hashCanonical,
   hashTaxEvidenceConsentScope,
   type ArcaOnboardingRunV1,
@@ -76,6 +77,12 @@ describe('ARCA onboarding API service', () => {
       onboardingId, actorId: 'user:owner', idempotencyKey: 'start-reclaim', occurredAt: now,
     });
     expect(request.output.requestUrl).toBe('https://reclaim.example/request');
+    const requestReplay = await service.startReclaim({
+      onboardingId, actorId: 'user:owner', idempotencyKey: 'start-reclaim', occurredAt: '2026-07-14T12:01:00.000Z',
+    });
+    expect(requestReplay.replayed).toBe(true);
+    expect(requestReplay.output).toEqual(request.output);
+    expect(gateway.createRequestCalls).toBe(1);
     const completed = await service.ingestReclaimCallback('reclaim-onboarding-session', { rawProofMarker: 'vault-only' }, now);
     expect(completed.run.status).toBe('ready');
     expect(completed.run.zkEvidence?.custodyReceipt?.opaqueReference).toBe('vault://reclaim/60000000-0000-4000-8000-000000000099');
@@ -139,6 +146,14 @@ function advanceToApiVerificationStep(service: ArcaOnboardingService): ArcaOnboa
   }).run;
   apply({ kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-handoff' });
   apply({
+    kind: 'record_human_auth_completion',
+    completion: {
+      version: 'human-auth-completion-v1', completionReceiptHash: hash('human-auth'),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: now, signatureVerified: true,
+    },
+    idempotencyKey: 'human-auth-completion',
+  });
+  apply({
     kind: 'record_service_adherence', pointOfSaleAdministrationActive: true, relationshipManagerActive: true,
     evidenceHash: hash('services'), idempotencyKey: 'service-adherence',
   });
@@ -153,7 +168,10 @@ function advanceToApiVerificationStep(service: ArcaOnboardingService): ArcaOnboa
 }
 
 class FakeOnboardingReclaimGateway implements ArcaOnboardingReclaimGateway {
+  createRequestCalls = 0;
+
   async createRequest(_run: ArcaOnboardingRunV1, _occurredAt: string): Promise<ArcaOnboardingReclaimRequest> {
+    this.createRequestCalls += 1;
     return {
       session: {
         sessionId: 'reclaim-onboarding-session', providerId: 'arca-onboarding-provider', providerVersion: '1.0.0',

@@ -1,12 +1,20 @@
 import { timingSafeEqual } from 'node:crypto';
 
+import {
+  projectArcaOnboardingBrowserHistoryV1,
+  projectArcaOnboardingBrowserMutationV1,
+  projectArcaOnboardingBrowserReadV1,
+  projectArcaOnboardingBrowserReclaimRequestV1,
+  projectArcaOnboardingBrowserRunV1,
+} from '@tax-engine/browser-contracts';
 import { z } from 'zod';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core';
 
 import type { ManualArcaOnboardingCommand, ArcaOnboardingService } from './arca-onboarding';
 import { readBoundedBody } from './bounded-body';
 import {
   assertTaxTenantPrincipalScope,
-  type TaxTenantPrincipalV2,
+  type TaxTenantPrincipalV3,
 } from './tenant-principal';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -25,7 +33,7 @@ export async function handleArcaOnboardingRoute(
   options: Readonly<{
     userApprovalToken: string | null;
     evidenceIngestToken: string | null;
-    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+    tenantPrincipal?: TaxTenantPrincipalV3 | null;
   }>,
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/arca-onboarding/callback') {
@@ -50,14 +58,18 @@ export async function handleArcaOnboardingRoute(
       ...baseMutationSchema,
     }).strict().parse(await boundedJson(request));
     requireUserAuthority(request, options, body.workspaceId, body.actorId);
-    return json({ data: service.createRun({ ...body, occurredAt: new Date().toISOString() }) }, 201);
+    return json({
+      data: projectArcaOnboardingBrowserMutationV1(
+        service.createRun({ ...body, occurredAt: new Date().toISOString() }),
+      ),
+    }, 201);
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/arca-onboarding/runs') {
     const workspaceId = url.searchParams.get('workspaceId');
     if (!workspaceId) return json({ error: 'WORKSPACE_ID_REQUIRED' }, 400);
     requireWorkspaceAuthority(options, workspaceId);
-    return json({ data: service.listRuns(workspaceId) });
+    return json({ data: service.listRuns(workspaceId).map(projectArcaOnboardingBrowserRunV1) });
   }
 
   const eventsMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/events$/);
@@ -65,7 +77,13 @@ export async function handleArcaOnboardingRoute(
     const onboardingId = decodeURIComponent(eventsMatch[1]!);
     const run = service.getRun(onboardingId);
     requireWorkspaceAuthority(options, run.workspaceId);
-    return json({ data: run, events: service.listEvents(onboardingId) });
+    return json({
+      data: projectArcaOnboardingBrowserHistoryV1({
+        run,
+        nextActions: service.nextActions(run),
+        events: service.listEvents(onboardingId),
+      }),
+    });
   }
 
   const reclaimMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/zk-evidence\/request$/);
@@ -73,11 +91,12 @@ export async function handleArcaOnboardingRoute(
     const body = z.object(baseMutationSchema).strict().parse(await boundedJson(request));
     const run = service.getRun(decodeURIComponent(reclaimMatch[1]!));
     requireUserAuthority(request, options, run.workspaceId, body.actorId);
-    return json({ data: await service.startReclaim({
+    const result = await service.startReclaim({
       ...body,
       onboardingId: decodeURIComponent(reclaimMatch[1]!),
       occurredAt: new Date().toISOString(),
-    }) });
+    });
+    return json({ data: projectArcaOnboardingBrowserReclaimRequestV1(result) });
   }
 
   const verificationMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/api-verification\/wsfex$/);
@@ -105,7 +124,7 @@ export async function handleArcaOnboardingRoute(
     }).strict().parse(await boundedJson(request));
     const run = service.getRun(onboardingId);
     requireUserAuthority(request, options, run.workspaceId, body.actorId);
-    return json({ data: service.applyManualCommand({
+    return json({ data: projectArcaOnboardingBrowserMutationV1(service.applyManualCommand({
       onboardingId,
       actorId: body.actorId,
       occurredAt: new Date().toISOString(),
@@ -114,7 +133,7 @@ export async function handleArcaOnboardingRoute(
         exportPointOfSale: body.exportPointOfSale,
         idempotencyKey: body.idempotencyKey,
       },
-    }) });
+    })) });
   }
 
   const stepMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/steps\/([a-z_]+)$/);
@@ -131,26 +150,28 @@ export async function handleArcaOnboardingRoute(
       const run = service.getRun(onboardingId);
       requireUserAuthority(request, options, run.workspaceId, parsed.actorId);
     }
-    return json({ data: service.applyManualCommand({
+    return json({ data: projectArcaOnboardingBrowserMutationV1(service.applyManualCommand({
       onboardingId,
       actorId: parsed.actorId,
       occurredAt,
       command: parsed.command,
-    }) });
+    })) });
   }
 
   const runMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)$/);
   if (request.method === 'GET' && runMatch) {
     const run = service.getRun(decodeURIComponent(runMatch[1]!));
     requireWorkspaceAuthority(options, run.workspaceId);
-    return json({ data: run, nextActions: service.nextActions(run) });
+    return json({
+      data: projectArcaOnboardingBrowserReadV1({ run, nextActions: service.nextActions(run) }),
+    });
   }
 
   return null;
 }
 
 function requireWorkspaceAuthority(
-  options: Readonly<{ tenantPrincipal?: TaxTenantPrincipalV2 | null }>,
+  options: Readonly<{ tenantPrincipal?: TaxTenantPrincipalV3 | null }>,
   workspaceId: string,
 ): void {
   if (options.tenantPrincipal) assertTaxTenantPrincipalScope(options.tenantPrincipal, workspaceId);
@@ -160,7 +181,7 @@ function requireUserAuthority(
   request: Request,
   options: Readonly<{
     userApprovalToken: string | null;
-    tenantPrincipal?: TaxTenantPrincipalV2 | null;
+    tenantPrincipal?: TaxTenantPrincipalV3 | null;
   }>,
   workspaceId: string,
   actorId: string,
@@ -177,6 +198,28 @@ function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string;
     case 'login_handoff': {
       const body = z.object({ ...baseMutationSchema, browserSessionReferenceHash: sha256Schema }).strict().parse(raw);
       return { actorId: body.actorId, command: { kind: 'complete_login_handoff', browserSessionReferenceHash: body.browserSessionReferenceHash, idempotencyKey: body.idempotencyKey } };
+    }
+    case 'human_auth': {
+      const body = z.object({
+        ...baseMutationSchema,
+        completionReceiptHash: sha256Schema,
+        capturePolicyHash: z.literal(HUMAN_AUTH_CAPTURE_POLICY_HASH),
+        completedAt: z.iso.datetime({ offset: true }),
+      }).strict().parse(raw);
+      return {
+        actorId: body.actorId,
+        command: {
+          kind: 'record_human_auth_completion',
+          completion: {
+            version: 'human-auth-completion-v1',
+            completionReceiptHash: body.completionReceiptHash,
+            capturePolicyHash: body.capturePolicyHash,
+            completedAt: body.completedAt,
+            signatureVerified: true,
+          },
+          idempotencyKey: body.idempotencyKey,
+        },
+      };
     }
     case 'service_adherence': {
       const body = z.object({

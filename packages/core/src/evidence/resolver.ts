@@ -6,6 +6,7 @@ import { addMoney, money } from '../money';
 import type { EvidenceMoney, TaxConsentGrant, TaxConclusionEnvelopeV1 } from '../types';
 import { hashTaxEvidenceRecord, isActiveTaxEvidenceRecord, resolveActiveEvidenceRecords } from './batch';
 import { buildEvidenceGraph } from './graph';
+import { calculateTaxEvidenceQualityV1 } from './quality';
 import type {
   SafeFact,
   TaxEvidenceAdapterCapabilityResult,
@@ -60,6 +61,7 @@ export class TaxEvidenceResolver {
   }
 
   async resolve(context: TaxEvidenceAdapterContext): Promise<TaxEvidencePresentationProjectionV1> {
+    const observedRecords: TaxEvidenceRecord[] = [];
     const lineageRecords: TaxEvidenceRecord[] = [];
     const periodRecords: TaxEvidenceRecord[] = [];
     const sources: TaxSourceCoverage[] = [];
@@ -91,6 +93,8 @@ export class TaxEvidenceResolver {
       const activeAsOf = resolveActiveEvidenceRecords(resolved.records, { requireTargets: false })
         .filter(record => instant(record.observedAt) <= instant(context.asOf)
           && (!record.expiresAt || instant(record.expiresAt) > instant(context.asOf)));
+      observedRecords.push(...resolveActiveEvidenceRecords(resolved.records, { requireTargets: false })
+        .filter(record => instant(record.observedAt) <= instant(context.asOf)));
       const activeInPeriod = activeAsOf.filter(record => periodsOverlap(record.period, context.period));
       lineageRecords.push(...activeAsOf);
       periodRecords.push(...activeInPeriod);
@@ -224,6 +228,7 @@ export class TaxEvidenceResolver {
             scopeIds: [...grant.scopeIds].sort(),
             scopeHash: grant.scopeHash,
             grantedAt: grant.grantedAt,
+            expiresAt: grant.expiresAt,
             revokedAt: grant.revokedAt,
           }))
           .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
@@ -260,6 +265,13 @@ export class TaxEvidenceResolver {
       ...expenseFxEvidence,
       ...supportedExpenseFxEvidence,
     ]).map(record => record.expiresAt).filter((value): value is string => value !== null));
+    const evidenceQuality = calculateTaxEvidenceQualityV1({
+      context,
+      sources,
+      records: dedupeEvidenceRecords(observedRecords),
+      activePeriodRecords: activeRecords,
+      gapCount: graph.gaps.length,
+    });
 
     return {
       version: 'tax-evidence-presentation-v1',
@@ -284,6 +296,7 @@ export class TaxEvidenceResolver {
         obligations: { applicable: 0, mapped: 0 },
         gaps: graph.gaps,
       },
+      evidenceQuality,
       limitations,
     };
   }

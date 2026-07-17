@@ -15,6 +15,21 @@ import type { WsfexAuthorityResult, WsfexGateway } from './wsfex';
 
 export type FacturaEAuthorityRunReader = Readonly<{
   getRun(runId: string): FacturaEAgentRunV1;
+  recordAuthorityCorridorReconciliation(input: Readonly<{
+    runId: string;
+    requestId: string;
+    authorityPayloadRef: string;
+    invoiceNumber: string;
+    cae: string;
+    caeExpiry: string;
+    currencyId: string;
+    currencyQuote: string;
+    receiptHash: string;
+    reprocessed: boolean | null;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): void;
 }>;
 
 /** Production-shaped Tax-owned adapter. Private preparation and payload custody
@@ -25,7 +40,8 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
     private readonly preparations: FacturaEAuthorityPreparationGateway,
     private readonly payloads: AuthorityPayloadWriter,
     private readonly wsfex: WsfexGateway,
-    private readonly environment: 'homologation' | 'production'
+    private readonly environment: 'homologation' | 'production',
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async prepare(input: Readonly<{
@@ -115,6 +131,9 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
     if (
       !result.invoiceNumber
       || !result.cae
+      || !result.caeExpiry
+      || !result.currencyId
+      || !result.currencyQuote
       || !result.authorityIdentityHash
       || !result.reconciliationEvidenceHash
       || !run.intent
@@ -128,6 +147,22 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
       terminalState: 'officially_reconciled',
       authorityIdentityHash: result.authorityIdentityHash,
       terminalEvidenceHash: result.reconciliationEvidenceHash,
+    });
+    const occurredAt = this.now().toISOString();
+    this.runs.recordAuthorityCorridorReconciliation({
+      runId: input.runId,
+      requestId: input.requestId,
+      authorityPayloadRef: input.authorityPayloadRef,
+      invoiceNumber: result.invoiceNumber,
+      cae: result.cae,
+      caeExpiry: result.caeExpiry,
+      currencyId: result.currencyId,
+      currencyQuote: result.currencyQuote,
+      receiptHash: result.reconciliationEvidenceHash,
+      reprocessed: result.reprocessed,
+      actorId: 'authority:wsfex-reconciliation',
+      idempotencyKey: `${input.executionId}:official-reconciliation`,
+      occurredAt,
     });
     return {
       status: 'officially_reconciled',

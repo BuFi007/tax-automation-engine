@@ -32,4 +32,13 @@ describe('Tax API production composition contract', () => {
     );
     expect(source).toContain('argentinaLaunchPolicy,');
   });
+
+  test('requires Tax-owned preparation instead of the legacy external resolver in production', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toContain('new TaxOwnedFacturaEAuthorityPreparationGateway');
+    expect(source).toContain('TAX_OWNED_ARCA_PREPARATION_REQUIRED_IN_PRODUCTION');
+    expect(source).toMatch(
+      /arcaProductionAuthority && authorityRemoteEffectsEnabled && !taxOwnedAuthorityPreparation/
+    );
+  });
 });

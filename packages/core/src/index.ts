@@ -6,6 +6,7 @@ export * from './capabilities';
 export * from './catalogue';
 export * from './evidence';
 export * from './workflow';
+export * from './human-auth';
 export * from './snapshot';
 export * from './fixtures';
 export * from './factura-e-agent';

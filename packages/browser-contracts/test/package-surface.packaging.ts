@@ -17,8 +17,8 @@ const packageJson = JSON.parse(
 };
 
 describe('published browser-contract package', () => {
-  test('exposes only the frozen root, golden fixtures, and scenario entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.3.0');
+  test('exposes the frozen root and bounded feature entrypoints from dist', () => {
+    expect(packageJson.version).toBe('0.6.0');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -26,6 +26,10 @@ describe('published browser-contract package', () => {
       '.': {
         types: './dist/index.d.ts',
         import: './dist/index.js',
+      },
+      './arca-onboarding': {
+        types: './dist/arca-onboarding.d.ts',
+        import: './dist/arca-onboarding.js',
       },
       './fixtures': {
         types: './dist/fixtures.d.ts',
@@ -43,6 +47,8 @@ describe('published browser-contract package', () => {
     expect(files).toEqual([
       'COMPATIBILITY.md',
       'README.md',
+      'dist/arca-onboarding.d.ts',
+      'dist/arca-onboarding.js',
       'dist/fixtures.d.ts',
       'dist/fixtures.js',
       'dist/index.d.ts',
@@ -66,21 +72,30 @@ describe('published browser-contract package', () => {
 
   test('loads in Node and preserves the built golden-fixture digest', async () => {
     const rootUrl = pathToFileURL(resolve(packageRoot, 'dist/index.js')).href;
+    const arcaOnboardingUrl = pathToFileURL(
+      resolve(packageRoot, 'dist/arca-onboarding.js'),
+    ).href;
     const fixturesUrl = pathToFileURL(resolve(packageRoot, 'dist/fixtures.js')).href;
     const scenariosUrl = pathToFileURL(resolve(packageRoot, 'dist/scenario-fixtures.js')).href;
     const rootModule = (await import(rootUrl)) as Record<string, unknown>;
+    const arcaOnboardingModule = (await import(arcaOnboardingUrl)) as Record<
+      string,
+      unknown
+    >;
     const fixturesModule = (await import(fixturesUrl)) as Record<string, unknown>;
     const scenariosModule = (await import(scenariosUrl)) as Record<string, unknown>;
     const goldenDigest = fixturesModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256;
 
     expect(rootModule.taxWidgetSnapshotReceiptV1Schema).toBeDefined();
+    expect(rootModule.facturaEFactoringProjectionReceiptV1Schema).toBeDefined();
+    expect(arcaOnboardingModule.arcaOnboardingBrowserRunV1Schema).toBeDefined();
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1).toBeDefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256).toBe(
-      'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0',
+      '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415',
     );
     expect(goldenDigest).toBe(
-      '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c',
+      '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976',
     );
     if (typeof goldenDigest !== 'string') throw new Error('Built fixture digest is not a string');
 
@@ -92,7 +107,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== 'b851e35b18dfc9c3a71b0abf3a7df5e62506cd2c2e6421c072d656dc76d65ad0' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

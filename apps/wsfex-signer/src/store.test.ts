@@ -73,7 +73,7 @@ describe('WSFEX signer attempt store', () => {
           'represented_cuit_commitment',
           'request_id',
         ]);
-        expect(verified.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(3);
+        expect(verified.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(4);
       } finally {
         verified.close();
       }
@@ -126,6 +126,54 @@ describe('WSFEX signer attempt store', () => {
         30_000
       )).toThrow('WSFEX_AUTHORITY_SEQUENCE_BUSY');
       store.releaseAuthoritySequenceLease(identity, reclaimed);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('reserves, replays, and atomically consumes one authority sequence with its attempt', () => {
+    const store = new SignerAttemptStore(':memory:');
+    const signerRequest = request();
+    const represented = 'a'.repeat(64);
+    const reservation = {
+      environment: 'homologation' as const,
+      representedCuitCommitment: represented,
+      workspaceId: signerRequest.workspaceId,
+      issuerProfileRef: 'vault://issuer/profile-1',
+      runId: signerRequest.runId,
+      intentHash: signerRequest.intentHash,
+      subjectId: signerRequest.subjectId,
+      idempotencyKey: 'reservation:invoice-1',
+      requestId: signerRequest.requestId,
+      documentType: 19 as const,
+      pointOfSale: signerRequest.expected.pointOfSale,
+      invoiceNumber: '6',
+      reservedAt: occurredAt,
+      expiresAt: '2026-07-11T12:10:00.000Z',
+    };
+    try {
+      const first = store.reserveSequence(reservation);
+      expect(first.replayed).toBe(false);
+      expect(store.reserveSequence(reservation).replayed).toBe(true);
+      expect(() => store.reserveSequence({
+        ...reservation,
+        idempotencyKey: 'reservation:invoice-2',
+        requestId: '102',
+        invoiceNumber: '7',
+      })).toThrow('WSFEX_SEQUENCE_RESERVATION_BUSY');
+      const attempt = store.beginWithSequenceReservation({
+        request: signerRequest,
+        issuerProfileRef: reservation.issuerProfileRef,
+        representedCuitCommitment: represented,
+        payloadReferenceHash: hashCanonical(signerRequest.authorityPayloadRef),
+        payloadHash: hashCanonical('payload'),
+        invoiceNumber: '6',
+        occurredAt: '2026-07-11T12:01:00.000Z',
+      });
+      expect(attempt.state).toBe('pending');
+      expect(store.getSequenceReservationByIdempotency(
+        'homologation', represented, reservation.idempotencyKey
+      )?.state).toBe('consumed');
     } finally {
       store.close();
     }

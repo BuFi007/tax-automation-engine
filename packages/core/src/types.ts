@@ -28,6 +28,7 @@ export type TaxConsentGrant = Readonly<{
   scopeIds: readonly string[];
   scopeHash: string;
   grantedAt: IsoDateTime;
+  expiresAt?: IsoDateTime | null;
   revokedAt: IsoDateTime | null;
 }>;
 

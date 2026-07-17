@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, test } from 'bun:test';
 
-import { hashTaxEvidenceConsentScope } from './batch';
+import { hashTaxConsentScope, hashTaxEvidenceConsentScope } from './batch';
 import { parseTaxEvidenceConsentEventV1 } from './consent-event';
 
 describe('tax evidence consent event v1', () => {
@@ -21,6 +21,25 @@ describe('tax evidence consent event v1', () => {
       ...input,
       consent: { ...input.consent, scopeHash: hash('wrong-scope') },
     })).toThrow('EVIDENCE_CONSENT_SCOPE_HASH_INVALID');
+  });
+
+  test('keeps evidence quality consent distinct, scoped, and expiring', () => {
+    const sourceIds = ['bufi-invoice', 'fx-provider'];
+    const quality = {
+      ...event(),
+      consent: {
+        purpose: 'tax_evidence_quality' as const,
+        version: 'quality-consent-v1',
+        scopeHash: hashTaxConsentScope('tax_evidence_quality', 'quality-consent-v1', sourceIds),
+        sourceIds,
+        expiresAt: '2026-08-09T00:00:00.000Z',
+      },
+    };
+    expect(parseTaxEvidenceConsentEventV1(quality)).toEqual(quality);
+    expect(() => parseTaxEvidenceConsentEventV1({
+      ...quality,
+      consent: { ...quality.consent, expiresAt: quality.occurredAt },
+    })).toThrow('EVIDENCE_CONSENT_EXPIRY_INVALID');
   });
 });
 

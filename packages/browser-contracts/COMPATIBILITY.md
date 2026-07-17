@@ -32,3 +32,22 @@ are test inputs only: they are never a production fallback, and their action IDs
 do not grant authority. The strengthened Factura E projection rejects partial
 scores, contribution-cap drift, unverified scored states, and offer/state
 mismatches that earlier prerelease packages could parse.
+
+Package `0.4.0` adds the factoring projection receipt/read-result schemas. This
+is an additive endpoint contract: existing Tax snapshot bytes and both frozen
+fixture digests remain unchanged.
+
+Package `0.5.0` adds the ARCA onboarding run, mutation, read, history, and
+Reclaim-handoff browser contracts. The raw Tax onboarding aggregate and raw
+Reclaim request configuration remain internal-only. Consumers must reject an
+unknown onboarding wire discriminator rather than falling back to local state.
+
+Package `0.5.1` adds the bounded `./arca-onboarding` package entrypoint. It is a
+type-graph and packaging improvement only: every 0.5.0 ARCA onboarding wire
+discriminator and projection remains byte-compatible.
+
+Package `0.6.0` adds the consented Tax evidence-quality discriminated union and
+retains the 0.5.x supplemental quality schema as a read-only compatibility
+branch. Consumers upgrade first; Tax emits only the new `ready` or named
+numeric-free states after Desk and Open Agents accept the package. The signal
+is explicitly separate from Payment Score and Factura E factoring.

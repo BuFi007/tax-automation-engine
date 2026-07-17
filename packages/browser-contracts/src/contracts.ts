@@ -321,7 +321,100 @@ const planningForecastV1Schema = z.object({
   }
 });
 
-const supplementalEvidenceQualityV1Schema = z.object({
+const evidenceQualityBaseShape = {
+  version: z.literal('tax-evidence-quality-v1'),
+  purpose: z.literal('tax_evidence_quality'),
+  asOf: isoDateTimeSchema,
+  validUntil: isoDateTimeSchema.nullable(),
+  safeSourceRefs: z.array(safeReferenceSchema).max(100),
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  use: z.literal('tax_evidence_only'),
+  affectsCredit: z.literal(false),
+  affectsFactoring: z.literal(false),
+};
+const evidenceQualityDimensionWeights = {
+  subject_workspace_binding: 25,
+  source_provenance_verification: 25,
+  freshness_expiry: 20,
+  required_evidence_coverage: 20,
+  reviewed_reconciliation: 10,
+} as const;
+const readyEvidenceQualityV1Schema = z.object({
+  ...evidenceQualityBaseShape,
+  state: z.literal('ready'),
+  value: z.number().int().min(0).max(100),
+  band: z.enum(['limited', 'developing', 'strong']),
+  dimensions: z.array(z.object({
+    id: z.enum([
+      'subject_workspace_binding',
+      'source_provenance_verification',
+      'freshness_expiry',
+      'required_evidence_coverage',
+      'reviewed_reconciliation',
+    ]),
+    score: z.number().int().nonnegative(),
+    weight: z.number().int().positive(),
+    safeSourceRefs: z.array(safeReferenceSchema).max(100),
+    safeRevisionRefs: z.array(opaqueRevisionSchema).max(500),
+    bindingState: z.enum(['verified', 'incomplete']),
+    freshnessState: z.enum(['current', 'mixed', 'expired', 'unknown']),
+    reviewState: z.enum(['accepted', 'incomplete']),
+    supersessionState: z.enum(['current', 'successor', 'mixed', 'unknown']),
+    limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(20),
+    ruleVersion: safeReferenceSchema,
+  }).strict()).length(5),
+  reasonCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(100),
+  authorizedActionIds: z.array(safeReferenceSchema).max(20),
+  consentVersion: safeReferenceSchema,
+  consentScopeRevision: opaqueRevisionSchema,
+}).strict().superRefine((quality, context) => {
+  const seen = new Set<string>();
+  let total = 0;
+  for (const [index, dimension] of quality.dimensions.entries()) {
+    const expectedWeight = evidenceQualityDimensionWeights[dimension.id];
+    if (seen.has(dimension.id)) {
+      context.addIssue({ code: 'custom', message: 'Evidence quality dimensions must be unique', path: ['dimensions', index, 'id'] });
+    }
+    seen.add(dimension.id);
+    if (dimension.weight !== expectedWeight || dimension.score > dimension.weight) {
+      context.addIssue({ code: 'custom', message: 'Evidence quality dimension weight or score is invalid', path: ['dimensions', index] });
+    }
+    total += dimension.score;
+  }
+  if (total !== quality.value) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality must equal its dimension sum', path: ['value'] });
+  }
+  const expectedBand = quality.value <= 39 ? 'limited' : quality.value <= 74 ? 'developing' : 'strong';
+  if (quality.band !== expectedBand) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality band does not match its value', path: ['band'] });
+  }
+  const expectedReasons = quality.dimensions.flatMap(dimension => dimension.limitationCodes);
+  if (JSON.stringify(quality.reasonCodes) !== JSON.stringify(expectedReasons)) {
+    context.addIssue({ code: 'custom', message: 'Evidence quality reason codes must match dimension limitations', path: ['reasonCodes'] });
+  }
+});
+const unavailableEvidenceQualityV1Schema = z.object({
+  ...evidenceQualityBaseShape,
+  state: z.enum([
+    'unknown',
+    'not_subject',
+    'unsupported',
+    'disputed',
+    'stale',
+    'expired',
+    'revoked',
+    'not_consented',
+  ]),
+}).strict().superRefine((quality, context) => {
+  if (quality.limitationCodes.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Unavailable evidence quality requires a named limitation',
+      path: ['limitationCodes'],
+    });
+  }
+});
+const legacySupplementalEvidenceQualityV1Schema = z.object({
   state: z.enum(['unavailable', 'available']),
   band: z.enum(['limited', 'developing', 'strong']).nullable(),
   asOf: isoDateTimeSchema,
@@ -332,19 +425,24 @@ const supplementalEvidenceQualityV1Schema = z.object({
   affectsFactoring: z.literal(false),
 }).strict().superRefine((quality, context) => {
   if (quality.state === 'unavailable' && quality.band !== null) {
-    context.addIssue({ code: 'custom', message: 'Unavailable evidence quality cannot carry a band' });
+    context.addIssue({ code: 'custom', message: 'Unavailable legacy evidence quality cannot carry a band' });
   }
   if (quality.state === 'available' && quality.band === null) {
-    context.addIssue({ code: 'custom', message: 'Available evidence quality requires a band' });
+    context.addIssue({ code: 'custom', message: 'Available legacy evidence quality requires a band' });
   }
   if (quality.state === 'unavailable' && quality.limitationCodes.length === 0) {
     context.addIssue({
       code: 'custom',
-      message: 'Unavailable evidence quality requires a named limitation',
+      message: 'Unavailable legacy evidence quality requires a named limitation',
       path: ['limitationCodes'],
     });
   }
 });
+const supplementalEvidenceQualityV1Schema = z.discriminatedUnion('state', [
+  readyEvidenceQualityV1Schema,
+  unavailableEvidenceQualityV1Schema,
+  legacySupplementalEvidenceQualityV1Schema,
+]);
 
 export const taxCacheIdentityV1Schema = z.object({
   version: z.literal('tax-cache-identity-v1'),
@@ -566,7 +664,45 @@ export const facturaEFactoringProjectionV1Schema = z.object({
   }
 });
 
+export const facturaEFactoringProjectionReceiptV1Schema = z.object({
+  version: z.literal('factura-e-factoring-projection-receipt-v1'),
+  projectionKey: projectionKeySchema,
+  revision: z.number().int().positive(),
+  projectedAt: isoDateTimeSchema,
+  projection: facturaEFactoringProjectionV1Schema,
+}).strict().superRefine((receipt, context) => {
+  if (receipt.projectionKey !== receipt.projection.cacheIdentity.projectionKey) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Factoring receipt and projection identities must agree',
+      path: ['projectionKey'],
+    });
+  }
+  if (receipt.projection.expiresAt !== null
+    && Date.parse(receipt.projection.expiresAt) <= Date.parse(receipt.projectedAt)
+    && ['active', 'offer_ready', 'approval_required', 'funded'].includes(receipt.projection.state)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'A scored factoring projection must be current when persisted',
+      path: ['projection', 'expiresAt'],
+    });
+  }
+});
+
+export const facturaEFactoringProjectionReadResultV1Schema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('ready'),
+    receipt: facturaEFactoringProjectionReceiptV1Schema,
+  }).strict(),
+  z.object({
+    state: z.literal('unavailable'),
+    code: z.literal('FACTURA_E_FACTORING_PROJECTION_NOT_FOUND'),
+  }).strict(),
+]);
+
 export type TaxCaseV1 = z.infer<typeof taxCaseV1Schema>;
 export type TaxWidgetSnapshotV1 = z.infer<typeof taxWidgetSnapshotV1Schema>;
 export type TaxWidgetSnapshotReceiptV1 = z.infer<typeof taxWidgetSnapshotReceiptV1Schema>;
 export type FacturaEFactoringProjectionV1 = z.infer<typeof facturaEFactoringProjectionV1Schema>;
+export type FacturaEFactoringProjectionReceiptV1 = z.infer<typeof facturaEFactoringProjectionReceiptV1Schema>;
+export type FacturaEFactoringProjectionReadResultV1 = z.infer<typeof facturaEFactoringProjectionReadResultV1Schema>;

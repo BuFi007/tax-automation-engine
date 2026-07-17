@@ -35,6 +35,7 @@ export type TaxWidgetSnapshotV1 = Readonly<{
   }>;
   sourceCoverage: TaxEvidencePresentationProjectionV1['sources'];
   evidenceCoverage: TaxEvidencePresentationProjectionV1['evidenceCoverage'];
+  evidenceQuality: NonNullable<TaxEvidencePresentationProjectionV1['evidenceQuality']>;
   capabilityManifest: TaxEvidencePresentationProjectionV1['capabilityManifest'];
   obligations: readonly TaxObligation[];
   nextSteps: readonly TaxJourneyStep[];
@@ -131,6 +132,17 @@ export function buildTaxWidgetSnapshot(input: Readonly<{
     },
     sourceCoverage: input.evidence.sources,
     evidenceCoverage: { ...input.evidence.evidenceCoverage, obligations: { applicable: obligations.length, mapped: obligations.filter(obligation => obligation.applicability === 'applicable').length } },
+    evidenceQuality: input.evidence.evidenceQuality ?? {
+      version: 'tax-evidence-quality-v1',
+      purpose: 'tax_evidence_quality',
+      state: 'unknown',
+      asOf: input.evidence.asOf,
+      validUntil: null,
+      safeSourceReferenceIds: [],
+      limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+      affectsCredit: false,
+      affectsFactoring: false,
+    },
     capabilityManifest: input.evidence.capabilityManifest,
     obligations,
     nextSteps,

@@ -1,6 +1,6 @@
 {
   "name": "@tax-engine/browser-contracts",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Browser-safe runtime contracts shared by the Tax Engine, Open Agents, and Desk.",
   "license": "UNLICENSED",
   "repository": {
@@ -21,6 +21,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./arca-onboarding": {
+      "types": "./dist/arca-onboarding.d.ts",
+      "import": "./dist/arca-onboarding.js"
     },
     "./fixtures": {
       "types": "./dist/fixtures.d.ts",

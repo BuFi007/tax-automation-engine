@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { AlertTriangle, CheckCircle2, Circle, ExternalLink, KeyRound, LockKeyhole, RadioTower, ShieldCheck } from 'lucide-react';
-import type { ArcaOnboardingRunV1 } from '@tax-engine/core';
+import type { ArcaOnboardingBrowserRunV1 } from '@tax-engine/browser-contracts';
 
 import { ARCA_ONBOARDING_UI_STEPS, ARCA_POINT_OF_SALE_GUIDE, arcaScopeDescriptions, formatArcaPointOfSale, parseArcaPointOfSale } from './ArcaOnboardingJourney.model';
 
@@ -9,13 +9,14 @@ const ARCA_POINT_OF_SALE_URL = 'https://auth.afip.gob.ar/contribuyente_/login.xh
 type PointOfSaleRegistrationState = 'idle' | 'recorded';
 
 type ArcaOnboardingJourneyProps = Readonly<{
-  run?: ArcaOnboardingRunV1 | null;
+  run?: ArcaOnboardingBrowserRunV1 | null;
   activeFeeWsPoints?: readonly number[];
   saving?: boolean;
   saveError?: string | null;
   onRecordPointOfSale?: (pointOfSale: number) => Promise<void> | void;
   onSelectExistingPoint?: (pointOfSale: number) => Promise<void> | void;
   onConfirmLoginHandoff?: () => Promise<void> | void;
+  onConfirmHumanAuth?: () => Promise<void> | void;
   onConfirmServiceAdherence?: () => Promise<void> | void;
 }>;
 
@@ -27,6 +28,7 @@ export function ArcaOnboardingJourney({
   onRecordPointOfSale,
   onSelectExistingPoint,
   onConfirmLoginHandoff,
+  onConfirmHumanAuth,
   onConfirmServiceAdherence,
 }: ArcaOnboardingJourneyProps) {
   const [scope, setScope] = useState<'wsfex' | 'wsfex_wsfe'>('wsfex_wsfe');
@@ -122,6 +124,20 @@ export function ArcaOnboardingJourney({
         </section>
       )}
 
+      {run?.currentStep === 'human_auth' && (
+        <section className="point-of-sale-workbench" aria-label="Private ARCA authentication">
+          <div className="point-of-sale-next-step">
+            <LockKeyhole aria-hidden="true" />
+            <div>
+              <strong>Esta pantalla queda fuera de la captura de Motora</strong>
+              <p>Terminá el ingreso en ARCA. No inspeccionamos campos, screenshots, portapapeles, cookies, storage, respuestas de red ni trazas crudas. Al volver conservamos sólo un recibo firmado y hash-bound.</p>
+            </div>
+          </div>
+          <button className="secondary-button" type="button" disabled={saving || !onConfirmHumanAuth} onClick={() => void onConfirmHumanAuth?.()}>{saving ? 'Guardando…' : 'Autenticación terminada'}</button>
+          {saveError && <p className="inline-error" role="alert">{saveError}</p>}
+        </section>
+      )}
+
       {run?.currentStep === 'service_adherence' && (
         <section className="point-of-sale-workbench" aria-label="ARCA service adherence confirmation">
           <div className="point-of-sale-next-step">
@@ -146,7 +162,7 @@ export function ArcaOnboardingJourney({
         <div className="point-of-sale-status">
           <div className="point-of-sale-status-icon">{needsPointCreation && !pointRecorded ? <AlertTriangle aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}</div>
           <div>
-            <p className="eyebrow">{pointRecorded ? 'Alta registrada · Paso 5 de 8' : needsPointCreation ? 'Acción requerida · Paso 4 de 8' : 'Selección requerida · Paso 3 de 8'}</p>
+            <p className="eyebrow">{pointRecorded ? 'Alta registrada · Paso 6 de 9' : needsPointCreation ? 'Acción requerida · Paso 5 de 9' : 'Selección requerida · Paso 4 de 9'}</p>
             <h3 id="point-of-sale-heading">{pointRecorded ? `Punto ${formatArcaPointOfSale(recordedPoint!)} listo para delegación` : needsPointCreation ? 'Creá el punto para Factura E por Webservices' : 'Elegí el punto FEEWS que usará Motora'}</h3>
             <p>{pointRecorded
               ? <>Tu confirmación permite continuar, pero todavía <strong>no prueba que WSFEX vea el punto</strong>. La comprobación oficial ocurre después de delegar.</>

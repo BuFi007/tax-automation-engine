@@ -1,10 +1,18 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { IsoDateTime } from './types';
 import type { ReclaimProofCustodyReceiptV1 } from './factura-e-agent';
+import {
+  HUMAN_AUTH_CAPTURE_POLICY,
+  HUMAN_AUTH_CAPTURE_POLICY_HASH,
+  assertHumanAuthCompletion,
+  type HumanAuthCapturePolicyV1,
+  type HumanAuthCompletionV1,
+} from './human-auth';
 
 export const ARCA_ONBOARDING_STEPS = [
   'login_handoff',
+  'human_auth',
   'service_adherence',
   'point_of_sale_discovery',
   'point_of_sale_creation',
@@ -71,6 +79,14 @@ export type ArcaOnboardingRunV1 = Readonly<{
     observedAt: IsoDateTime | null;
   }>;
   reclaimSession: ArcaOnboardingReclaimSessionV1 | null;
+  humanAuth: Readonly<{
+    capturePolicy: HumanAuthCapturePolicyV1;
+    capturePolicyHash: string;
+    startedAt: IsoDateTime | null;
+    expiresAt: IsoDateTime | null;
+    completionReceiptHash: string | null;
+    completedAt: IsoDateTime | null;
+  }>;
   zkEvidence: Readonly<{
     sessionId: string;
     providerId: string;
@@ -99,6 +115,11 @@ export type ArcaOnboardingCommand =
   | Readonly<{
       kind: 'complete_login_handoff';
       browserSessionReferenceHash: string;
+      idempotencyKey: string;
+    }>
+  | Readonly<{
+      kind: 'record_human_auth_completion';
+      completion: HumanAuthCompletionV1;
       idempotencyKey: string;
     }>
   | Readonly<{
@@ -203,6 +224,14 @@ export function createArcaOnboardingRun(input: Readonly<{
       },
       apiVerification: { wsfex: false, wsfe: false, observedAt: null },
       reclaimSession: null,
+      humanAuth: {
+        capturePolicy: HUMAN_AUTH_CAPTURE_POLICY,
+        capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+        startedAt: null,
+        expiresAt: null,
+        completionReceiptHash: null,
+        completedAt: null,
+      },
       zkEvidence: null,
       processedCommandKeys: [input.idempotencyKey],
       eventIds: [event.eventId],
@@ -229,7 +258,40 @@ export function applyArcaOnboardingCommand(
       requireCurrentStep(run, 'login_handoff');
       assertHash(command.browserSessionReferenceHash, 'BROWSER_SESSION_REFERENCE_HASH_INVALID');
       next = completeStep(run, 'login_handoff', occurredAt, [command.browserSessionReferenceHash], {});
+      next = {
+        ...next,
+        humanAuth: {
+          ...run.humanAuth,
+          startedAt: occurredAt,
+          expiresAt: new Date(Date.parse(occurredAt) + 10 * 60 * 1000).toISOString(),
+        },
+      };
       safeMetadata = { handoffRecorded: true };
+      break;
+    case 'record_human_auth_completion':
+      requireCurrentStep(run, 'human_auth');
+      assertHumanAuthCompletion(command.completion);
+      if (!run.humanAuth.startedAt || !run.humanAuth.expiresAt) throw new Error('HUMAN_AUTH_HANDOFF_REQUIRED');
+      if (Date.parse(occurredAt) > Date.parse(run.humanAuth.expiresAt)) throw new Error('HUMAN_AUTH_HANDOFF_EXPIRED');
+      if (Date.parse(command.completion.completedAt) < Date.parse(run.humanAuth.startedAt)) {
+        throw new Error('HUMAN_AUTH_COMPLETION_BEFORE_HANDOFF');
+      }
+      if (Date.parse(command.completion.completedAt) > Date.parse(occurredAt)) {
+        throw new Error('HUMAN_AUTH_COMPLETION_IN_FUTURE');
+      }
+      next = completeStep(run, 'human_auth', occurredAt, [command.completion.completionReceiptHash], {
+        capturePolicyEnforced: true,
+        signedCompletionRecorded: true,
+      });
+      next = {
+        ...next,
+        humanAuth: {
+          ...run.humanAuth,
+          completionReceiptHash: command.completion.completionReceiptHash,
+          completedAt: command.completion.completedAt,
+        },
+      };
+      safeMetadata = { capturePolicyEnforced: true, signedCompletionRecorded: true };
       break;
     case 'record_service_adherence':
       requireCurrentStep(run, 'service_adherence');
@@ -371,8 +433,8 @@ export function applyArcaOnboardingCommand(
       if (Date.parse(command.session.expiresAt) <= Date.parse(command.session.requestedAt)) throw new Error('RECLAIM_SESSION_EXPIRY_INVALID');
       next = { ...run, reclaimSession: command.session };
       safeMetadata = {
-        sessionId: command.session.sessionId,
-        providerId: command.session.providerId,
+        sessionReferenceHash: hashOpaque(command.session.sessionId),
+        providerReferenceHash: hashOpaque(command.session.providerId),
         providerVersion: command.session.providerVersion,
       };
       break;
@@ -389,7 +451,7 @@ export function applyArcaOnboardingCommand(
         throw new Error('ARCA_API_VERIFICATION_REQUIRED_BEFORE_ZK_EVIDENCE');
       }
       next = completeStep(run, 'zk_evidence', occurredAt, [command.proofHash, command.claimsHash], {
-        providerId: command.providerId,
+        providerReferenceHash: hashOpaque(command.providerId),
         providerVersion: command.providerVersion,
         teeVerified: command.teeVerified,
       });
@@ -414,7 +476,7 @@ export function applyArcaOnboardingCommand(
           safeMetadata: { apiAndZkEvidenceVerified: true },
         }),
       };
-      safeMetadata = { providerId: command.providerId, onboardingReady: true };
+      safeMetadata = { providerReferenceHash: hashOpaque(command.providerId), onboardingReady: true };
       break;
   }
 
@@ -435,6 +497,7 @@ export function arcaOnboardingNextActions(run: ArcaOnboardingRunV1): readonly st
   if (run.status === 'ready') return [];
   switch (run.currentStep) {
     case 'login_handoff': return ['USER_LOG_IN_DIRECTLY_WITH_ARCA'];
+    case 'human_auth': return ['USER_COMPLETE_PRIVATE_ARCA_AUTHENTICATION'];
     case 'service_adherence': return ['USER_CONFIRM_SERVICE_ADHERENCE'];
     case 'point_of_sale_discovery': return (run.pointOfSale.candidates?.length ?? 0) > 1
       ? ['USER_SELECT_EXPORT_POINT_OF_SALE']
@@ -448,12 +511,12 @@ export function arcaOnboardingNextActions(run: ArcaOnboardingRunV1): readonly st
 }
 
 function initialStep(step: ArcaOnboardingStep): ArcaOnboardingStepRecordV1 {
-  const userSteps: readonly ArcaOnboardingStep[] = ['login_handoff', 'service_adherence', 'point_of_sale_creation', 'ws_delegation'];
+  const userSteps: readonly ArcaOnboardingStep[] = ['login_handoff', 'human_auth', 'service_adherence', 'point_of_sale_creation', 'ws_delegation'];
   return {
     step,
     state: step === 'login_handoff' ? 'action_required' : 'pending',
     requiresUserAction: userSteps.includes(step),
-    requiresExplicitConfirmation: step === 'service_adherence' || step === 'point_of_sale_creation' || step === 'ws_delegation',
+    requiresExplicitConfirmation: step === 'human_auth' || step === 'service_adherence' || step === 'point_of_sale_creation' || step === 'ws_delegation',
     completedAt: null,
     evidenceHashes: [],
     safeMetadata: {},
@@ -530,8 +593,13 @@ function assertRequestedReceiptHash(
 }
 
 function assertNoSensitiveMaterial(value: unknown): void {
-  const forbidden = /(password|passwd|clave|pin|cookie|sessiontoken|access_token|refresh_token|authorization|rawcuit|raw_cuit)/i;
+  const forbidden = /(password|passwd|passphrase|clave|pin|otp|totp|cookie|sessiontoken|access_token|refresh_token|authorization|clipboard|localstorage|sessionstorage|rawtrace|networklog|rawcuit|raw_cuit)/i;
+  const forbiddenValue = /(?:BEGIN (?:RSA |EC )?PRIVATE KEY|bearer\s+[a-z0-9._~+/=-]{12,}|(?:clave\s+fiscal|password|otp|pin)\s*[:=])/i;
   const visit = (candidate: unknown): void => {
+    if (typeof candidate === 'string') {
+      if (forbiddenValue.test(candidate)) throw new Error('ARCA_SENSITIVE_MATERIAL_FORBIDDEN');
+      return;
+    }
     if (!candidate || typeof candidate !== 'object') return;
     for (const [key, nested] of Object.entries(candidate as Record<string, unknown>)) {
       if (forbidden.test(key)) throw new Error('ARCA_SENSITIVE_MATERIAL_FORBIDDEN');
@@ -539,6 +607,10 @@ function assertNoSensitiveMaterial(value: unknown): void {
     }
   };
   visit(value);
+}
+
+function hashOpaque(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function eventFor(

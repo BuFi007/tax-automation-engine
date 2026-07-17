@@ -38,6 +38,20 @@ describe('canonical financial evidence graph', () => {
     expect(() => buildEvidenceGraph('workspace:1', [first, contradictory])).toThrow('Source allocation is not conserved');
   });
 
+  test('surfaces conflicting reviewed party identities without merging them', () => {
+    const invoice = record('invoice', 'invoice-event', 'invoice', 'revenue', '100', 'AR');
+    const accounting = {
+      ...record('accounting', 'invoice-event', 'accounting_entry', 'none', '100', 'AR'),
+      partyClaimHash: 'party:conflicting-reviewed-identity',
+    };
+    const graph = buildEvidenceGraph('workspace:1', [invoice, accounting]);
+    expect(graph.gaps).toContainEqual(expect.objectContaining({
+      kind: 'accounting_counterparty_mismatch',
+      severity: 'warning',
+    }));
+    expect(graph.edges.filter(edge => edge.kind === 'recorded_as')).toHaveLength(1);
+  });
+
   test('accepts conserved USD and ARS source legs normalized to one exact amount', () => {
     const usd = {
       ...record('invoice-usd', 'invoice-event', 'invoice', 'revenue', '100', 'US'),

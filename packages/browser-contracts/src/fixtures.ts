@@ -36,7 +36,7 @@ export const argentinaTaxCaseV1Fixture = taxCaseV1Schema.parse({
     entityType: 'individual',
     regimeId: 'monotributo_exportador',
     confirmationState: 'user_confirmed',
-    catalogueVersion: 'ar-catalogue-2026-07-15',
+    catalogueVersion: 'ar-catalogue-2026-07-16.2',
   },
   period,
   displayCurrency: 'ARS',
@@ -212,11 +212,13 @@ export const argentinaTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.par
     planningOnly: true,
   },
   supplementalEvidenceQuality: {
-    state: 'unavailable',
-    band: null,
+    version: 'tax-evidence-quality-v1',
+    purpose: 'tax_evidence_quality',
+    state: 'not_consented',
     asOf: '2026-07-15T09:59:00.000Z',
+    validUntil: null,
     safeSourceRefs: [],
-    limitationCodes: ['TAX_EVIDENCE_QUALITY_NOT_PROJECTED'],
+    limitationCodes: ['TAX_EVIDENCE_QUALITY_CONSENT_REQUIRED'],
     use: 'tax_evidence_only',
     affectsCredit: false,
     affectsFactoring: false,
@@ -263,7 +265,7 @@ export const unitedStatesTaxWidgetSnapshotV1Fixture = taxWidgetSnapshotV1Schema.
     entityType: 'llc',
     regimeId: 'llc_single_member_foreign_owned',
     confirmationState: 'accountant_confirmed',
-    catalogueVersion: 'us-catalogue-2026-07-15',
+    catalogueVersion: 'us-catalogue-2026-07-16',
   },
   displayCurrency: 'USD',
   activity: {
@@ -369,4 +371,4 @@ export const TAX_BROWSER_GOLDEN_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_GOLDEN_FIXTURES_V1). */
-export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '6e1856b87f25a6f6d346955ea372ae8e55c02ab0b902c9cb32901372380f299c';
+export const TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 = '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976';

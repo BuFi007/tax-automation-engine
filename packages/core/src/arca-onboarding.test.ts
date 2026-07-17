@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   ARCA_ONBOARDING_STEPS,
+  HUMAN_AUTH_CAPTURE_POLICY_HASH,
   applyArcaOnboardingCommand,
   arcaOnboardingNextActions,
   createArcaOnboardingRun,
@@ -21,6 +22,9 @@ describe('ARCA onboarding step engine', () => {
     run = apply(run, {
       kind: 'complete_login_handoff', browserSessionReferenceHash: hash('local-browser-session'), idempotencyKey: 'login-1',
     });
+    expect(run.currentStep).toBe('human_auth');
+    expect(arcaOnboardingNextActions(run)).toEqual(['USER_COMPLETE_PRIVATE_ARCA_AUTHENTICATION']);
+    run = completeHumanAuth(run, 'human-auth-1');
     run = apply(run, {
       kind: 'record_service_adherence', pointOfSaleAdministrationActive: true, relationshipManagerActive: true,
       evidenceHash: hash('services'), idempotencyKey: 'services-1',
@@ -147,6 +151,56 @@ describe('ARCA onboarding step engine', () => {
       workspaceId: 'workspace-1', taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation', actorId: 'user:owner',
       occurredAt: now, idempotencyKey: 'create-sensitive', claveFiscal: 'never-store-me',
     } as never)).toThrow('ARCA_SENSITIVE_MATERIAL_FORBIDDEN');
+    const canary = 'spooky-credential-canary-32ee';
+    let message = '';
+    try {
+      apply(createRun(), {
+        kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-with-cookie',
+        cookies: canary,
+      } as never);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain('ARCA_SENSITIVE_MATERIAL_FORBIDDEN');
+    expect(message).not.toContain(canary);
+  });
+
+  test('pins human_auth to the signed no-capture receipt and rejects policy substitution', () => {
+    let run = createRun();
+    run = apply(run, { kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-human-auth' });
+    expect(() => apply(run, {
+      kind: 'record_human_auth_completion',
+      completion: {
+        version: 'human-auth-completion-v1', completionReceiptHash: hash('completion'),
+        capturePolicyHash: '0'.repeat(64), completedAt: now, signatureVerified: true,
+      },
+      idempotencyKey: 'human-auth-substitution',
+    })).toThrow('HUMAN_AUTH_CAPTURE_POLICY_MISMATCH');
+    run = completeHumanAuth(run, 'human-auth-valid');
+    expect(run.currentStep).toBe('service_adherence');
+    expect(run.humanAuth).toMatchObject({
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      completionReceiptHash: hash('human-auth-valid'),
+      completedAt: now,
+    });
+    expect(Object.values(run.humanAuth.capturePolicy).every(value => value === false)).toBe(true);
+    expect(JSON.stringify(run.humanAuth)).not.toMatch(/password|clave.?fiscal|bearer\s/i);
+  });
+
+  test('expires the private authentication handoff without accepting a late receipt', () => {
+    let run = createRun();
+    run = apply(run, { kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-expiry' });
+    expect(run.humanAuth.expiresAt).toBe('2026-07-14T12:10:00.000Z');
+    const command = {
+      kind: 'record_human_auth_completion' as const,
+      completion: {
+        version: 'human-auth-completion-v1' as const, completionReceiptHash: hash('late'),
+        capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH, completedAt: '2026-07-14T12:11:00.000Z', signatureVerified: true as const,
+      },
+      idempotencyKey: 'human-auth-late',
+    };
+    expect(() => applyArcaOnboardingCommand(run, command, 'user:owner', '2026-07-14T12:11:00.000Z')).toThrow('HUMAN_AUTH_HANDOFF_EXPIRED');
+    expect(run.currentStep).toBe('human_auth');
   });
 
   test('fails closed for legacy delegation state without an authority binding', () => {
@@ -177,9 +231,24 @@ function createRun(requestedServices: readonly ('wsfex' | 'wsfe')[] = ['wsfex', 
 
 function advanceToDiscovery(run: ArcaOnboardingRunV1): ArcaOnboardingRunV1 {
   run = apply(run, { kind: 'complete_login_handoff', browserSessionReferenceHash: hash('browser'), idempotencyKey: 'login-discovery' });
+  run = completeHumanAuth(run, 'human-auth-discovery');
   return apply(run, {
     kind: 'record_service_adherence', pointOfSaleAdministrationActive: true, relationshipManagerActive: true,
     evidenceHash: hash('service-evidence'), idempotencyKey: 'services-discovery',
+  });
+}
+
+function completeHumanAuth(run: ArcaOnboardingRunV1, receiptSeed: string): ArcaOnboardingRunV1 {
+  return apply(run, {
+    kind: 'record_human_auth_completion',
+    completion: {
+      version: 'human-auth-completion-v1',
+      completionReceiptHash: hash(receiptSeed),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      completedAt: now,
+      signatureVerified: true,
+    },
+    idempotencyKey: `complete-${receiptSeed}`,
   });
 }
 

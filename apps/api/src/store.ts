@@ -1,7 +1,14 @@
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
-import type { TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1 } from '@tax-engine/browser-contracts';
+import {
+  facturaEFactoringProjectionReceiptV1Schema,
+  facturaEFactoringProjectionV1Schema,
+  type FacturaEFactoringProjectionReceiptV1,
+  type FacturaEFactoringProjectionV1,
+  type TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1,
+} from '@tax-engine/browser-contracts';
 
 import type {
   ArcaOnboardingEventV1,
@@ -92,6 +99,13 @@ type StoredBrowserTaxSnapshotRow = Readonly<{
   source_fingerprint: string;
   browser_snapshot_hash: string;
   snapshot_json: string;
+}>;
+
+type StoredFacturaEFactoringProjectionRow = Readonly<{
+  revision: number;
+  source_revision: string;
+  projection_json: string;
+  projected_at: string;
 }>;
 
 export class TaxProfileStore {
@@ -219,11 +233,12 @@ export class TaxProfileStore {
       );
       CREATE TABLE IF NOT EXISTS evidence_consent_grants (
         workspace_id TEXT NOT NULL,
-        purpose TEXT NOT NULL CHECK (purpose = 'tax_workspace_processing'),
+        purpose TEXT NOT NULL CHECK (purpose IN ('tax_workspace_processing', 'tax_evidence_quality')),
         version TEXT NOT NULL,
         scope_hash TEXT NOT NULL,
         source_ids_json TEXT NOT NULL,
         granted_at TEXT NOT NULL,
+        expires_at TEXT,
         revoked_at TEXT,
         grant_event_id TEXT NOT NULL,
         revoke_event_id TEXT,
@@ -278,6 +293,18 @@ export class TaxProfileStore {
         generated_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, projection_key, case_revision)
       );
+      CREATE TABLE IF NOT EXISTS factura_e_factoring_browser_projections (
+        workspace_id TEXT NOT NULL,
+        projection_key TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        source_revision TEXT NOT NULL,
+        projection_json TEXT NOT NULL,
+        projected_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, projection_key, revision),
+        UNIQUE (workspace_id, projection_key, source_revision)
+      );
+      CREATE INDEX IF NOT EXISTS factura_e_factoring_browser_projections_latest
+        ON factura_e_factoring_browser_projections (workspace_id, projection_key, revision DESC);
       CREATE TABLE IF NOT EXISTS workflow_revisions (
         workspace_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -352,6 +379,50 @@ export class TaxProfileStore {
     if (!taxDomainOutboxColumns.some(column => column.name === 'lease_token')) {
       this.#db.exec('ALTER TABLE tax_domain_event_outbox ADD COLUMN lease_token TEXT');
     }
+    this.#db.transaction(() => {
+      const consentGrantColumns = this.#db.query<{ name: string }, []>(
+        'PRAGMA table_info(evidence_consent_grants)',
+      ).all();
+      const hasExpiresAt = consentGrantColumns.some(column => column.name === 'expires_at');
+      const tableSql = this.#db.query<{ sql: string }, [string]>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get('evidence_consent_grants')?.sql ?? '';
+      const supportsQualityPurpose = tableSql.includes("'tax_evidence_quality'");
+      if (!hasExpiresAt || !supportsQualityPurpose) {
+        this.#db.exec(`
+          DROP TABLE IF EXISTS evidence_consent_grants_bu238_migration;
+          CREATE TABLE evidence_consent_grants_bu238_migration (
+            workspace_id TEXT NOT NULL,
+            purpose TEXT NOT NULL CHECK (purpose IN ('tax_workspace_processing', 'tax_evidence_quality')),
+            version TEXT NOT NULL,
+            scope_hash TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            expires_at TEXT,
+            revoked_at TEXT,
+            grant_event_id TEXT NOT NULL,
+            revoke_event_id TEXT,
+            PRIMARY KEY (workspace_id, purpose, version, scope_hash),
+            UNIQUE (workspace_id, purpose, version)
+          );
+          INSERT INTO evidence_consent_grants_bu238_migration (
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at,
+            expires_at, revoked_at, grant_event_id, revoke_event_id
+          )
+          SELECT
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at,
+            ${hasExpiresAt ? 'expires_at' : 'NULL'}, revoked_at, grant_event_id, revoke_event_id
+          FROM evidence_consent_grants;
+          DROP TABLE evidence_consent_grants;
+          ALTER TABLE evidence_consent_grants_bu238_migration RENAME TO evidence_consent_grants;
+        `);
+      }
+      this.#db.query(`
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES ('bu238-tax-evidence-quality-consent-v1', ?)
+        ON CONFLICT(version) DO NOTHING
+      `).run(new Date().toISOString());
+    })();
     this.#db.transaction(() => {
       const evidenceColumns = this.#db.query<{ name: string; notnull: number }, []>('PRAGMA table_info(evidence_records)').all();
       const sourceColumn = evidenceColumns.find(column => column.name === 'source_id');
@@ -603,6 +674,11 @@ export class TaxProfileStore {
       VALUES ('bu234-browser-tax-snapshot-case-v1', ?)
       ON CONFLICT(version) DO NOTHING
     `).run(new Date().toISOString());
+    this.#db.query(`
+      INSERT INTO schema_migrations (version, applied_at)
+      VALUES ('bu247-durable-factura-e-factoring-browser-projection-v1', ?)
+      ON CONFLICT(version) DO NOTHING
+    `).run(new Date().toISOString());
   }
 
   close(): void {
@@ -776,6 +852,102 @@ export class TaxProfileStore {
       SELECT event_json FROM tax_domain_event_outbox WHERE delivered_at IS NULL ORDER BY appended_at ASC, event_id ASC
     `).all();
     return rows.map(row => assertTaxDomainEventV1(JSON.parse(row.event_json)));
+  }
+
+  projectFacturaEFactoringBrowserProjection(input: Readonly<{
+    workspaceId: string;
+    projectionKey?: string;
+    expectedWorkspaceRef: string;
+    expectedRevision: number | null;
+    projectedAt: string;
+    projection: FacturaEFactoringProjectionV1;
+  }>): Readonly<{ receipt: FacturaEFactoringProjectionReceiptV1; replayed: boolean }> {
+    const projectionKey = normalizeTaxSnapshotProjectionKey(input.projectionKey);
+    const projection = facturaEFactoringProjectionV1Schema.parse(input.projection);
+    if (projection.workspaceRef !== input.expectedWorkspaceRef) {
+      throw new Error('FACTURA_E_FACTORING_WORKSPACE_REF_MISMATCH');
+    }
+    if (projection.cacheIdentity.projectionKey !== projectionKey) {
+      throw new Error('FACTURA_E_FACTORING_PROJECTION_KEY_MISMATCH');
+    }
+    const projectedAtValue = z.iso.datetime({ offset: true }).parse(input.projectedAt);
+    const projectedAt = parseInstant(projectedAtValue);
+    const sourceRevision = projection.cacheIdentity.snapshotRevision;
+    const existingSource = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string, string]>(`
+      SELECT revision, source_revision, projection_json, projected_at
+      FROM factura_e_factoring_browser_projections
+      WHERE workspace_id = ? AND projection_key = ? AND source_revision = ?
+    `).get(input.workspaceId, projectionKey, sourceRevision);
+    if (existingSource) {
+      if (hashCanonical(JSON.parse(existingSource.projection_json)) !== hashCanonical(projection)
+        || parseInstant(existingSource.projected_at) !== projectedAt) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_IDEMPOTENCY_CONFLICT');
+      }
+      return { receipt: factoringProjectionReceipt(projectionKey, existingSource), replayed: true };
+    }
+
+    return this.#db.transaction(() => {
+      const current = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string]>(`
+        SELECT revision, source_revision, projection_json, projected_at
+        FROM factura_e_factoring_browser_projections
+        WHERE workspace_id = ? AND projection_key = ?
+        ORDER BY revision DESC
+        LIMIT 1
+      `).get(input.workspaceId, projectionKey);
+      const currentRevision = current?.revision ?? null;
+      if (currentRevision !== input.expectedRevision) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_VERSION_CONFLICT');
+      }
+      if (current && projectedAt < parseInstant(current.projected_at)) {
+        throw new Error('FACTURA_E_FACTORING_PROJECTION_STALE');
+      }
+      if (current) {
+        const currentProjection = facturaEFactoringProjectionV1Schema.parse(
+          JSON.parse(current.projection_json),
+        );
+        if (projection.cacheIdentity.caseRevision < currentProjection.cacheIdentity.caseRevision) {
+          throw new Error('FACTURA_E_FACTORING_CASE_REVISION_STALE');
+        }
+      }
+      const revision = (current?.revision ?? 0) + 1;
+      this.#db.query(`
+        INSERT INTO factura_e_factoring_browser_projections (
+          workspace_id, projection_key, revision, source_revision, projection_json, projected_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        input.workspaceId,
+        projectionKey,
+        revision,
+        sourceRevision,
+        JSON.stringify(projection),
+        projectedAtValue,
+      );
+      return {
+        receipt: facturaEFactoringProjectionReceiptV1Schema.parse({
+          version: 'factura-e-factoring-projection-receipt-v1',
+          projectionKey,
+          revision,
+          projectedAt: projectedAtValue,
+          projection,
+        }),
+        replayed: false,
+      };
+    })();
+  }
+
+  latestFacturaEFactoringBrowserProjection(
+    workspaceId: string,
+    projectionKey?: string,
+  ): FacturaEFactoringProjectionReceiptV1 | null {
+    const normalizedProjectionKey = normalizeTaxSnapshotProjectionKey(projectionKey);
+    const row = this.#db.query<StoredFacturaEFactoringProjectionRow, [string, string]>(`
+      SELECT revision, source_revision, projection_json, projected_at
+      FROM factura_e_factoring_browser_projections
+      WHERE workspace_id = ? AND projection_key = ?
+      ORDER BY revision DESC
+      LIMIT 1
+    `).get(workspaceId, normalizedProjectionKey);
+    return row ? factoringProjectionReceipt(normalizedProjectionKey, row) : null;
   }
 
   get(workspaceId: string): TaxProfile | null {
@@ -1648,14 +1820,16 @@ export class TaxProfileStore {
         scope_hash: string;
         source_ids_json: string;
         granted_at: string;
+        expires_at: string | null;
         revoked_at: string | null;
-      }, [string, string]>(`
-        SELECT scope_hash, source_ids_json, granted_at, revoked_at
+      }, [string, string, string]>(`
+        SELECT scope_hash, source_ids_json, granted_at, expires_at, revoked_at
         FROM evidence_consent_grants
-        WHERE workspace_id = ? AND version = ?
-      `).get(event.workspaceId, event.consent.version);
+        WHERE workspace_id = ? AND purpose = ? AND version = ?
+      `).get(event.workspaceId, event.consent.purpose, event.consent.version);
       if (existingGrant && (existingGrant.scope_hash !== event.consent.scopeHash
-        || existingGrant.source_ids_json !== JSON.stringify(event.consent.sourceIds))) {
+        || existingGrant.source_ids_json !== JSON.stringify(event.consent.sourceIds)
+        || (event.action === 'grant' && existingGrant.expires_at !== (event.consent.expiresAt ?? null)))) {
         throw new Error('EVIDENCE_CONSENT_VERSION_SCOPE_CONFLICT');
       }
       if (event.action === 'grant') {
@@ -1663,14 +1837,17 @@ export class TaxProfileStore {
         if (existingGrant) throw new Error('EVIDENCE_CONSENT_ALREADY_GRANTED');
         this.#db.query(`
           INSERT INTO evidence_consent_grants (
-            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at, revoked_at, grant_event_id, revoke_event_id
-          ) VALUES (?, 'tax_workspace_processing', ?, ?, ?, ?, NULL, ?, NULL)
+            workspace_id, purpose, version, scope_hash, source_ids_json, granted_at, expires_at,
+            revoked_at, grant_event_id, revoke_event_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)
         `).run(
           event.workspaceId,
+          event.consent.purpose,
           event.consent.version,
           event.consent.scopeHash,
           JSON.stringify(event.consent.sourceIds),
           event.occurredAt,
+          event.consent.expiresAt ?? null,
           event.eventId,
         );
       } else {
@@ -1682,8 +1859,15 @@ export class TaxProfileStore {
         this.#db.query(`
           UPDATE evidence_consent_grants
           SET revoked_at = ?, revoke_event_id = ?
-          WHERE workspace_id = ? AND version = ? AND scope_hash = ?
-        `).run(event.occurredAt, event.eventId, event.workspaceId, event.consent.version, event.consent.scopeHash);
+          WHERE workspace_id = ? AND purpose = ? AND version = ? AND scope_hash = ?
+        `).run(
+          event.occurredAt,
+          event.eventId,
+          event.workspaceId,
+          event.consent.purpose,
+          event.consent.version,
+          event.consent.scopeHash,
+        );
       }
       this.#db.query(`
         INSERT INTO evidence_consent_events (
@@ -1702,35 +1886,41 @@ export class TaxProfileStore {
 
   listEvidenceConsentGrants(workspaceId: string): readonly TaxConsentGrant[] {
     const rows = this.#db.query<{
+      purpose: TaxConsentGrant['purpose'];
       version: string;
       scope_hash: string;
       source_ids_json: string;
       granted_at: string;
+      expires_at: string | null;
       revoked_at: string | null;
     }, [string]>(`
-      SELECT version, scope_hash, source_ids_json, granted_at, revoked_at
+      SELECT purpose, version, scope_hash, source_ids_json, granted_at, expires_at, revoked_at
       FROM evidence_consent_grants
       WHERE workspace_id = ?
       ORDER BY granted_at ASC, version ASC, scope_hash ASC
     `).all(workspaceId);
     return rows.map(row => ({
-      purpose: 'tax_workspace_processing',
+      purpose: row.purpose,
       version: row.version,
       scopeIds: JSON.parse(row.source_ids_json) as string[],
       scopeHash: row.scope_hash,
       grantedAt: row.granted_at,
+      expiresAt: row.expires_at,
       revokedAt: row.revoked_at,
     }));
   }
 
   #assertActiveBatchConsent(batch: TaxEvidenceBatchV1): void {
-    const grant = this.#db.query<{ scope_hash: string; source_ids_json: string; granted_at: string; revoked_at: string | null }, [string, string]>(`
-      SELECT scope_hash, source_ids_json, granted_at, revoked_at
+    const grant = this.#db.query<{ scope_hash: string; source_ids_json: string; granted_at: string; expires_at: string | null; revoked_at: string | null }, [string, string]>(`
+      SELECT scope_hash, source_ids_json, granted_at, expires_at, revoked_at
       FROM evidence_consent_grants
-      WHERE workspace_id = ? AND version = ?
+      WHERE workspace_id = ? AND purpose = 'tax_workspace_processing' AND version = ?
     `).get(batch.workspaceId, batch.consent.version);
     if (!grant) throw new Error('EVIDENCE_CONSENT_GRANT_NOT_FOUND');
     if (grant.revoked_at) throw new Error('EVIDENCE_CONSENT_REVOKED');
+    if (grant.expires_at && parseInstant(batch.producedAt) >= parseInstant(grant.expires_at)) {
+      throw new Error('EVIDENCE_CONSENT_EXPIRED');
+    }
     if (grant.scope_hash !== batch.consent.scopeHash
       || grant.source_ids_json !== JSON.stringify(batch.consent.sourceIds)) throw new Error('EVIDENCE_CONSENT_SCOPE_CONFLICT');
     if (parseInstant(batch.producedAt) < parseInstant(grant.granted_at)) throw new Error('EVIDENCE_CONSENT_NOT_YET_GRANTED');
@@ -2146,6 +2336,20 @@ export class TaxProfileStore {
     ).all(workspaceId).map(row => JSON.parse(row.mandate_json) as AccountantMandateV1);
   }
 
+  listAccountantMandatesForPortfolio(
+    accountantActorId: string,
+    accountantOrganizationId: string,
+  ): readonly AccountantMandateV1[] {
+    return this.#db.query<{ mandate_json: string }, [string]>(`
+      SELECT mandate_json
+      FROM accountant_mandates
+      WHERE accountant_actor_id = ?
+      ORDER BY workspace_id ASC, granted_at DESC, mandate_id ASC
+    `).all(accountantActorId)
+      .map(row => JSON.parse(row.mandate_json) as AccountantMandateV1)
+      .filter(mandate => mandate.accountantOrganizationId === accountantOrganizationId);
+  }
+
   requireAccountantMandate(input: Readonly<{
     mandateId: string;
     workspaceId: string;
@@ -2205,6 +2409,19 @@ function consentEventReceipt(
     action: event.action,
     replayed,
   };
+}
+
+function factoringProjectionReceipt(
+  projectionKey: string,
+  row: StoredFacturaEFactoringProjectionRow,
+): FacturaEFactoringProjectionReceiptV1 {
+  return facturaEFactoringProjectionReceiptV1Schema.parse({
+    version: 'factura-e-factoring-projection-receipt-v1',
+    projectionKey,
+    revision: row.revision,
+    projectedAt: row.projected_at,
+    projection: JSON.parse(row.projection_json),
+  });
 }
 
 function parseInstant(value: string): number {

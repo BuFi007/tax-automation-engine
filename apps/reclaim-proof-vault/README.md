@@ -8,6 +8,8 @@ This isolated service is the raw zkTLS evidence boundary for Motora's Reclaim co
 - Binds one immutable artifact to `workspaceId + sessionId + purpose`; conflicting replay fails closed.
 - Encrypts each raw proof with a random data-encryption key (DEK), then wraps that DEK with an HKDF-derived AES-256-GCM key.
 - Keeps writer, human-reviewer, and retention-administrator bearer tokens distinct.
+- Requires the owning workspace on human review and deletion requests; an
+  opaque reference cannot be resolved or erased across workspaces.
 - Enforces a versioned purpose allowlist and retention duration before custody.
 - Implements deletion and expiry as cryptographic erasure by deleting the wrapped DEK.
 - Keeps only hashed workspace, run, session binding, reference, and artifact identifiers in its audit trail.
@@ -29,6 +31,10 @@ RECLAIM_PROOF_VAULT_PRODUCTION_APPROVED=false
 The key file is a base64-encoded 32-byte key mounted from a secret manager. Do not put it in environment manifests or source control. Put TLS and network identity in front of this process; Motora refuses non-HTTPS vault URLs.
 
 Provision a policy through `POST /v1/retention-policies` with the admin token before accepting proofs. Health is authenticated at `GET /health` and reports only encryption readiness and the active policy count.
+
+Human review uses the workspace-bound `reclaim-proof-resolve-v2` request. The
+legacy reference-only resolve shape is rejected instead of being treated as a
+cross-tenant-capable compatibility path.
 
 ## Offline key rotation
 

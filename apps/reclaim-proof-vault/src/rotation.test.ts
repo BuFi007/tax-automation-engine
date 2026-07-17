@@ -20,14 +20,14 @@ describe('offline proof-vault key rotation', () => {
     oldStore.close();
     expect(rotateProofVaultMasterKey({ databasePath: path, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW, dryRun: true })).toEqual({ proofsValidated: 1, rotated: false });
     const afterDryRun = new ReclaimProofStore(oldKey, path);
-    expect(afterDryRun.resolve(receipt.opaqueReference, NOW).proofPayload).toEqual(proofPayload);
+    expect(afterDryRun.resolve('workspace', receipt.opaqueReference, NOW).proofPayload).toEqual(proofPayload);
     afterDryRun.close();
     expect(rotateProofVaultMasterKey({ databasePath: path, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW, dryRun: false })).toEqual({ proofsValidated: 1, rotated: true });
     const staleStore = new ReclaimProofStore(oldKey, path);
-    expect(() => staleStore.resolve(receipt.opaqueReference, NOW)).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
+    expect(() => staleStore.resolve('workspace', receipt.opaqueReference, NOW)).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
     staleStore.close();
     const rotatedStore = new ReclaimProofStore(newKey, path);
-    expect(rotatedStore.resolve(receipt.opaqueReference, NOW).proofPayload).toEqual(proofPayload);
+    expect(rotatedStore.resolve('workspace', receipt.opaqueReference, NOW).proofPayload).toEqual(proofPayload);
     rotatedStore.close();
   });
 });

@@ -10,6 +10,7 @@ import {
   createFacturaEAgentRun,
   demoSnapshot,
   hashCanonical,
+  hashTaxConsentScope,
   hashTaxEvidenceConsentScope,
 } from '@tax-engine/core';
 import type {
@@ -208,6 +209,44 @@ describe('tax storage durability configuration', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test('migrates legacy processing-only consent storage without losing grants', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'tax-engine-consent-migration-'));
+    const databasePath = join(directory, 'tax.sqlite');
+    try {
+      createLegacyConsentDatabase(databasePath);
+      const store = new TaxProfileStore(databasePath);
+      expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
+        expect.objectContaining({
+          purpose: 'tax_workspace_processing',
+          version: 'consent-v1',
+          expiresAt: null,
+          revokedAt: null,
+        }),
+      ]);
+      const sourceIds = ['bank:1'];
+      expect(store.appendEvidenceConsentEvent({
+        version: 'tax-evidence-consent-event-v1',
+        eventId: '00000000-0000-4000-8000-000000000099',
+        workspaceId: 'workspace:1',
+        sequence: 1,
+        action: 'grant',
+        authoritySource: 'desk_subscription',
+        actorReferenceHash: hashTaxEvidenceConsentScope('actor-v1', ['owner']),
+        consent: {
+          purpose: 'tax_evidence_quality',
+          version: 'consent-v1',
+          scopeHash: hashTaxConsentScope('tax_evidence_quality', 'consent-v1', sourceIds),
+          sourceIds,
+          expiresAt: '2026-08-31T00:00:00.000Z',
+        },
+        occurredAt: '2026-07-16T00:00:00.000Z',
+      }).replayed).toBe(false);
+      store.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('append-only tax storage', () => {
@@ -300,6 +339,41 @@ describe('append-only tax storage', () => {
       .toThrow('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
     expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
       expect.objectContaining({ version: 'consent-v1', revokedAt: null }),
+    ]);
+  });
+
+  test('persists evidence-quality consent as a distinct expiring purpose', () => {
+    const store = new TaxProfileStore(':memory:');
+    const sourceIds = ['bank:1'];
+    store.appendEvidenceConsentEvent(consentLifecycleEvent(
+      1,
+      'grant',
+      sourceIds,
+      '00000000-0000-4000-8000-000000000001',
+    ));
+    store.appendEvidenceConsentEvent({
+      ...consentLifecycleEvent(
+        2,
+        'grant',
+        sourceIds,
+        '00000000-0000-4000-8000-000000000002',
+      ),
+      consent: {
+        purpose: 'tax_evidence_quality',
+        version: 'consent-v1',
+        scopeHash: hashTaxConsentScope('tax_evidence_quality', 'consent-v1', sourceIds),
+        sourceIds,
+        expiresAt: '2026-08-31T00:00:00.000Z',
+      },
+    });
+
+    expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
+      expect.objectContaining({ purpose: 'tax_workspace_processing', version: 'consent-v1' }),
+      expect.objectContaining({
+        purpose: 'tax_evidence_quality',
+        version: 'consent-v1',
+        expiresAt: '2026-08-31T00:00:00.000Z',
+      }),
     ]);
   });
 
@@ -1230,6 +1304,40 @@ function createLegacyEvidenceDatabase(path: string, interrupted: boolean): void 
     record.artifactHash,
     JSON.stringify(record),
     '2026-07-10T00:00:00.000Z',
+  );
+  database.close();
+}
+
+function createLegacyConsentDatabase(path: string): void {
+  const database = new Database(path, { create: true });
+  database.exec(`
+    CREATE TABLE evidence_consent_grants (
+      workspace_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (purpose = 'tax_workspace_processing'),
+      version TEXT NOT NULL,
+      scope_hash TEXT NOT NULL,
+      source_ids_json TEXT NOT NULL,
+      granted_at TEXT NOT NULL,
+      revoked_at TEXT,
+      grant_event_id TEXT NOT NULL,
+      revoke_event_id TEXT,
+      PRIMARY KEY (workspace_id, purpose, version, scope_hash),
+      UNIQUE (workspace_id, purpose, version)
+    );
+  `);
+  const sourceIds = ['bank:1'];
+  database.query(`
+    INSERT INTO evidence_consent_grants (
+      workspace_id, purpose, version, scope_hash, source_ids_json,
+      granted_at, revoked_at, grant_event_id, revoke_event_id
+    ) VALUES (?, 'tax_workspace_processing', ?, ?, ?, ?, NULL, ?, NULL)
+  `).run(
+    'workspace:1',
+    'consent-v1',
+    hashTaxEvidenceConsentScope('consent-v1', sourceIds),
+    JSON.stringify(sourceIds),
+    '2026-07-01T00:00:00.000Z',
+    'legacy-grant-event',
   );
   database.close();
 }
