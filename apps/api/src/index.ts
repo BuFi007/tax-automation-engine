@@ -78,6 +78,10 @@ import {
   assertNoTaxEngineFundingAuthority,
   resolveArgentinaLaunchPolicyReadiness,
 } from './argentina-launch-policy';
+import {
+  drainTaxDomainEventOutbox,
+  HttpTaxDomainEventPublisher,
+} from './tax-domain-event-outbox';
 
 const port = Number(process.env.PORT ?? 4100);
 const apiKey = process.env.TAX_ENGINE_API_KEY;
@@ -97,6 +101,15 @@ const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISH
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
 const openAgentsAgentPrincipalSecret =
   process.env.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
+const taxDomainEventDeliveryEnabled =
+  process.env.TAX_DOMAIN_EVENT_DELIVERY_ENABLED === 'true';
+const taxDomainEventIngressToken =
+  process.env.TAX_DOMAIN_EVENT_OPEN_AGENTS_TOKEN ?? null;
+const taxDomainEventHmacSecret =
+  process.env.TAX_DOMAIN_EVENT_HMAC_SECRET ?? null;
+const taxDomainEventPollIntervalMs = parseTaxDomainEventPollInterval(
+  process.env.TAX_DOMAIN_EVENT_POLL_INTERVAL_MS
+);
 const authorityCorridorEnabled = process.env.TAX_ENGINE_ARCA_AUTHORITY_CORRIDOR_ENABLED === 'true';
 const authorityRemoteEffectsEnabled = process.env.TAX_ENGINE_ARCA_REMOTE_EFFECTS_ENABLED === 'true';
 const arcaAuthorityEnvironment = parseArcaAuthorityEnvironment(
@@ -180,6 +193,20 @@ if (process.env.NODE_ENV === 'production'
     browserReferenceSecret,
   ]).size !== 7) {
   throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
+}
+if (taxDomainEventDeliveryEnabled) {
+  const domainEventSecrets = [
+    taxDomainEventIngressToken,
+    taxDomainEventHmacSecret,
+    openAgentsAgentPrincipalSecret,
+    evidencePublisherPrincipalSecret,
+    consentAuthorityPrincipalSecret,
+  ].filter((value): value is string => Boolean(value));
+  if (
+    !taxDomainEventIngressToken
+    || !taxDomainEventHmacSecret
+    || new Set(domainEventSecrets).size !== domainEventSecrets.length
+  ) throw new Error('TAX_DOMAIN_EVENT_DELIVERY_SECRETS_MUST_BE_DISTINCT');
 }
 if (authorityCorridorEnabled) {
   assertTaxAuthoritySecretsDistinct(authorityPrincipalSecrets, [
@@ -278,6 +305,12 @@ if (
 ) assertArgentinaProductionBoundary(argentinaLaunchPolicy);
 
 const store = new TaxProfileStore();
+const taxDomainEventPublisher = taxDomainEventDeliveryEnabled
+  ? HttpTaxDomainEventPublisher.fromEnvironment()
+  : null;
+if (taxDomainEventDeliveryEnabled && !taxDomainEventPublisher) {
+  throw new Error('TAX_DOMAIN_EVENT_DELIVERY_CONFIGURATION_REQUIRED');
+}
 const taxEvidenceWorkspace = new TaxEvidenceWorkspaceService(store);
 const taxBrowserSnapshotProjector = browserReferenceSecret
   ? new TaxBrowserSnapshotProjector(browserReferenceSecret)
@@ -580,6 +613,14 @@ export const server = Bun.serve({
                   : 'dark',
               }
             : { state: 'dark' },
+          taxDomainEventDelivery: taxDomainEventDeliveryEnabled
+            ? {
+                state: taxDomainEventPublisher ? 'configured' : 'configuration_required',
+                contract: 'tax-domain-event-v1',
+                inboxAckRequired: true,
+                pollIntervalMs: taxDomainEventPollIntervalMs,
+              }
+            : { state: 'dark' },
         }), request);
       }
       if (request.method === 'GET' && url.pathname === '/v1/catalogues') {
@@ -649,6 +690,14 @@ function parseArcaAuthorityEnvironment(
   throw new Error('ARCA_ENVIRONMENT_INVALID');
 }
 
+function parseTaxDomainEventPollInterval(raw: string | undefined): number {
+  const value = raw === undefined ? 5_000 : Number(raw);
+  if (!Number.isInteger(value) || value < 1_000 || value > 60_000) {
+    throw new Error('TAX_DOMAIN_EVENT_POLL_INTERVAL_INVALID');
+  }
+  return value;
+}
+
 if (import.meta.main) {
   console.info(`Tax Automation Engine API listening on http://localhost:${server.port}`);
   console.info(`Execution mode: ${wsfexGateway ? 'human_gated_agent' : 'manual_only'}; tax payments remain disabled`);
@@ -689,4 +738,36 @@ if (facturaEFeatureEnabled) {
   );
   timer.unref();
   void tickFacturaEFeatures();
+}
+
+let taxDomainEventTickRunning = false;
+async function tickTaxDomainEvents(): Promise<void> {
+  if (taxDomainEventTickRunning || !taxDomainEventPublisher) return;
+  taxDomainEventTickRunning = true;
+  try {
+    const outboxes = facturaEFeatures ? [store, facturaEFeatures] : [store];
+    for (const outbox of outboxes) {
+      try {
+        await drainTaxDomainEventOutbox(outbox, taxDomainEventPublisher, {
+          limit: 50,
+          leaseSeconds: 30,
+        });
+      } catch (error) {
+        console.error('Tax domain event outbox failed:', classifyApiError(error).code);
+      }
+    }
+  } catch (error) {
+    console.error('Tax domain event worker failed:', classifyApiError(error).code);
+  } finally {
+    taxDomainEventTickRunning = false;
+  }
+}
+
+if (taxDomainEventDeliveryEnabled) {
+  const timer = setInterval(
+    () => void tickTaxDomainEvents(),
+    taxDomainEventPollIntervalMs
+  );
+  timer.unref();
+  void tickTaxDomainEvents();
 }

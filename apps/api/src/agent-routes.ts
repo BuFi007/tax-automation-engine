@@ -526,6 +526,9 @@ async function invokeTool(
       throw new Error('TAX_AUTHORITY_CORRIDOR_REQUIRED');
     }
     case 'tax_ar_factura_e_record_settlement': {
+      if (body.actorId !== 'agent:tax-settlement') {
+        throw new Error('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
+      }
       const input = z.object({ runId: z.uuid(), settlement: settlementSchema }).strict().parse(body.input);
       return service.recordSettlement({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });
     }

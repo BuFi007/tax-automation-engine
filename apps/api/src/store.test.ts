@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   argentinaProfile,
   buildEvidenceGraph,
+  createFacturaEAgentRun,
   demoSnapshot,
   hashCanonical,
   hashTaxConsentScope,
@@ -24,6 +25,10 @@ import type {
 
 import { resolveTaxEngineDatabasePath, TaxProfileStore } from './store';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
+import {
+  createConsentRevokedTaxDomainEvent,
+  createFacturaEAgentTaxDomainEvents,
+} from './tax-domain-event-factory';
 
 describe('tax storage durability configuration', () => {
   test('keeps the in-memory default for local development and tests', () => {
@@ -296,6 +301,15 @@ describe('append-only tax storage', () => {
     store.appendEvidenceConsentEvent(granted);
     store.appendEvidenceConsentEvent(revoked);
 
+    expect(store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        kind: 'consent.revoked',
+        workspaceId: 'workspace:1',
+        state: 'revoked',
+        consent: expect.objectContaining({ state: 'revoked' }),
+      }),
+    ]);
+
     expect(() => store.appendEvidenceConsentEvent(consentLifecycleEvent(
       3,
       'grant',
@@ -304,6 +318,27 @@ describe('append-only tax storage', () => {
     ))).toThrow('EVIDENCE_CONSENT_VERSION_SCOPE_CONFLICT');
     expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
       expect.objectContaining({ version: 'consent-v1', revokedAt: revoked.occurredAt }),
+    ]);
+  });
+
+  test('rolls back consent revocation when its domain outbox append conflicts', () => {
+    const commitmentSecret = 'atomic-tax-domain-event-commitment-secret-v1';
+    const store = new TaxProfileStore(':memory:', commitmentSecret);
+    const granted = consentLifecycleEvent(1, 'grant', ['bank:1'], '00000000-0000-4000-8000-000000000011');
+    const revoked = consentLifecycleEvent(2, 'revoke', ['bank:1'], '00000000-0000-4000-8000-000000000012');
+    store.appendEvidenceConsentEvent(granted);
+    const conflicting = createConsentRevokedTaxDomainEvent({
+      event: revoked,
+      commitmentSecret,
+      eventId: '00000000-0000-4000-8000-000000000013',
+    });
+    if (!conflicting) throw new Error('Expected revocation domain event');
+    store.appendTaxDomainEvent(conflicting, revoked.occurredAt);
+
+    expect(() => store.appendEvidenceConsentEvent(revoked))
+      .toThrow('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+    expect(store.listEvidenceConsentGrants('workspace:1')).toEqual([
+      expect.objectContaining({ version: 'consent-v1', revokedAt: null }),
     ]);
   });
 
@@ -840,6 +875,252 @@ describe('append-only tax storage', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test('commits Factura E truth and its domain outbox event atomically', () => {
+    const createStore = () => {
+      const store = new TaxProfileStore(
+        ':memory:',
+        'test-tax-domain-event-commitment-secret-v1',
+      );
+      grantConsent(store, ['bufi-invoice']);
+      const created = createFacturaEAgentRun({
+        runId: 'taxcase:factura-e:1',
+        workspaceId: 'workspace:1',
+        issuancePath: 'wsfex_delegated',
+        actorId: 'agent:1',
+        occurredAt: '2026-07-10T00:00:00.000Z',
+        idempotencyKey: 'create-run',
+      });
+      store.appendFacturaEAgentRevision({
+        ...created,
+        stateHash: hashCanonical(created.run),
+        commandHash: hashCanonical({ operation: 'create-run' }),
+        appendedAt: created.event.occurredAt,
+      });
+      return { store, created };
+    };
+    const transition = (created: ReturnType<typeof createFacturaEAgentRun>) => {
+      const event = {
+        eventId: '70000000-0000-4000-8000-000000000001',
+        runId: created.run.runId,
+        workspaceId: created.run.workspaceId,
+        actorId: 'wsfex:verifier',
+        actorKind: 'wsfex' as const,
+        action: 'wsfex_accepted',
+        occurredAt: '2026-07-10T00:01:00.000Z',
+        idempotencyKey: 'authority-accepted',
+        safeMetadata: {
+          receiptHash: 'a'.repeat(64),
+        },
+      };
+      const run = {
+        ...created.run,
+        revision: created.run.revision + 1,
+        updatedAt: event.occurredAt,
+        issuanceState: 'arca_authorized' as const,
+        authority: {
+          ...created.run.authority,
+          receiptHash: 'a'.repeat(64),
+          authorizedAt: event.occurredAt,
+        },
+        eventIds: [...created.run.eventIds, event.eventId],
+      };
+      return { run, event };
+    };
+
+    const successful = createStore();
+    const accepted = transition(successful.created);
+    successful.store.appendFacturaEAgentRevision({
+      ...accepted,
+      stateHash: hashCanonical(accepted.run),
+      commandHash: hashCanonical({ operation: 'authority-accepted' }),
+      appendedAt: accepted.event.occurredAt,
+    });
+    expect(successful.store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        workspaceId: 'workspace:1',
+        caseRef: 'taxcase:factura-e:1',
+        kind: 'factura_e.authority_verified',
+        state: 'verified',
+      }),
+    ]);
+    successful.store.close();
+
+    const conflicted = createStore();
+    const rejected = transition(conflicted.created);
+    const [derived] = createFacturaEAgentTaxDomainEvents({
+      ...rejected,
+      consent: {
+        version: 'consent-v1',
+        scopeHash: hashTaxEvidenceConsentScope('consent-v1', ['bufi-invoice']),
+      },
+      commitmentSecret: 'test-tax-domain-event-commitment-secret-v1',
+    });
+    if (!derived) throw new Error('FACTURA_E_DOMAIN_EVENT_REQUIRED');
+    conflicted.store.appendTaxDomainEvent(
+      { ...derived, state: 'blocked' },
+      rejected.event.occurredAt,
+    );
+    expect(() => conflicted.store.appendFacturaEAgentRevision({
+      ...rejected,
+      stateHash: hashCanonical(rejected.run),
+      commandHash: hashCanonical({ operation: 'authority-accepted' }),
+      appendedAt: rejected.event.occurredAt,
+    })).toThrow('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+    expect(conflicted.store.getFacturaEAgentRun(rejected.run.runId)?.revision).toBe(1);
+    conflicted.store.close();
+  });
+
+  test('rolls back an accountant decision unless its exact mandate is active', () => {
+    const store = new TaxProfileStore(
+      ':memory:',
+      'test-tax-domain-event-commitment-secret-v1',
+    );
+    grantConsent(store, ['accountant-workspace']);
+    const created = createFacturaEAgentRun({
+      runId: 'taxcase:accountant-decision:1',
+      workspaceId: 'workspace:1',
+      issuancePath: 'wsfex_delegated',
+      actorId: 'agent:1',
+      occurredAt: '2026-07-10T00:00:00.000Z',
+      idempotencyKey: 'create-accountant-run',
+    });
+    store.appendFacturaEAgentRevision({
+      ...created,
+      stateHash: hashCanonical(created.run),
+      commandHash: hashCanonical({ operation: 'create-accountant-run' }),
+      appendedAt: created.event.occurredAt,
+    });
+    const event = {
+      eventId: '71000000-0000-4000-8000-000000000001',
+      runId: created.run.runId,
+      workspaceId: created.run.workspaceId,
+      actorId: 'accountant:1',
+      actorKind: 'accountant' as const,
+      action: 'factura_e_fx_ingress_verified',
+      occurredAt: '2026-07-10T00:02:00.000Z',
+      idempotencyKey: 'accountant-fx-decision',
+      safeMetadata: { evidenceHash: 'f'.repeat(64) },
+    };
+    const run = {
+      ...created.run,
+      revision: 2,
+      updatedAt: event.occurredAt,
+      fxIngressState: 'verified' as const,
+      fxIngressEvidenceHash: 'f'.repeat(64),
+      eventIds: [...created.run.eventIds, event.eventId],
+    };
+    const append = () => store.appendFacturaEAgentRevision({
+      run,
+      event,
+      stateHash: hashCanonical(run),
+      commandHash: hashCanonical({ operation: 'accountant-fx-decision' }),
+      appendedAt: event.occurredAt,
+    });
+
+    expect(append).toThrow('ACCOUNTANT_MANDATE_REQUIRED_FOR_DOMAIN_EVENT');
+    expect(store.getFacturaEAgentRun(run.runId)?.revision).toBe(1);
+
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1',
+      mandateId: 'mandate:accountant-fx:1',
+      workspaceId: run.workspaceId,
+      accountantActorId: event.actorId,
+      accountantOrganizationId: 'accounting-firm:1',
+      scopes: ['verify_fx_ingress'],
+      grantedByActorId: 'user:1',
+      grantedAt: '2026-07-10T00:01:00.000Z',
+      expiresAt: '2026-07-11T00:00:00.000Z',
+      revokedAt: null,
+    });
+    expect(append().revision).toBe(2);
+    expect(store.listPendingTaxDomainEvents()).toEqual([
+      expect.objectContaining({
+        kind: 'accountant.decision_recorded',
+        state: 'recorded',
+        workspaceId: run.workspaceId,
+        caseRef: run.runId,
+      }),
+    ]);
+    expect(JSON.stringify(store.listPendingTaxDomainEvents()))
+      .not.toContain('mandate:accountant-fx:1');
+    store.close();
+  });
+
+  test('commits changed gaps and actually-due obligations with the durable snapshot', async () => {
+    const store = new TaxProfileStore(
+      ':memory:',
+      'test-tax-domain-event-commitment-secret-v1',
+    );
+    const base = await demoSnapshot();
+    store.confirm({
+      profile: base.profile,
+      expectedVersion: null,
+      actorId: 'user:owner',
+      occurredAt: '2026-07-10T00:00:00.000Z',
+    });
+    grantConsent(store, ['bank:1'], base.workspaceId);
+    const configured = store.configureSnapshotProjection({
+      configuration: {
+        version: 'tax-snapshot-projection-configuration-v1',
+        workspaceId: base.workspaceId,
+        period: base.period,
+        displayCurrency: base.displayCurrency,
+        dataScope: { mode: 'all_connected' },
+      },
+      expectedConfigHash: null,
+      actorId: 'user:owner',
+      configuredAt: '2026-07-10T00:01:00.000Z',
+    });
+    const due = {
+      ...base.obligations[0]!,
+      id: 'obligation:due:opaque',
+      dueAt: '2026-07-16T12:00:00.000Z',
+      applicability: 'applicable' as const,
+      submissionState: 'not_submitted' as const,
+      satisfactionState: 'outstanding' as const,
+    };
+    const snapshot = {
+      ...base,
+      inputHash: hashCanonical('snapshot-with-domain-events'),
+      evidenceCoverage: {
+        ...base.evidenceCoverage,
+        gaps: [{
+          id: 'gap:opaque',
+          kind: 'expense_without_receipt' as const,
+          severity: 'warning' as const,
+          economicEventId: 'economic-event:opaque',
+          safeSourceReferenceIds: ['source-reference-opaque'],
+          actionId: 'resolve-gap',
+        }],
+      },
+      obligations: [due],
+    };
+    store.saveTaxWidgetSnapshot({
+      snapshot,
+      projection: {
+        version: 'test-projection',
+        asOf: '2026-07-17T00:00:00.000Z',
+        validUntil: null,
+      } as unknown as TaxEvidencePresentationProjectionV1,
+      expectedEvidenceGeneration: store.getEvidenceGeneration(base.workspaceId),
+      expectedProjectionConfigHash: configured.configHash,
+      generatedAt: '2026-07-17T00:00:00.000Z',
+    });
+    expect(store.listPendingTaxDomainEvents().map(event => [event.kind, event.state]))
+      .toEqual([
+        ['evidence.gap_changed', 'pending'],
+        ['obligation.due', 'ready'],
+      ]);
+    const serialized = JSON.stringify(store.listPendingTaxDomainEvents());
+    for (const forbidden of [
+      'gap:opaque',
+      'economic-event:opaque',
+      'source-reference-opaque',
+      'obligation:due:opaque',
+    ]) expect(serialized).not.toContain(forbidden);
+    store.close();
+  });
 });
 
 function evidenceBatch(sequence: number, records: readonly TaxEvidenceRecord[]): TaxEvidenceBatchV1 {
@@ -954,8 +1235,15 @@ function invoiceEvidenceRecord(
   };
 }
 
-function grantConsent(store: TaxProfileStore, sourceIds: readonly string[]): void {
-  const event = consentLifecycleEvent(1, 'grant', sourceIds, '00000000-0000-4000-8000-000000000001');
+function grantConsent(
+  store: TaxProfileStore,
+  sourceIds: readonly string[],
+  workspaceId = 'workspace:1',
+): void {
+  const event = {
+    ...consentLifecycleEvent(1, 'grant', sourceIds, '00000000-0000-4000-8000-000000000001'),
+    workspaceId,
+  };
   expect(store.appendEvidenceConsentEvent(event)).toEqual(expect.objectContaining({ replayed: false }));
 }
 

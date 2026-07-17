@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import {
@@ -31,17 +32,28 @@ import type {
   TaxSnapshotProjectionConfigurationV1,
   TaxWidgetSnapshotReceiptV1,
   TaxWidgetSnapshotV1,
+  TaxDomainEventV1,
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
   assertActiveAccountantMandate,
   hashCanonical,
+  assertTaxDomainEventV1,
+  hashTaxDomainEventV1,
   hashTaxEvidenceBatch,
   normalizeTaxSnapshotProjectionKey,
   resolveActiveEvidenceRecords,
 } from '@tax-engine/core';
 
 import { assertCatalogueSafeProfile } from './profile-validation';
+import {
+  accountantMandateScopeForFacturaEEvent,
+  createArcaOnboardingTaxDomainEvent,
+  createConsentRevokedTaxDomainEvent,
+  createFacturaEAgentTaxDomainEvents,
+  createSnapshotTaxDomainEvents,
+  resolveTaxDomainEventCommitmentSecret,
+} from './tax-domain-event-factory';
 
 export function resolveTaxEngineDatabasePath(
   configuredPath: string | null | undefined = process.env.TAX_ENGINE_DB_PATH,
@@ -98,9 +110,14 @@ type StoredFacturaEFactoringProjectionRow = Readonly<{
 
 export class TaxProfileStore {
   readonly #db: Database;
+  readonly #domainEventCommitmentSecret: string;
 
-  constructor(path = process.env.TAX_ENGINE_DB_PATH) {
+  constructor(
+    path = process.env.TAX_ENGINE_DB_PATH,
+    domainEventCommitmentSecret = resolveTaxDomainEventCommitmentSecret(),
+  ) {
     const databasePath = resolveTaxEngineDatabasePath(path);
+    this.#domainEventCommitmentSecret = domainEventCommitmentSecret;
     this.#db = new Database(databasePath, { create: true });
     this.#db.exec(`
       PRAGMA journal_mode = WAL;
@@ -144,6 +161,22 @@ export class TaxProfileStore {
         appended_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, idempotency_key)
       );
+      CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        leased_until TEXT,
+        lease_token TEXT,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        delivered_at TEXT,
+        last_error_code TEXT,
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS tax_domain_event_outbox_pending
+        ON tax_domain_event_outbox (delivered_at, leased_until, appended_at);
       CREATE INDEX IF NOT EXISTS evidence_records_workspace_revision
         ON evidence_records (workspace_id, revision);
       CREATE TABLE IF NOT EXISTS evidence_supersessions (
@@ -340,6 +373,12 @@ export class TaxProfileStore {
         bound_at TEXT NOT NULL
       );
     `);
+    const taxDomainOutboxColumns = this.#db
+      .query<{ name: string }, []>('PRAGMA table_info(tax_domain_event_outbox)')
+      .all();
+    if (!taxDomainOutboxColumns.some(column => column.name === 'lease_token')) {
+      this.#db.exec('ALTER TABLE tax_domain_event_outbox ADD COLUMN lease_token TEXT');
+    }
     this.#db.transaction(() => {
       const consentGrantColumns = this.#db.query<{ name: string }, []>(
         'PRAGMA table_info(evidence_consent_grants)',
@@ -644,6 +683,175 @@ export class TaxProfileStore {
 
   close(): void {
     this.#db.close();
+  }
+
+  /**
+   * Persist a privacy-minimized TaxDomainEvent before any agent workflow is
+   * notified. The workspace/idempotency uniqueness is the convergence point
+   * for retries and reordered upstream provider callbacks.
+   */
+  appendTaxDomainEvent(eventInput: TaxDomainEventV1, appendedAt: string): Readonly<{
+    event: TaxDomainEventV1;
+    replayed: boolean;
+  }> {
+    const event = assertTaxDomainEventV1(eventInput);
+    return this.#db.transaction(() => this.#appendTaxDomainEventInTransaction(event, appendedAt))();
+  }
+
+  #appendTaxDomainEventInTransaction(
+    event: TaxDomainEventV1,
+    appendedAt: string,
+  ): Readonly<{ event: TaxDomainEventV1; replayed: boolean }> {
+    const eventHash = hashTaxDomainEventV1(event);
+    const byEventId = this.#db.query<{ event_hash: string; event_json: string }, [string]>(`
+      SELECT event_hash, event_json FROM tax_domain_event_outbox WHERE event_id = ?
+    `).get(event.eventId);
+    if (byEventId) {
+      if (byEventId.event_hash !== eventHash) throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+      return { event: assertTaxDomainEventV1(JSON.parse(byEventId.event_json)), replayed: true };
+    }
+    const byIdempotency = this.#db.query<{ event_hash: string; event_json: string }, [string, string]>(`
+      SELECT event_hash, event_json
+      FROM tax_domain_event_outbox
+      WHERE workspace_id = ? AND idempotency_key = ?
+    `).get(event.workspaceId, event.idempotencyKey);
+    if (byIdempotency) {
+      if (byIdempotency.event_hash !== eventHash) throw new Error('TAX_DOMAIN_EVENT_IDEMPOTENCY_CONFLICT');
+      return { event: assertTaxDomainEventV1(JSON.parse(byIdempotency.event_json)), replayed: true };
+    }
+    this.#db.query(`
+      INSERT INTO tax_domain_event_outbox (
+        event_id, workspace_id, idempotency_key, event_hash, event_json, appended_at,
+        leased_until, lease_token, delivery_attempts, delivered_at, last_error_code
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL)
+    `).run(event.eventId, event.workspaceId, event.idempotencyKey, eventHash, JSON.stringify(event), appendedAt);
+    return { event, replayed: false };
+  }
+
+  /** Lease undelivered events. A worker must ack only after target inbox persistence. */
+  leaseTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly TaxDomainEventV1[] {
+    return this.claimTaxDomainEvents(input).map(claim => claim.event);
+  }
+
+  /**
+   * Fenced claim used by the network relay. A stale worker cannot acknowledge
+   * or release a lease after another worker has taken it over.
+   */
+  claimTaxDomainEvents(input: Readonly<{
+    now: string;
+    leaseUntil: string;
+    limit: number;
+  }>): readonly Readonly<{
+    event: TaxDomainEventV1;
+    eventHash: string;
+    leaseToken: string;
+    attempt: number;
+  }>[] {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('TAX_DOMAIN_EVENT_LEASE_LIMIT_INVALID');
+    if (input.leaseUntil <= input.now) throw new Error('TAX_DOMAIN_EVENT_LEASE_WINDOW_INVALID');
+    return this.#db.transaction(() => {
+      const candidates = this.#db.query<{
+        event_id: string;
+        event_hash: string;
+        event_json: string;
+        delivery_attempts: number;
+      }, [string, number]>(`
+        SELECT event_id, event_hash, event_json, delivery_attempts
+        FROM tax_domain_event_outbox
+        WHERE delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
+        ORDER BY appended_at ASC, event_id ASC
+        LIMIT ?
+      `).all(input.now, input.limit);
+      const claim = this.#db.query(`
+        UPDATE tax_domain_event_outbox
+        SET leased_until = ?, lease_token = ?, delivery_attempts = delivery_attempts + 1,
+            last_error_code = NULL
+        WHERE event_id = ? AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
+      `);
+      const leased: Array<Readonly<{
+        event: TaxDomainEventV1;
+        eventHash: string;
+        leaseToken: string;
+        attempt: number;
+      }>> = [];
+      for (const candidate of candidates) {
+        const leaseToken = randomUUID();
+        if (claim.run(input.leaseUntil, leaseToken, candidate.event_id, input.now).changes === 1) {
+          leased.push({
+            event: assertTaxDomainEventV1(JSON.parse(candidate.event_json)),
+            eventHash: candidate.event_hash,
+            leaseToken,
+            attempt: candidate.delivery_attempts + 1,
+          });
+        }
+      }
+      return leased;
+    })();
+  }
+
+  ackTaxDomainEventClaim(eventId: string, leaseToken: string, deliveredAt: string): void {
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET delivered_at = ?, leased_until = NULL, lease_token = NULL, last_error_code = NULL
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(deliveredAt, eventId, leaseToken);
+    if (updated.changes === 1) return;
+    const row = this.#db.query<{ delivered_at: string | null }, [string]>(`
+      SELECT delivered_at FROM tax_domain_event_outbox WHERE event_id = ?
+    `).get(eventId);
+    if (!row) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+    if (row.delivered_at !== null) return;
+    throw new Error('TAX_DOMAIN_EVENT_OUTBOX_ACK_FENCE_REJECTED');
+  }
+
+  releaseTaxDomainEventClaim(
+    eventId: string,
+    leaseToken: string,
+    retryAt: string,
+    errorCode: string
+  ): void {
+    if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET leased_until = ?, lease_token = NULL, last_error_code = ?
+      WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
+    `).run(retryAt, errorCode, eventId, leaseToken);
+    if (updated.changes !== 1) throw new Error('TAX_DOMAIN_EVENT_OUTBOX_NACK_FENCE_REJECTED');
+  }
+
+  ackTaxDomainEventDelivery(eventId: string, deliveredAt: string): void {
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET delivered_at = ?, leased_until = NULL, lease_token = NULL, last_error_code = NULL
+      WHERE event_id = ? AND delivered_at IS NULL
+    `).run(deliveredAt, eventId);
+    if (updated.changes !== 1) {
+      const delivered = this.#db.query<{ event_id: string }, [string]>(`
+        SELECT event_id FROM tax_domain_event_outbox WHERE event_id = ? AND delivered_at IS NOT NULL
+      `).get(eventId);
+      if (!delivered) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+    }
+  }
+
+  releaseTaxDomainEventDelivery(eventId: string, retryAt: string, errorCode: string): void {
+    if (!/^[A-Z0-9_]{3,120}$/.test(errorCode)) throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
+    const updated = this.#db.query(`
+      UPDATE tax_domain_event_outbox
+      SET leased_until = ?, lease_token = NULL, last_error_code = ?
+      WHERE event_id = ? AND delivered_at IS NULL
+    `).run(retryAt, errorCode, eventId);
+    if (updated.changes !== 1) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
+  }
+
+  listPendingTaxDomainEvents(): readonly TaxDomainEventV1[] {
+    const rows = this.#db.query<{ event_json: string }, []>(`
+      SELECT event_json FROM tax_domain_event_outbox WHERE delivered_at IS NULL ORDER BY appended_at ASC, event_id ASC
+    `).all();
+    return rows.map(row => assertTaxDomainEventV1(JSON.parse(row.event_json)));
   }
 
   projectFacturaEFactoringBrowserProjection(input: Readonly<{
@@ -1185,14 +1393,17 @@ export class TaxProfileStore {
       if (!configured || configured.configHash !== input.expectedProjectionConfigHash) {
         throw new Error('TAX_SNAPSHOT_CONFIG_VERSION_CONFLICT');
       }
-      const latestAsOf = this.#db.query<{ as_of: string }, [string, string, string]>(`
-        SELECT as_of
+      const latestSnapshot = this.#db.query<{
+        as_of: string;
+        snapshot_json: string;
+      }, [string, string, string]>(`
+        SELECT as_of, snapshot_json
         FROM tax_widget_snapshots
         WHERE workspace_id = ? AND projection_key = ? AND projection_config_hash = ?
         ORDER BY rowid DESC
         LIMIT 1
-      `).get(input.snapshot.workspaceId, projectionKey, input.expectedProjectionConfigHash)?.as_of;
-      if (latestAsOf && parseInstant(input.projection.asOf) < parseInstant(latestAsOf)) {
+      `).get(input.snapshot.workspaceId, projectionKey, input.expectedProjectionConfigHash);
+      if (latestSnapshot && parseInstant(input.projection.asOf) < parseInstant(latestSnapshot.as_of)) {
         throw new Error('TAX_SNAPSHOT_AS_OF_REGRESSION');
       }
       const snapshotHash = hashCanonical(input.snapshot);
@@ -1233,6 +1444,33 @@ export class TaxProfileStore {
         WHERE workspace_id = ? AND projection_key = ? AND snapshot_hash = ? AND evidence_generation = ?
       `).get(input.snapshot.workspaceId, projectionKey, snapshotHash, input.expectedEvidenceGeneration);
       if (!stored) throw new Error('TAX_SNAPSHOT_STORAGE_CONFLICT');
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.snapshot.workspaceId);
+      if (consent) {
+        const domainEvents = createSnapshotTaxDomainEvents({
+          snapshot: input.snapshot,
+          previousSnapshot: latestSnapshot
+            ? JSON.parse(latestSnapshot.snapshot_json) as TaxWidgetSnapshotV1
+            : null,
+          previousAsOf: latestSnapshot?.as_of ?? null,
+          projectionKey,
+          asOf: input.projection.asOf,
+          generatedAt: input.generatedAt,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        for (const domainEvent of domainEvents) {
+          this.#appendTaxDomainEventInTransaction(domainEvent, input.generatedAt);
+        }
+      }
       return { ...this.#snapshotReceipt(stored, input.generatedAt), replayed: false };
     })();
   }
@@ -1637,6 +1875,11 @@ export class TaxProfileStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(event.eventId, event.workspaceId, event.sequence, event.action, eventHash, JSON.stringify(event), event.occurredAt);
       this.#advanceEvidenceGeneration(event.workspaceId, event.occurredAt);
+      const domainEvent = createConsentRevokedTaxDomainEvent({
+        event,
+        commitmentSecret: this.#domainEventCommitmentSecret,
+      });
+      if (domainEvent) this.#appendTaxDomainEventInTransaction(domainEvent, event.occurredAt);
       return consentEventReceipt(event, false);
     })();
   }
@@ -1751,9 +1994,61 @@ export class TaxProfileStore {
         INSERT INTO factura_e_agent_idempotency_commands (run_id, idempotency_key, command_hash, recorded_at)
         VALUES (?, ?, ?, ?)
       `).run(input.run.runId, input.event.idempotencyKey, input.commandHash, input.appendedAt);
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.run.workspaceId);
+      if (consent) {
+        const accountantMandate = this.#activeMandateForFacturaEEvent(input.event);
+        const domainEvents = createFacturaEAgentTaxDomainEvents({
+          run: input.run,
+          event: input.event,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          accountantMandate,
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        for (const domainEvent of domainEvents) {
+          this.#appendTaxDomainEventInTransaction(domainEvent, input.appendedAt);
+        }
+      }
       return input.run;
     });
     return transaction();
+  }
+
+  #activeMandateForFacturaEEvent(
+    event: FacturaEAgentEventV1,
+  ): Readonly<{ mandateId: string }> | null {
+    const scope = accountantMandateScopeForFacturaEEvent(event);
+    if (!scope) return null;
+    const rows = this.#db.query<{ mandate_json: string }, [string, string]>(`
+      SELECT mandate_json
+      FROM accountant_mandates
+      WHERE workspace_id = ? AND accountant_actor_id = ?
+      ORDER BY granted_at DESC, mandate_id ASC
+    `).all(event.workspaceId, event.actorId);
+    for (const row of rows) {
+      const mandate = JSON.parse(row.mandate_json) as AccountantMandateV1;
+      try {
+        assertActiveAccountantMandate(mandate, {
+          workspaceId: event.workspaceId,
+          accountantActorId: event.actorId,
+          scope,
+          at: event.occurredAt,
+        });
+        return { mandateId: mandate.mandateId };
+      } catch {
+        // Continue looking: an older mandate can still be active after a
+        // newer, narrower grant expired or was revoked.
+      }
+    }
+    throw new Error('ACCOUNTANT_MANDATE_REQUIRED_FOR_DOMAIN_EVENT');
   }
 
   getFacturaEAgentRun(runId: string): FacturaEAgentRunV1 | null {
@@ -1838,6 +2133,25 @@ export class TaxProfileStore {
         JSON.stringify(input.event),
         input.appendedAt,
       );
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.run.workspaceId);
+      if (consent) {
+        const domainEvent = createArcaOnboardingTaxDomainEvent({
+          run: input.run,
+          event: input.event,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        if (domainEvent) this.#appendTaxDomainEventInTransaction(domainEvent, input.appendedAt);
+      }
       return input.run;
     });
     return transaction();
