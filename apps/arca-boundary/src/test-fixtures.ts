@@ -14,6 +14,8 @@ export function authorityPayload(overrides: Partial<AuthorityPayload> = {}): Aut
     version: 'wsfex-authority-payload-v1',
     canonicalDocument,
     issuerProfileRef: 'issuer://workspace-1/primary',
+    taxpayerReferenceHash: canonicalDocument.taxpayerReferenceHash,
+    representedCuitCommitment: hashCanonical('represented-cuit:20123456786'),
     subjectId: 'intent-1',
     intentHash: hashCanonical(canonicalDocument),
     requestId: '101',

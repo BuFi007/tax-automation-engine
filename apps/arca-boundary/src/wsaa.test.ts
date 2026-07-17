@@ -16,6 +16,7 @@ describe('official WSAA LoginCms transport', () => {
     const client = new SoapWsaaLoginClient(async (input, init) => {
       capturedUrl = String(input);
       capturedBody = String(init?.body);
+      expect(init?.redirect).toBe('error');
       expect(new Headers(init?.headers).get('soapaction')).toBe('""');
       return wsaaResponse({ token: 'token-secret', sign: 'sign-secret', expiresAt: '2026-07-11T20:00:00.000Z' });
     });
@@ -93,6 +94,18 @@ describe('official WSAA LoginCms transport', () => {
       { status: 200 }
     ));
     await expect(client.login({ credential: validated.credential, service: 'wsfex', now: NOW })).rejects.toThrow('WSAA_LOGIN_RESPONSE_UNSAFE_XML');
+  });
+
+  test('cancels an oversized chunked WSAA response before buffering it', async () => {
+    const validated = credential();
+    let cancelled = false;
+    const client = new SoapWsaaLoginClient(async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(600_000)); },
+      cancel() { cancelled = true; },
+    })));
+    await expect(client.login({ credential: validated.credential, service: 'wsfex', now: NOW }))
+      .rejects.toThrow('WSAA_RESPONSE_TOO_LARGE');
+    expect(cancelled).toBe(true);
   });
 });
 

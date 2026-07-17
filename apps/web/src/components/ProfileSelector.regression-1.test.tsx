@@ -1,28 +1,26 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  argentinaTaxWidgetSnapshotV1Fixture,
+  unitedStatesTaxWidgetSnapshotV1Fixture,
+} from '@tax-engine/browser-contracts/fixtures';
 
 import { ProfileSelector } from './ProfileSelector';
 
-// Regression: ISSUE-003 — the regime selector was rendered disabled
+// Regression: ISSUE-003 — the old demo selector created client-only state.
 // Found by /qa on 2026-07-10
 // Report: .gstack/qa-reports/qa-report-localhost-2026-07-10.md
-test('renders selectable Argentina and United States regime catalogues', () => {
-  const render = (jurisdiction: 'AR' | 'US', selectedRegime: string) => renderToStaticMarkup(
-    <ProfileSelector
-      jurisdiction={jurisdiction}
-      selectedRegime={selectedRegime}
-      onJurisdictionChange={() => undefined}
-      onRegimeChange={() => undefined}
-    />
+test('renders only the persisted Argentina and United States profile projection', () => {
+  const render = (profile: typeof argentinaTaxWidgetSnapshotV1Fixture.profile) => renderToStaticMarkup(
+    <ProfileSelector profile={profile} />
   );
 
-  const argentina = render('AR', 'monotributo_exportador');
-  expect(argentina).toContain('value="sociedad_mipyme"');
-  expect(argentina).not.toMatch(/<select[^>]*disabled/);
+  const argentina = render(argentinaTaxWidgetSnapshotV1Fixture.profile);
+  expect(argentina).toContain('Argentina');
+  expect(argentina).toContain('monotributo exportador');
 
-  const unitedStates = render('US', 'c_corp');
-  expect(unitedStates).toContain('value="llc_multi_member"');
-  expect(unitedStates).toContain('value="s_corp"');
-  expect(unitedStates).toContain('value="c_corp" selected=""');
-  expect(unitedStates).not.toMatch(/<select[^>]*disabled/);
+  const unitedStates = render(unitedStatesTaxWidgetSnapshotV1Fixture.profile);
+  expect(unitedStates).toContain('United States');
+  expect(unitedStates).toContain('llc single member foreign owned');
+  expect(`${argentina}${unitedStates}`).not.toContain('<select');
 });

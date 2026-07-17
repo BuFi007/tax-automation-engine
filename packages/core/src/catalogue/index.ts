@@ -1,6 +1,7 @@
 export * from './types';
 export * from './argentina';
 export * from './united-states';
+export * from './calendar';
 
 import { ArgentinaJurisdictionProvider } from './argentina';
 import type { TaxJurisdictionProvider } from './types';

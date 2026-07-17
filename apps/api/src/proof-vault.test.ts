@@ -9,7 +9,9 @@ describe('Reclaim proof vault boundary', () => {
     const proof = readinessProof();
     const gateway = new HttpReclaimProofVault(
       { baseUrl: 'https://proof-vault.test', token: 'vault-token', retentionPolicyId: 'tax-evidence-v1', environment: 'production' },
-      async (_url, init) => {
+      async (url, init) => {
+        expect(String(url)).toBe('https://proof-vault.test/v1/reclaim-proofs');
+        expect(init?.redirect).toBe('error');
         expect(new Headers(init?.headers).get('authorization')).toBe('Bearer vault-token');
         const body = JSON.parse(String(init?.body));
         expect(body.proofPayload).toEqual({ rawProofMarker: 'external-only' });
@@ -40,6 +42,44 @@ describe('Reclaim proof vault boundary', () => {
       })
     );
     expect(gateway.storeVerifiedProof({ run: run(), session: session(), proof, proofPayload: {} })).rejects.toThrow('RECLAIM_PROOF_VAULT_HASH_MISMATCH');
+  });
+
+  test('rejects credential-bearing base URLs and a response from another origin', async () => {
+    expect(() => new HttpReclaimProofVault({
+      baseUrl: 'https://token@proof-vault.test?leak=yes', token: 'token', retentionPolicyId: 'policy', environment: 'production',
+    })).toThrow('RECLAIM_PROOF_VAULT_URL_INVALID');
+
+    const proof = readinessProof();
+    const gateway = new HttpReclaimProofVault(
+      { baseUrl: 'https://proof-vault.test', token: 'token', retentionPolicyId: 'policy', environment: 'production' },
+      async () => ({
+        ok: true,
+        status: 200,
+        redirected: false,
+        url: 'https://attacker.test/v1/reclaim-proofs',
+      }) as Response,
+    );
+    await expect(gateway.storeVerifiedProof({ run: run(), session: session(), proof, proofPayload: {} }))
+      .rejects.toThrow('RECLAIM_PROOF_VAULT_RESPONSE_ORIGIN_INVALID');
+  });
+
+  test('rejects a chunked oversized receipt before buffering the full response', async () => {
+    const proof = readinessProof();
+    let cancelled = false;
+    const gateway = new HttpReclaimProofVault(
+      { baseUrl: 'https://proof-vault.test', token: 'token', retentionPolicyId: 'policy', environment: 'production' },
+      async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(33_000));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      })),
+    );
+    await expect(gateway.storeVerifiedProof({ run: run(), session: session(), proof, proofPayload: {} }))
+      .rejects.toThrow('RECLAIM_PROOF_VAULT_RESPONSE_TOO_LARGE');
+    expect(cancelled).toBe(true);
   });
 });
 

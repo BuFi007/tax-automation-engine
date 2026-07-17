@@ -9,6 +9,7 @@ import {
   hashScope,
   money,
   multiplyMoney,
+  sumMoney,
 } from './index';
 
 describe('deterministic financial core', () => {
@@ -19,6 +20,14 @@ describe('deterministic financial core', () => {
       currency: 'ARS',
     });
     expect(() => addMoney(money('1', 'USD'), money('1', 'ARS'))).toThrow('Currency mismatch');
+    const boundary = `${'9'.repeat(60)}.${'1'.repeat(30)}`;
+    expect(addMoney(money(boundary, 'ARS'), money('0', 'ARS'))).toEqual({ decimal: boundary, currency: 'ARS' });
+    expect(sumMoney(Array.from({ length: 10_000 }, () => money('0.000000000000000001', 'USD')), 'USD'))
+      .toEqual({ decimal: '0.00000000000001', currency: 'USD' });
+    expect(addMoney(money('0.000001', 'USDC'), money('1.000001', 'USDC')))
+      .toEqual({ decimal: '1.000002', currency: 'USDC' });
+    expect(() => money('1'.repeat(61), 'ARS')).toThrow('Invalid decimal money');
+    expect(() => money(`0.${'1'.repeat(31)}`, 'ARS')).toThrow('Invalid decimal money');
   });
 
   test('requires an active, untampered consent scope', () => {

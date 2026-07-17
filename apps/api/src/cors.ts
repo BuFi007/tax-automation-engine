@@ -14,8 +14,8 @@ export function applyCors(response: Response, request: Request): Response {
 
   if (responseOrigin) response.headers.set('Access-Control-Allow-Origin', responseOrigin);
   response.headers.append('Vary', 'Origin');
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Tax-Tenant-Principal, X-Tax-Tenant-Signature');
+  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   return response;
 }
 

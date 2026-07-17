@@ -15,15 +15,18 @@
     "dev:wsfecred": "bun --filter @tax-engine/wsfecred dev",
     "dev:arca-boundary": "bun --filter @tax-engine/arca-boundary dev",
     "dev:proof-vault": "bun --filter @tax-engine/reclaim-proof-vault dev",
-    "build": "bun run --filter '*' build",
-    "typecheck": "bun run --filter '*' typecheck",
-    "test": "bun test",
-    "check": "bun run typecheck && bun test && bun run build",
+    "build": "bun --filter @tax-engine/browser-contracts build && bun run --filter '*' build",
+    "typecheck": "bun --filter @tax-engine/browser-contracts build && bun run --filter '*' typecheck",
+    "test": "bun --filter @tax-engine/browser-contracts build && bun test",
+    "check": "bun run typecheck && bun run build && bun test",
+    "certify:tax-domain-event": "bun --filter @tax-engine/api certify:tax-domain-event",
     "homologation:preflight": "bun --filter @tax-engine/api homologation:preflight",
     "homologation:probe-signer": "bun --filter @tax-engine/api homologation:probe-signer",
     "homologation:probe-wsfe-signer": "bun --filter @tax-engine/api homologation:probe-wsfe-signer",
     "homologation:probe-proof-vault": "bun --filter @tax-engine/api homologation:probe-proof-vault",
-    "homologation:validate": "bun --filter @tax-engine/api homologation:validate"
+    "homologation:validate": "bun --filter @tax-engine/api homologation:validate",
+    "release:backend": "bun apps/api/src/backend-release-gate-cli.ts",
+    "release:backend:software": "bun apps/api/src/backend-release-gate-cli.ts --software-only"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5",

@@ -19,11 +19,12 @@ describe('encrypted Reclaim proof custody', () => {
     const input = request();
     const receipt = store.store(input, NOW);
     expect(receipt.artifactHash).toBe(input.proofHash);
-    expect(store.resolve(receipt.opaqueReference, minute(1)).proofPayload).toEqual(input.proofPayload);
+    expect(() => store.resolve('another-workspace', receipt.opaqueReference, minute(1))).toThrow('RECLAIM_PROOF_NOT_FOUND');
+    expect(store.resolve(input.workspaceId, receipt.opaqueReference, minute(1)).proofPayload).toEqual(input.proofPayload);
     store.close(); stores.splice(stores.indexOf(store), 1);
     const databaseBytes = readFileSync(databasePath).toString('utf8');
     expect(databaseBytes).not.toContain('raw-secret-marker');
-    expect(() => storeForKey(Buffer.alloc(32, 9), databasePath).resolve(receipt.opaqueReference, minute(1))).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
+    expect(() => storeForKey(Buffer.alloc(32, 9), databasePath).resolve(input.workspaceId, receipt.opaqueReference, minute(1))).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
   });
 
   test('rejects hash substitution and binds one immutable artifact to a session', () => {
@@ -54,11 +55,12 @@ describe('encrypted Reclaim proof custody', () => {
     const { store } = setup(); store.putPolicy(policy({ retentionDays: 1 }), NOW);
     expect(() => store.store({ ...request(), purpose: 'arca_cae_constatement' }, NOW)).toThrow('RETENTION_POLICY_PURPOSE_NOT_ALLOWED');
     const receipt = store.store(request(), NOW);
+    expect(() => store.erase('another-workspace', receipt.opaqueReference, minute(1), 'user_request')).toThrow('RECLAIM_PROOF_NOT_FOUND');
     store.erase('workspace-1', receipt.opaqueReference, minute(1), 'user_request');
-    expect(() => store.resolve(receipt.opaqueReference, minute(2))).toThrow('RECLAIM_PROOF_NOT_FOUND');
+    expect(() => store.resolve('workspace-1', receipt.opaqueReference, minute(2))).toThrow('RECLAIM_PROOF_NOT_FOUND');
     const second = store.store(request({ sessionId: 'session-2' }), NOW);
-    expect(() => store.resolve(second.opaqueReference, '2026-07-13T00:00:00.000Z')).toThrow('RECLAIM_PROOF_EXPIRED');
-    expect(() => store.resolve(second.opaqueReference, '2026-07-13T00:01:00.000Z')).toThrow('RECLAIM_PROOF_NOT_FOUND');
+    expect(() => store.resolve('workspace-1', second.opaqueReference, '2026-07-13T00:00:00.000Z')).toThrow('RECLAIM_PROOF_EXPIRED');
+    expect(() => store.resolve('workspace-1', second.opaqueReference, '2026-07-13T00:01:00.000Z')).toThrow('RECLAIM_PROOF_NOT_FOUND');
   });
 });
 

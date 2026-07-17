@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["bun"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "tsup.config.ts"],
+  "exclude": ["dist", "node_modules"]
+}

@@ -14,3 +14,20 @@ Contabilium support until an authorized sandbox/test tenant proves:
 The `ContabiliumSandboxProvider` returns `sandbox_required` without fixture-backed
 authorized tenant data. Credentials must never appear in fixtures, browser code,
 logs, or this document.
+
+`ContabiliumRestSandboxProvider` is the real, server-only REST reader used to run
+that gate. It follows Contabilium's documented client-credentials flow, pins the
+Argentina API origin, checks the returned account ID + CUIT against a configured
+commitment, bounds redirects/timeouts/response size, and normalizes invoice plus
+fiscal-document reads without treating an ERP balance as canonical settlement.
+It cannot be constructed without an approved-sandbox evidence hash.
+
+The current public Postman contract documents searchable sales invoices and
+individual collection lookup, but it does not document an enumerable purchase or
+collection feed. Therefore the adapter reports `bills` and `payments` as
+`unsupported`, and `counterparties` plus `reconciliation` as `partial`. An
+authorized sandbox must prove additional endpoints and allocation semantics before
+those states can advance. Provider documentation reviewed 2026-07-16:
+
+- https://ayuda.contabilium.com/hc/es/articles/360013444234-Documentaci%C3%B3n-de-la-API
+- https://documenter.getpostman.com/view/17702437/2s93shz9yz

@@ -8,7 +8,7 @@ import { authorityPayload, certificateBundle, CUIT, NOW, wsfeAuthorityPayload } 
 import type { WsaaLoginClient } from './wsaa';
 
 describe('ARCA authority boundary service', () => {
-  test('limits raw payload retention to seven days', () => {
+  test('caps the caller-selected minimum retention horizon at seven days', () => {
     const service = boundary().service;
     const request = {
       version: 'authority-payload-store-v1' as const,
@@ -56,6 +56,8 @@ describe('ARCA authority boundary service', () => {
     const cached = await fixture.service.getTicket(ticketRequest, NOW.toISOString());
     expect(first).toEqual(concurrent);
     expect(cached).toEqual(first);
+    expect(first.representedCuitCommitment).toBe(provisioned.representedCuitCommitment);
+    expect(first.representedCuitCommitment).toMatch(/^[a-f0-9]{64}$/);
     expect(fixture.wsaa.calls).toBe(1);
     await expect(fixture.service.getTicket({ ...ticketRequest, workspaceId: 'workspace-other' }, NOW.toISOString())).rejects.toThrow('WSAA_ISSUER_NOT_FOUND');
     await expect(fixture.service.health('homologation', NOW.toISOString())).resolves.toEqual({

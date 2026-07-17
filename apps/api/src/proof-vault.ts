@@ -1,11 +1,20 @@
-import { hashCanonical, type FacturaEAgentRunV1, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type VerifiedReclaimProofV1 } from '@tax-engine/core';
+import { hashCanonical, type ArcaOnboardingReclaimSessionV1, type ArcaOnboardingRunV1, type FacturaEAgentRunV1, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type VerifiedReclaimProofV1 } from '@tax-engine/core';
 import { z } from 'zod';
+
+import type { VerifiedArcaOnboardingProof } from './arca-onboarding-reclaim';
+import { readBoundedBody } from './bounded-body';
 
 export interface ReclaimProofVault {
   storeVerifiedProof(input: Readonly<{
     run: FacturaEAgentRunV1;
     session: ReclaimSessionReferenceV1;
     proof: VerifiedReclaimProofV1;
+    proofPayload: unknown;
+  }>): Promise<ReclaimProofCustodyReceiptV1>;
+  storeVerifiedArcaOnboardingProof?(input: Readonly<{
+    run: ArcaOnboardingRunV1;
+    session: ArcaOnboardingReclaimSessionV1;
+    proof: VerifiedArcaOnboardingProof;
     proofPayload: unknown;
   }>): Promise<ReclaimProofCustodyReceiptV1>;
 }
@@ -22,6 +31,8 @@ const receiptSchema = z.object({
 }).strict();
 
 export class HttpReclaimProofVault implements ReclaimProofVault {
+  private readonly endpoint: URL;
+
   constructor(
     private readonly config: Readonly<{
       baseUrl: string;
@@ -31,7 +42,19 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     }>,
     private readonly fetcher: ProofVaultFetch = (input, init) => fetch(input, init)
   ) {
-    if (!config.baseUrl.startsWith('https://')) throw new Error('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
+    let baseUrl: URL;
+    try {
+      baseUrl = new URL(config.baseUrl);
+    } catch {
+      throw new Error('RECLAIM_PROOF_VAULT_URL_INVALID');
+    }
+    if (baseUrl.protocol !== 'https:') throw new Error('RECLAIM_PROOF_VAULT_HTTPS_REQUIRED');
+    if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) {
+      throw new Error('RECLAIM_PROOF_VAULT_URL_INVALID');
+    }
+    const basePath = baseUrl.pathname.replace(/\/$/, '');
+    baseUrl.pathname = `${basePath}/v1/reclaim-proofs`;
+    this.endpoint = baseUrl;
   }
 
   static fromEnvironment(): HttpReclaimProofVault | null {
@@ -53,26 +76,70 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     proof: VerifiedReclaimProofV1;
     proofPayload: unknown;
   }>): Promise<ReclaimProofCustodyReceiptV1> {
+    return this.store({
+      runId: input.run.runId,
+      workspaceId: input.run.workspaceId,
+      sessionId: input.session.sessionId,
+      purpose: input.session.purpose,
+      providerId: input.proof.providerId,
+      providerVersion: input.proof.providerVersion,
+      proofHash: input.proof.proofHash,
+      verifiedAt: input.proof.verifiedAt,
+      proofPayload: input.proofPayload,
+    });
+  }
+
+  async storeVerifiedArcaOnboardingProof(input: Readonly<{
+    run: ArcaOnboardingRunV1;
+    session: ArcaOnboardingReclaimSessionV1;
+    proof: VerifiedArcaOnboardingProof;
+    proofPayload: unknown;
+  }>): Promise<ReclaimProofCustodyReceiptV1> {
+    return this.store({
+      runId: input.run.onboardingId,
+      workspaceId: input.run.workspaceId,
+      sessionId: input.session.sessionId,
+      purpose: 'arca_onboarding_readiness',
+      providerId: input.proof.providerId,
+      providerVersion: input.proof.providerVersion,
+      proofHash: input.proof.proofHash,
+      verifiedAt: input.proof.verifiedAt,
+      proofPayload: input.proofPayload,
+    });
+  }
+
+  private async store(input: Readonly<{
+    runId: string;
+    workspaceId: string;
+    sessionId: string;
+    purpose: string;
+    providerId: string;
+    providerVersion: string;
+    proofHash: string;
+    verifiedAt: string;
+    proofPayload: unknown;
+  }>): Promise<ReclaimProofCustodyReceiptV1> {
     let response: Response;
     try {
-      response = await this.fetcher(`${this.config.baseUrl.replace(/\/$/, '')}/v1/reclaim-proofs`, {
+      response = await this.fetcher(this.endpoint, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
-          'idempotency-key': hashCanonical({ workspaceId: input.run.workspaceId, sessionId: input.session.sessionId, purpose: input.session.purpose }),
+          'idempotency-key': hashCanonical({ workspaceId: input.workspaceId, sessionId: input.sessionId, purpose: input.purpose }),
         },
         body: JSON.stringify({
         version: 'reclaim-proof-custody-request-v1',
-        runId: input.run.runId,
-        workspaceId: input.run.workspaceId,
-        sessionId: input.session.sessionId,
-        purpose: input.session.purpose,
-        providerId: input.proof.providerId,
-        providerVersion: input.proof.providerVersion,
-        proofHash: input.proof.proofHash,
+        runId: input.runId,
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        purpose: input.purpose,
+        providerId: input.providerId,
+        providerVersion: input.providerVersion,
+        proofHash: input.proofHash,
         retentionPolicyId: this.config.retentionPolicyId,
-        verifiedAt: input.proof.verifiedAt,
+        verifiedAt: input.verifiedAt,
         proofPayload: input.proofPayload,
         }),
         signal: AbortSignal.timeout(30_000),
@@ -80,11 +147,28 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     } catch {
       throw new Error('RECLAIM_PROOF_VAULT_TRANSPORT_FAILED');
     }
+    if (response.redirected) throw new Error('RECLAIM_PROOF_VAULT_REDIRECT_REJECTED');
+    if (response.url) {
+      let responseUrl: URL;
+      try {
+        responseUrl = new URL(response.url);
+      } catch {
+        throw new Error('RECLAIM_PROOF_VAULT_RESPONSE_ORIGIN_INVALID');
+      }
+      if (responseUrl.origin !== this.endpoint.origin) {
+        throw new Error('RECLAIM_PROOF_VAULT_RESPONSE_ORIGIN_INVALID');
+      }
+    }
     if (!response.ok) throw new Error(`RECLAIM_PROOF_VAULT_REJECTED_${response.status}`);
-    const raw = await response.text();
-    if (Buffer.byteLength(raw) > 65_536) throw new Error('RECLAIM_PROOF_VAULT_RESPONSE_TOO_LARGE');
-    const receipt = receiptSchema.parse(JSON.parse(raw) as unknown);
-    if (receipt.artifactHash !== input.proof.proofHash) throw new Error('RECLAIM_PROOF_VAULT_HASH_MISMATCH');
+    const raw = await readBoundedBody(response, 65_536, 'RECLAIM_PROOF_VAULT_RESPONSE_TOO_LARGE');
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error('RECLAIM_PROOF_VAULT_RESPONSE_INVALID');
+    }
+    const receipt = receiptSchema.parse(payload);
+    if (receipt.artifactHash !== input.proofHash) throw new Error('RECLAIM_PROOF_VAULT_HASH_MISMATCH');
     if (receipt.retentionPolicyId !== this.config.retentionPolicyId) throw new Error('RECLAIM_PROOF_VAULT_RETENTION_POLICY_MISMATCH');
     return receipt;
   }

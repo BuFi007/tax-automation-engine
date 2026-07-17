@@ -53,7 +53,16 @@ also checks the tenant's WSFEX point of sale through the business service.
 
 Associated export notes 20/21 retain independent approval, authority, CAE, request-recovery, and original-document association inside the same immutable case. A derived exact-decimal ledger recomputes the authorized net balance without rewriting the invoice or settlement history. Raw verified Reclaim artifacts can cross only into the external encrypted proof-vault boundary; Motora stores normalized claims, attestation policy/results, and the opaque custody receipt.
 
-The UI receives a `TaxWidgetSnapshotV1`, never raw evidence. Each conclusion carries source references, freshness, confidence, consent scope hash, evidence hash, accountant review state, rule versions, and limitations.
+The UI receives a stored `TaxWidgetSnapshotReceiptV1` containing its `TaxWidgetSnapshotV1`, never raw evidence. The receipt binds the named projection (defaulting to `default`) to the stored snapshot, input, and configuration hashes, evidence generation, generation/as-of/expiry timestamps, and current-read validity. Each conclusion carries source references, freshness, confidence, consent scope hash, evidence hash, accountant review state, rule versions, and limitations.
+
+The host injects a short-lived `snapshot:read` tenant principal as
+`window.__TAX_BOOTSTRAP__.snapshotAuthority`. The web app reads only
+`/v1/browser/snapshots/:workspaceId/:projectionKey`, validates the complete
+browser receipt, binds it again to the requested workspace/projection, and uses
+`cache: no-store`. Missing, stale, expired, malformed, or unauthorized reads
+remain visible states; there is no production fixture fallback. ARCA onboarding
+uses a separately scoped `arca:onboard` principal and cannot inherit snapshot
+read authority.
 
 The system models these lifecycle dimensions independently:
 

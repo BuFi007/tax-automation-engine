@@ -2,9 +2,18 @@ import { describe, expect, test } from 'bun:test';
 
 import { hashCanonical } from '@tax-engine/core';
 
-import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence } from './homologation';
+import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologationSigner, probeWsfexHomologationSigner, validateHomologationEvidence, validateLiveWsfexSmoke } from './homologation';
 
 describe('ARCA homologation acceptance harness', () => {
+  test('keeps live smoke blocked when ARCA reports zero FEEWS points', async () => {
+    const smoke = await Bun.file(new URL('../../../providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json', import.meta.url)).json();
+    const report = validateLiveWsfexSmoke(smoke);
+    expect(report.state).toBe('blocked');
+    expect(report.failedGateIds).toContain('feews_point_of_sale_missing');
+    expect(report.safeSummary.activeFeeWsPointCount).toBe(0);
+    expect(report.safeSummary.productionEnabled).toBe(false);
+  });
+
   test('reports missing authority and provider assets without disclosing configured values', () => {
     const preflight = buildHomologationPreflight({
       ARCA_SIGNER_TOKEN: 'must-not-leak',
@@ -15,6 +24,9 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.productionActivationAllowed).toBe(false);
     expect(JSON.stringify(preflight)).not.toContain('must-not-leak');
     expect(preflight.gates.find(gate => gate.id === 'explicit_homologation_authority')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'wsfe_certificate_delegation')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'feews_point_of_sale')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'reviewed_reclaim_onboarding_provider')?.state).toBe('missing');
   });
 
   test('becomes ready only with reviewed HTTPS homologation boundaries and explicit authority', () => {
@@ -22,10 +34,14 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.state).toBe('ready_for_authorized_homologation');
     expect(preflight.gates.every(gate => gate.state === 'ready')).toBe(true);
     expect(buildHomologationPreflight({ ...readyEnvironment(), ARCA_ENVIRONMENT: 'production', TAX_ENGINE_PRODUCTION_APPROVED: 'true' }).state).toBe('blocked');
+    expect(buildHomologationPreflight({
+      ...readyEnvironment(),
+      TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
+    }).gates.find(gate => gate.id === 'tenant_principal_boundaries')?.state).toBe('missing');
   });
 
   test('accepts only redacted evidence with complete Reclaim, WSFEX, journey, and human-review coverage', () => {
-    const accepted = validateHomologationEvidence(validEvidence());
+    const accepted = validateHomologationEvidence(validEvidence(), readyEnvironment());
     expect(accepted).toEqual(expect.objectContaining({ state: 'structurally_complete_for_human_production_review', failedGateIds: [] }));
     expect(accepted.safeSummary.productionEnabled).toBe(false);
     expect(accepted.safeSummary.wsfeDocumentTypes).toEqual([11, 12, 13]);
@@ -34,7 +50,7 @@ describe('ARCA homologation acceptance harness', () => {
     const evidence = validEvidence();
     const rejected = validateHomologationEvidence({
       ...evidence,
-      reclaim: [evidence.reclaim[0], evidence.reclaim[0], evidence.reclaim[2]],
+      reclaim: [evidence.reclaim[1], evidence.reclaim[1], evidence.reclaim[2], evidence.reclaim[3]],
       wsfex: evidence.wsfex.map(item => item.documentType === 21
         ? { ...item, mismatchedEchoRejected: false }
         : item.documentType === 20 ? { ...item, canonicalPayloadMismatchRejected: false } : item),
@@ -42,12 +58,28 @@ describe('ARCA homologation acceptance harness', () => {
         ? { ...item, caeAloneRejected: false }
         : item.documentType === 12 ? { ...item, reprocessObservedForResend: false } : item),
       reviews: { ...evidence.reviews, securityAccepted: false },
-    });
+    }, readyEnvironment());
     expect(rejected.state).toBe('rejected');
     expect(rejected.failedGateIds).toEqual(expect.arrayContaining([
       'reclaim_coverage', 'wsfex_recovery_or_echo_gate', 'wsfex_boundary_gate',
       'wsfe_recovery_or_echo_gate', 'wsfe_domestic_discipline_gate', 'human_review_gate',
     ]));
+    expect(accepted.safeSummary.reclaimPurposes).toEqual([
+      'arca_onboarding_readiness',
+      'arca_taxpayer_readiness',
+      'arca_cae_constatement',
+      'arca_adjustment_constatement',
+    ]);
+
+    expect(validateHomologationEvidence(validEvidence(), {}).failedGateIds).toContain(
+      'reclaim_provider_review_binding',
+    );
+    expect(validateHomologationEvidence({
+      ...validEvidence(),
+      reclaim: validEvidence().reclaim.map(item => item.purpose === 'arca_onboarding_readiness'
+        ? { ...item, providerIdHash: hashCanonical('another-provider') }
+        : item),
+    }, readyEnvironment()).failedGateIds).toContain('reclaim_provider_identity_binding');
   });
 
   test('probes only a homologation signer that reports delegated certificate and WSAA readiness', async () => {
@@ -115,7 +147,13 @@ function readyEnvironment(): Record<string, string> {
     TAX_ENGINE_USER_APPROVAL_TOKEN: 'user-token',
     TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN: 'accountant-token',
     TAX_ENGINE_EVIDENCE_INGEST_TOKEN: 'ingest-token',
+    TAX_ENGINE_CONSENT_EVENT_TOKEN: 'consent-token',
+    TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN: 'snapshot-projector-token',
     TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN: 'authority-payload-token',
+    TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
+    TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET: 'snapshot-projector-principal-secret',
+    TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET: 'publisher-principal-secret',
+    TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'consent-principal-secret',
     RECLAIM_APP_ID: 'app-id',
     RECLAIM_APP_SECRET: 'app-secret',
     RECLAIM_CALLBACK_BASE_URL: 'https://tax-api.example.test',
@@ -123,6 +161,8 @@ function readyEnvironment(): Record<string, string> {
     RECLAIM_ARCA_TAXPAYER_PROVIDER_ID: 'provider-readiness',
     RECLAIM_ARCA_CAE_PROVIDER_REVIEWED: 'true',
     RECLAIM_ARCA_CAE_PROVIDER_ID: 'provider-cae',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED: 'true',
+    RECLAIM_ARCA_ONBOARDING_PROVIDER_ID: 'provider-onboarding',
     RECLAIM_PROOF_VAULT_URL: 'https://proof-vault.example.test',
     RECLAIM_PROOF_VAULT_TOKEN: 'vault-token',
     RECLAIM_PROOF_RETENTION_POLICY_ID: 'tax-evidence-v1',
@@ -133,6 +173,8 @@ function readyEnvironment(): Record<string, string> {
     ARCA_BOUNDARY_URL: 'https://arca-boundary.example.test',
     ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN: 'payload-writer-token',
     ARCA_WSFEX_DELEGATION_CONFIRMED: 'true',
+    ARCA_WSFE_DELEGATION_CONFIRMED: 'true',
+    ARCA_FEEWS_POINT_OF_SALE_CONFIRMED: 'true',
     TAX_ENGINE_PRODUCTION_APPROVED: 'false',
   };
 }
@@ -145,6 +187,7 @@ function validEvidence() {
     authorityEnvironment: 'homologacion' as const,
     effectiveRuleVersionIds: ['ar-rg-4401-factura-e-v1', 'arca-wsfex-3.1.1', 'bcra-a8330-service-exports-v1'],
     reclaim: [
+      { purpose: 'arca_onboarding_readiness' as const, providerIdHash: hash('provider-onboarding'), providerVersion: '1.0.0', proofHash: hash('onboarding-proof'), custodyReceiptHash: hash('onboarding-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
       { purpose: 'arca_taxpayer_readiness' as const, providerIdHash: hash('provider-readiness'), providerVersion: '1.0.0', proofHash: hash('readiness-proof'), custodyReceiptHash: hash('readiness-custody'), teeRequired: false, teeVerified: false, negativeBindingCasesRejected: true },
       { purpose: 'arca_cae_constatement' as const, providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('invoice-proof'), custodyReceiptHash: hash('invoice-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },
       { purpose: 'arca_adjustment_constatement' as const, providerIdHash: hash('provider-cae'), providerVersion: '1.0.0', proofHash: hash('adjustment-proof'), custodyReceiptHash: hash('adjustment-custody'), teeRequired: true, teeVerified: true, negativeBindingCasesRejected: true },

@@ -2,11 +2,14 @@ import {
   issuerProvisionRequestSchema,
   issuerRevokeRequestSchema,
   payloadResolveRequestSchema,
+  payloadRetireRequestSchema,
   payloadRevokeRequestSchema,
   payloadStoreRequestSchema,
+  payloadTerminalRequestSchema,
   ticketRequestSchema,
   wsaaServiceSchema,
 } from './contracts';
+import { readBoundedBody } from './bounded-body';
 import { safeTokenEqual } from './crypto';
 import type { ArcaBoundaryService } from './service';
 
@@ -38,11 +41,8 @@ export function createBoundaryHandler(
       const requiredToken = tokenForPath(url.pathname, tokens);
       if (!requiredToken) return json({ error: 'NOT_FOUND' }, 404);
       if (!authorized(request, requiredToken)) return json({ error: 'UNAUTHORIZED' }, 401);
-      const declaredBytes = Number(request.headers.get('content-length') ?? 0);
       const maximumBytes = url.pathname === '/v1/wsaa/issuers' ? 131_072 : 1_048_576;
-      if (declaredBytes > maximumBytes) return json({ error: 'ARCA_BOUNDARY_REQUEST_TOO_LARGE' }, 413);
-      const raw = await request.text();
-      if (Buffer.byteLength(raw) > maximumBytes) return json({ error: 'ARCA_BOUNDARY_REQUEST_TOO_LARGE' }, 413);
+      const raw = await readBoundedBody(request, maximumBytes, 'ARCA_BOUNDARY_REQUEST_TOO_LARGE');
       const body: unknown = JSON.parse(raw);
 
       if (url.pathname === '/v1/authority-payloads') {
@@ -59,6 +59,16 @@ export function createBoundaryHandler(
         if (!authorized(request, tokens.payloadWriter)) return json({ error: 'UNAUTHORIZED' }, 401);
         const input = payloadRevokeRequestSchema.parse(body);
         return json(service.revokePayload(input.workspaceId, input.reference, occurredAt));
+      }
+      if (url.pathname === '/v1/authority-payloads/terminal') {
+        if (!authorized(request, tokens.payloadWriter)) return json({ error: 'UNAUTHORIZED' }, 401);
+        const input = payloadTerminalRequestSchema.parse(body);
+        return json(service.markPayloadTerminal(input, occurredAt));
+      }
+      if (url.pathname === '/v1/authority-payloads/retire-eligible') {
+        if (!authorized(request, tokens.admin)) return json({ error: 'UNAUTHORIZED' }, 401);
+        payloadRetireRequestSchema.parse(body);
+        return json(service.retireEligiblePayloads(occurredAt));
       }
       if (url.pathname === '/v1/wsaa/tickets') {
         if (!authorized(request, tokens.wsaa)) return json({ error: 'UNAUTHORIZED' }, 401);
@@ -91,8 +101,13 @@ function authorized(request: Request, token: string): boolean {
 }
 
 function tokenForPath(path: string, tokens: BoundaryTokens): string | null {
-  if (path === '/v1/authority-payloads' || path === '/v1/authority-payloads/revoke') return tokens.payloadWriter;
+  if (
+    path === '/v1/authority-payloads'
+    || path === '/v1/authority-payloads/revoke'
+    || path === '/v1/authority-payloads/terminal'
+  ) return tokens.payloadWriter;
   if (path === '/v1/authority-payloads/resolve') return tokens.payloadResolver;
+  if (path === '/v1/authority-payloads/retire-eligible') return tokens.admin;
   if (path === '/v1/wsaa/tickets') return tokens.wsaa;
   if (path === '/v1/wsaa/issuers' || path === '/v1/wsaa/issuers/revoke') return tokens.admin;
   return null;

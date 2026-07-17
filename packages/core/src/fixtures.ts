@@ -20,11 +20,13 @@ export function argentinaProfile(): TaxProfile {
     operatingSubdivisions: ['AR-C'],
     answers: [
       { questionId: 'province', value: 'AR-C', confirmationState: 'user_confirmed' },
+      { questionId: 'iibb_regime', value: 'caba_simplified', confirmationState: 'accountant_confirmed' },
       { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
       { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
+      { questionId: 'monotributo_category', value: 'A', confirmationState: 'user_confirmed' },
       { questionId: 'mipyme_certificate', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'ar-catalogue-2026-07-11',
+    catalogueVersion: 'ar-catalogue-2026-07-16.2',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -43,6 +45,9 @@ export function unitedStatesProfile(): TaxProfile {
     operatingSubdivisions: ['US-DE'],
     answers: [
       { questionId: 'founder_residency', value: 'foreign', confirmationState: 'user_confirmed' },
+      { questionId: 'owner_us_person_status', value: 'non_us_person', confirmationState: 'accountant_confirmed' },
+      { questionId: 'foreign_ownership_25_percent', value: 'yes', confirmationState: 'accountant_confirmed' },
+      { questionId: 'related_party_reportable_transactions', value: 'yes', confirmationState: 'accountant_confirmed' },
       { questionId: 'member_count', value: 1, confirmationState: 'user_confirmed' },
       { questionId: 'tax_classification', value: 'disregarded_entity', confirmationState: 'accountant_confirmed' },
       { questionId: 'formation_state', value: 'US-DE', confirmationState: 'user_confirmed' },
@@ -50,7 +55,7 @@ export function unitedStatesProfile(): TaxProfile {
       { questionId: 'sales_states', value: ['US-CA', 'US-NY'], confirmationState: 'user_confirmed' },
       { questionId: 'has_payroll', value: false, confirmationState: 'user_confirmed' },
     ],
-    catalogueVersion: 'us-catalogue-2026-07-10',
+    catalogueVersion: 'us-catalogue-2026-07-16',
     version: 'profile-v1',
     confirmationState: 'user_confirmed',
   };
@@ -86,11 +91,19 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
   if (jurisdiction === 'AR') {
     if (!regimeId || regimeId === base.regimeId) return base;
     if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
+    const regimeAnswers = [
+      { questionId: 'cuit_verifier_digit', value: '0', confirmationState: 'user_confirmed' as const },
+      { questionId: 'tax_accounting_basis', value: 'needs_review', confirmationState: 'accountant_confirmed' as const },
+      ...(regimeId === 'sociedad_mipyme'
+        ? [{ questionId: 'fiscal_year_end_month', value: 12, confirmationState: 'accountant_confirmed' as const }]
+        : []),
+    ];
     return {
       ...base,
       profileId: `profile:ar-demo:${regimeId}`,
       regimeId,
       entityType: regimeId === 'sociedad_mipyme' ? 'company' : 'individual',
+      answers: [...base.answers, ...regimeAnswers],
     };
   }
 
@@ -106,8 +119,17 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
     ownerTaxResidenceCountries: [founderResidency === 'local' ? 'US' : 'AR'],
     answers: base.answers.map(answer => {
       if (answer.questionId === 'member_count') return { ...answer, value: selectedRegimeId === 'llc_multi_member' ? 2 : 1 };
-      if (answer.questionId === 'tax_classification') return { ...answer, value: selectedRegimeId };
+      if (answer.questionId === 'tax_classification') {
+        const classification = selectedRegimeId === 'llc_single_member'
+          ? 'disregarded_entity'
+          : selectedRegimeId === 'llc_multi_member'
+            ? 'partnership'
+            : selectedRegimeId;
+        return { ...answer, value: classification };
+      }
       if (answer.questionId === 'founder_residency') return { ...answer, value: founderResidency };
+      if (answer.questionId === 'owner_us_person_status') return { ...answer, value: founderResidency === 'local' ? 'us_person' : 'non_us_person' };
+      if (answer.questionId === 'foreign_ownership_25_percent') return { ...answer, value: selectedRegimeId === 'c_corp' && founderResidency === 'local' ? 'no' : 'yes' };
       return answer;
     }),
   };
@@ -118,6 +140,9 @@ function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticA
   const sourceKind = sourceId === 'quickbooks' ? 'accounting' : sourceId === 'magic-inbox' ? 'magic_inbox' : sourceId === 'knowledge-graph' ? 'knowledge_graph' : sourceId === 'financial-analytics' ? 'financial_analytics' : 'bank';
   const records = sourceId === 'bufi-ledger' ? [
     record('invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'invoice', 'revenue', 'inflow', '10000', currency),
+    ...(jurisdiction === 'US'
+      ? [record('settlement-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'settlement', 'none', 'neutral', '10000', currency)]
+      : []),
     record('expense-1', sourceId, sourceKind, jurisdiction, 'event:expense-1', 'expense', 'expense', 'outflow', '2500', currency),
   ] : sourceId === 'quickbooks' ? [
     record('accounting-invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'accounting_entry', 'none', 'neutral', '10000', currency),
@@ -161,6 +186,8 @@ function record(
     expiresAt: null,
     economicEventId,
     economicRole,
+    invoiceAdjustmentKind: null,
+    adjustsEconomicEventId: null,
     countingDimension,
     direction,
     money: { decimal, currency },

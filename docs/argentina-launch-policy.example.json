@@ -1,0 +1,28 @@
+{
+  "version": "argentina-launch-policy-v1",
+  "policyId": "replace-after-professional-review",
+  "policyVersion": "1.0.0",
+  "decisionMemoHash": "REPLACE_WITH_SHA256_OF_SIGNED_DECISION_MEMO",
+  "effectiveFrom": "2026-01-01T00:00:00.000Z",
+  "expiresAt": "2026-12-31T23:59:59.000Z",
+  "boundary": {
+    "taxDocumentIssuer": "represented_taxpayer",
+    "bufiRole": "software_provider",
+    "authorityCredentialCustody": "forbidden",
+    "paymentIntermediation": "external_authorized_provider_only",
+    "invoiceFinance": "licensed_partner_only",
+    "taxPaymentExecution": "disabled"
+  },
+  "sourceRuleIds": [
+    "arca-wsfex-3.1.1",
+    "arca-wsaa-architecture",
+    "bcra-a8330",
+    "bcra-current-exchange-rules"
+  ],
+  "approvals": [
+    { "role": "argentina_accountant", "decision": "approved", "receiptHash": "REPLACE_WITH_SHA256_OF_ACCOUNTANT_APPROVAL", "decidedAt": "2026-01-01T00:00:00.000Z" },
+    { "role": "argentina_legal_counsel", "decision": "approved", "receiptHash": "REPLACE_WITH_SHA256_OF_LEGAL_APPROVAL", "decidedAt": "2026-01-01T00:00:00.000Z" },
+    { "role": "security", "decision": "approved", "receiptHash": "REPLACE_WITH_SHA256_OF_SECURITY_APPROVAL", "decidedAt": "2026-01-01T00:00:00.000Z" },
+    { "role": "product_owner", "decision": "approved", "receiptHash": "REPLACE_WITH_SHA256_OF_OWNER_APPROVAL", "decidedAt": "2026-01-01T00:00:00.000Z" }
+  ]
+}

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { hashCanonical, type FacturaEAgentRunV1, type FacturaEIntentV1, type FacturaEProofPurpose, type ReclaimProofCustodyReceiptV1, type ReclaimSessionReferenceV1, type TaxEvidenceRecord, type VerifiedReclaimProofV1 } from '@tax-engine/core';
 
 import { handleAgentRoute } from './agent-routes';
+import { createTaxAgentPrincipalHeaders } from './agent-principal';
 import type { AuthorityPayloadReceipt, AuthorityPayloadWriter } from './authority-payload';
 import { FacturaEAgentService } from './factura-e-agent';
 import type { AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
@@ -14,21 +15,58 @@ import type { WsfexAuthorityResult, WsfexGateway } from './wsfex';
 const runId = '10000000-0000-4000-8000-000000000001';
 const workspaceId = 'workspace-agent-api';
 const userToken = 'user-token-kept-outside-agent';
+const agentPrincipalSecret = 'open-agents-tax-principal-secret-at-least-32';
 
 describe('Factura E agent HTTP tools', () => {
+  test('requires a live workspace-scoped mandate for accountant approval', async () => {
+    const store = new TaxProfileStore(':memory:');
+    confirmArgentinaProfile(store);
+    const service = new FacturaEAgentService(store, new FakeReclaimGateway(), null, null, false);
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret, accountantMandates: store };
+    const now = new Date().toISOString();
+    const base = { actorId: 'agent:tax', occurredAt: now };
+    service.createRun({ ...base, runId, workspaceId, issuancePath: 'wsfex_delegated', idempotencyKey: 'mandate-create-run' });
+    await service.startReclaim({ ...base, runId, purpose: 'arca_taxpayer_readiness', idempotencyKey: 'mandate-readiness' });
+    await service.ingestReclaimCallback('readiness-session', {}, now);
+    service.draftIntent({ ...base, runId, intent: intent(), asOf: now.slice(0, 10), idempotencyKey: 'mandate-draft-intent' });
+    service.requestApproval({ ...base, runId, idempotencyKey: 'mandate-request-approval' });
+    const pending = service.getRun(runId);
+    service.approveIntent({ ...base, actorId: 'user:owner', runId, intentHash: pending.intentHash!, idempotencyKey: 'mandate-user-approval' });
+
+    await expect(route(service, options, 'POST', `/v1/agent/runs/${runId}/accountant-approval`, {
+      actorId: 'accountant:1', mandateId: 'mandate:missing', intentHash: pending.intentHash, idempotencyKey: 'mandate-accountant-missing',
+    }, { 'x-tax-accountant-approval-token': 'accountant-token' })).rejects.toThrow('ACCOUNTANT_MANDATE_NOT_FOUND');
+
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1', mandateId: 'mandate:approval', workspaceId, accountantActorId: 'accountant:1', accountantOrganizationId: 'firm:1', scopes: ['approve_invoice_intent'], grantedByActorId: 'user:owner', grantedAt: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null,
+    });
+    const response = await route(service, options, 'POST', `/v1/agent/runs/${runId}/accountant-approval`, {
+      actorId: 'accountant:1', mandateId: 'mandate:approval', intentHash: pending.intentHash, idempotencyKey: 'mandate-accountant-approved',
+    }, { 'x-tax-accountant-approval-token': 'accountant-token' });
+    expect((await response.json() as any).data.run.approvalState).toBe('accountant_approved');
+  });
+
   test('lets an agent orchestrate Path B while keeping human approval and Reclaim authority separate', async () => {
     const store = new TaxProfileStore(':memory:');
     confirmArgentinaProfile(store);
     seedFinancialEvidence(store);
     const proofVault = new FakeProofVault();
     const service = new FacturaEAgentService(store, new FakeReclaimGateway(), null, proofVault, true);
-    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token' };
+    const options = {
+      userApprovalToken: userToken,
+      accountantApprovalToken: 'accountant-token',
+      evidenceIngestToken: 'evidence-token',
+      agentPrincipalSecret,
+      legacyEvidenceAppendEnabled: true,
+    };
 
     const manifest = await route(service, options, 'GET', '/v1/agent/tools');
     expect(manifest.status).toBe(200);
     const manifestJson = await manifest.json() as any;
-    expect(manifestJson.data.tools).toHaveLength(17);
+    expect(manifestJson.data.tools).toHaveLength(13);
     expect(JSON.stringify(manifestJson)).not.toContain('approveIntent');
+    expect(JSON.stringify(manifestJson)).not.toContain('submit_wsfex');
+    expect(JSON.stringify(manifestJson)).not.toContain('recover_wsfex');
     const draftTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_factura_e_draft_intent');
     expect(draftTool.function.parameters.properties.intent.properties.documentType.const).toBe(19);
     const reclaimTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_reclaim_start');
@@ -36,6 +74,10 @@ describe('Factura E agent HTTP tools', () => {
       'arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement',
     ]);
     expect(reclaimTool.function.parameters.properties.subjectId).toBeDefined();
+    const settlementTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_factura_e_record_settlement');
+    expect(settlementTool.function.parameters.properties.settlement.properties.evidence.anyOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({ properties: expect.objectContaining({ version: expect.objectContaining({ const: 'factura-e-settlement-evidence-v1' }) }) }),
+    ]));
     const preflight = await invoke(service, options, 'tax_ar_homologation_get_preflight', 'read-homologation-preflight-1', {});
     expect(preflight.data).toEqual(expect.objectContaining({ state: 'blocked', productionActivationAllowed: false }));
     expect(JSON.stringify(preflight.data)).not.toContain('user-token-kept-outside-agent');
@@ -151,6 +193,7 @@ describe('Factura E agent HTTP tools', () => {
       invoice: expect.objectContaining({ documentType: 19, invoiceNumber: '44', cae: '12345678901234' }),
       adjustments: [expect.objectContaining({ documentType: 21, documentNumber: '45', association: { documentType: 19, pointOfSale: 4, invoiceNumber: '44' } })],
       financialLedger: expect.objectContaining({ netAuthorizedTotal: '900', hasAuthorizedDilution: true }),
+      settlementEvidence: expect.objectContaining({ completeness: 'legacy_narrow', sources: [], allocations: [] }),
       accountingHandoff: expect.objectContaining({ supportedWorkspaceProviders: ['quickbooks', 'xero', 'contaazul'], requiresApproval: true }),
       underwritingEvidence: expect.objectContaining({ state: 'frozen', paymentOutcomeOnly: true }),
     }));
@@ -171,12 +214,12 @@ describe('Factura E agent HTTP tools', () => {
     ]);
   });
 
-  test('runs Path A through the signer and recovers ambiguity with the exact request and payload', async () => {
+  test('hard-retires the generic Path A payload and signer route', async () => {
     const store = new TaxProfileStore(':memory:');
     confirmArgentinaProfile(store);
     const payloadWriter = new FakeAuthorityPayloadWriter();
     const service = new FacturaEAgentService(store, new FakeReclaimGateway(), new FakeWsfexGateway(), null, false, payloadWriter);
-    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', authorityPayloadToken: 'authority-payload-token' };
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret, authorityPayloadToken: 'authority-payload-token' };
     const pathARunId = '30000000-0000-4000-8000-000000000001';
     const base = { actorId: 'agent:tax', occurredAt: new Date().toISOString() };
     service.createRun({ ...base, runId: pathARunId, workspaceId, issuancePath: 'wsfex_delegated', idempotencyKey: 'path-a-create-1' });
@@ -192,76 +235,112 @@ describe('Factura E agent HTTP tools', () => {
     const authorityInput = {
       actorId: 'agent:tax', idempotencyKey: 'path-a-trusted-payload-1', requestId: '9001', invoiceNumber: '51',
       issuerProfileRef: 'issuer://workspace-agent-api/primary',
+      representedCuitCommitment: hashCanonical('represented-cuit:workspace-agent-api'),
       customer: { name: 'Foreign legal customer', address: '123 Foreign St', countryCuit: '50000000016', foreignTaxId: 'US-TAX-ID' },
       currencyArcaId: 'DOL', language: 2, commercialObservation: null, generalObservation: null,
       expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
     };
-    expect(route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/wsfex-payload`, authorityInput))
-      .rejects.toThrow('AUTHORITY_PAYLOAD_UNAUTHORIZED');
+    const retired = await route(
+      service,
+      options,
+      'POST',
+      `/v1/agent/runs/${pathARunId}/wsfex-payload`,
+      authorityInput
+    );
+    expect(retired.status).toBe(410);
+    expect(await retired.json()).toEqual({ error: 'TAX_AUTHORITY_CORRIDOR_REQUIRED' });
     const trustedSubmission = await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/wsfex-payload`, authorityInput, {
       'x-tax-authority-payload-token': 'authority-payload-token',
     });
-    const trustedData = (await trustedSubmission.json() as any).data;
-    expect(trustedData.submission.run.issuanceState).toBe('ambiguous');
-    const invoicePayloadRef = trustedData.payloadReceipt.reference;
-    expect(payloadWriter.payloads[0]).toEqual(expect.objectContaining({
-      canonicalDocument: expect.objectContaining({ intentId: 'intent-path-a', paymentTerms: 'Due on receipt' }),
-      intentHash: pending.intentHash,
-      customer: expect.objectContaining({ foreignTaxId: 'US-TAX-ID' }),
-      items: [{ code: null, description: 'Software services', quantity: '1', unitCode: 7, unitPrice: '1000.00', discount: '0', total: '1000.00' }],
-    }));
-    expect(JSON.stringify(service.getRun(pathARunId))).not.toContain('US-TAX-ID');
-    expect(JSON.stringify(service.getRun(pathARunId))).not.toContain('Foreign legal customer');
-    expect(service.recoverWsfex({
-      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: 'vault://wsfex/00000000-0000-4000-8000-000000000000', idempotencyKey: 'path-a-recover-wrong',
-    })).rejects.toThrow('WSFEX_RECOVERY_PAYLOAD_MISMATCH');
-    const recovered = await service.recoverWsfex({
-      ...base, runId: pathARunId, requestId: '9001', authorityPayloadRef: invoicePayloadRef, idempotencyKey: 'path-a-recover-1',
+    expect(trustedSubmission.status).toBe(410);
+    expect(await trustedSubmission.json()).toEqual({
+      error: 'TAX_AUTHORITY_CORRIDOR_REQUIRED',
     });
-    expect(recovered.run).toEqual(expect.objectContaining({
-      issuanceState: 'arca_authorized',
-      authority: expect.objectContaining({ requestId: '9001', invoiceNumber: '51', cae: '98765432109876', reprocessed: true }),
-    }));
+    expect(payloadWriter.payloads).toHaveLength(0);
+  });
 
-    const prepared = await invoke(service, options, 'tax_ar_factura_e_prepare_adjustment', 'path-a-prepare-adjustment-1', {
-      runId: pathARunId,
-      adjustmentId: 'path-a-debit-1',
-      documentType: 20,
-      issueDate: base.occurredAt.slice(0, 10),
-      amount: { decimal: '25.00', currency: 'USD' },
-      reason: 'Additional approved service scope',
+  test('requires every tool invoke to bind workspace actor body and idempotency', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const service = new FacturaEAgentService(store, null, null);
+    const options = {
+      userApprovalToken: userToken,
+      accountantApprovalToken: 'accountant-token',
+      evidenceIngestToken: 'evidence-token',
+      agentPrincipalSecret,
+    };
+    service.createRun({
+      runId,
+      workspaceId,
+      issuancePath: 'reclaim_copilot',
+      actorId: 'agent:tax',
+      idempotencyKey: 'principal-scope-create-1',
+      occurredAt: new Date().toISOString(),
     });
-    const adjustmentHash = prepared.data.output.intentHash;
-    await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/adjustments/path-a-debit-1/user-approval`, {
-      actorId: 'user:owner', intentHash: adjustmentHash, idempotencyKey: 'path-a-adjustment-user-approval-1',
-    }, { 'x-tax-user-approval-token': userToken });
-    await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/adjustments/path-a-debit-1/accountant-approval`, {
-      actorId: 'accountant:1', intentHash: adjustmentHash, idempotencyKey: 'path-a-adjustment-accountant-approval-1',
-    }, { 'x-tax-accountant-approval-token': 'accountant-token' });
-    const adjustmentPayloadResponse = await route(service, options, 'POST', `/v1/agent/runs/${pathARunId}/adjustments/path-a-debit-1/wsfex-payload`, {
-      ...authorityInput, idempotencyKey: 'path-a-trusted-adjustment-payload-1', requestId: '9002', invoiceNumber: '52',
-    }, { 'x-tax-authority-payload-token': 'authority-payload-token' });
-    const adjustmentPayloadData = (await adjustmentPayloadResponse.json() as any).data;
-    expect(adjustmentPayloadData.submission.run.adjustments[0].issuanceState).toBe('ambiguous');
-    const adjustmentPayloadRef = adjustmentPayloadData.payloadReceipt.reference;
-    expect(payloadWriter.payloads[1]).toEqual(expect.objectContaining({
-      canonicalDocument: expect.objectContaining({ adjustmentId: 'path-a-debit-1', reason: 'Additional approved service scope' }),
-      paymentDate: null, sameCurrencyPayment: null, paymentTerms: null,
-      items: [expect.objectContaining({ description: 'Additional approved service scope', total: '25.00' })],
-    }));
-    expect(invoke(service, options, 'tax_ar_factura_e_recover_adjustment_wsfex', 'path-a-recover-adjustment-wrong', {
-      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: 'vault://wsfex/00000000-0000-4000-8000-000000000000',
-    })).rejects.toThrow('ADJUSTMENT_WSFEX_RECOVERY_PAYLOAD_MISMATCH');
-    const adjustmentRecovered = await invoke(service, options, 'tax_ar_factura_e_recover_adjustment_wsfex', 'path-a-recover-adjustment-1', {
-      runId: pathARunId, adjustmentId: 'path-a-debit-1', requestId: '9002', authorityPayloadRef: adjustmentPayloadRef,
+    const toolId = 'tax_ar_factura_e_get_case';
+    const path = `/v1/agent/tools/${toolId}/invoke`;
+    const body = {
+      actorId: 'agent:tax',
+      idempotencyKey: 'principal-scope-read-1',
+      input: { runId },
+    };
+    expect(route(service, options, 'POST', path, body)).rejects.toThrow(
+      'TAX_AGENT_PRINCIPAL_UNAUTHORIZED',
+    );
+    const wrongWorkspaceHeaders = createTaxAgentPrincipalHeaders({
+      secret: agentPrincipalSecret,
+      workspaceId: 'workspace-other',
+      actorId: body.actorId,
+      toolId,
+      path,
+      rawBody: JSON.stringify(body),
+      idempotencyKey: body.idempotencyKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    expect(adjustmentRecovered.data.run).toEqual(expect.objectContaining({
-      authority: expect.objectContaining({ invoiceNumber: '51', cae: '98765432109876' }),
-      adjustments: [expect.objectContaining({
-        adjustmentId: 'path-a-debit-1', issuanceState: 'arca_authorized',
-        authority: expect.objectContaining({ requestId: '9002', documentNumber: '52', cae: '88765432109876', reprocessed: true }),
-      })],
-    }));
+    expect(
+      route(service, options, 'POST', path, body, wrongWorkspaceHeaders),
+    ).rejects.toThrow('TAX_AGENT_PRINCIPAL_WORKSPACE_UNAUTHORIZED');
+    const validHeaders = createTaxAgentPrincipalHeaders({
+      secret: agentPrincipalSecret,
+      workspaceId,
+      actorId: body.actorId,
+      toolId,
+      path,
+      rawBody: JSON.stringify(body),
+      idempotencyKey: body.idempotencyKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(
+      route(service, options, 'POST', path, {
+        ...body,
+        idempotencyKey: 'principal-scope-read-2',
+      }, validHeaders),
+    ).rejects.toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
+
+    const settlementToolId = 'tax_ar_factura_e_record_settlement';
+    const settlementPath = `/v1/agent/tools/${settlementToolId}/invoke`;
+    const unauthorizedSettlement = {
+      actorId: 'agent:tax',
+      idempotencyKey: 'principal-settlement-authority-1',
+      input: { runId },
+    };
+    const unauthorizedSettlementHeaders = createTaxAgentPrincipalHeaders({
+      secret: agentPrincipalSecret,
+      workspaceId,
+      actorId: unauthorizedSettlement.actorId,
+      toolId: settlementToolId,
+      path: settlementPath,
+      rawBody: JSON.stringify(unauthorizedSettlement),
+      idempotencyKey: unauthorizedSettlement.idempotencyKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(route(
+      service,
+      options,
+      'POST',
+      settlementPath,
+      unauthorizedSettlement,
+      unauthorizedSettlementHeaders,
+    )).rejects.toThrow('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
   });
 
   test('rejects oversized public Reclaim callbacks before parsing them', async () => {
@@ -272,7 +351,7 @@ describe('Factura E agent HTTP tools', () => {
       headers: { 'x-reclaim-session-id': 'unknown', 'content-type': 'application/json', 'content-length': '60000000' },
       body: '{}',
     });
-    const response = await handleAgentRoute(request, new URL(request.url), service, { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token' });
+    const response = await handleAgentRoute(request, new URL(request.url), service, { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret });
     expect(response?.status).toBe(413);
     expect(await response?.json()).toEqual({ error: 'RECLAIM_PROOF_PAYLOAD_TOO_LARGE' });
   });
@@ -280,7 +359,7 @@ describe('Factura E agent HTTP tools', () => {
   test('persists Reclaim expiry and lets the trusted user cancel a different pending session', async () => {
     const store = new TaxProfileStore(':memory:');
     const service = new FacturaEAgentService(store, new FakeReclaimGateway(), null);
-    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token' };
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret };
     const requestedAt = '2026-07-11T12:00:00.000Z';
     const expiryRunId = '50000000-0000-4000-8000-000000000001';
     service.createRun({ runId: expiryRunId, workspaceId, issuancePath: 'reclaim_copilot', actorId: 'agent:tax', idempotencyKey: 'expiry-create-1', occurredAt: requestedAt });
@@ -313,13 +392,13 @@ describe('Factura E agent HTTP tools', () => {
   test('keeps evidence ingestion on a connector credential unavailable to the agent', async () => {
     const store = new TaxProfileStore(':memory:');
     const service = new FacturaEAgentService(store, null, null);
-    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token' };
+    const options = { userApprovalToken: userToken, accountantApprovalToken: 'accountant-token', evidenceIngestToken: 'evidence-token', agentPrincipalSecret };
     const body = { records: financialEvidenceRecords() };
     expect(route(service, options, 'POST', '/v1/evidence/append', body)).rejects.toThrow('EVIDENCE_INGEST_UNAUTHORIZED');
-    const response = await route(service, options, 'POST', '/v1/evidence/append', body, { 'x-tax-evidence-ingest-token': 'evidence-token' });
-    expect(response.status).toBe(200);
-    const payload = await response.json() as any;
-    expect(payload.data).toEqual(expect.objectContaining({ appended: 3, graphRevision: expect.any(String) }));
+    expect(route(service, options, 'POST', '/v1/evidence/append', body, {
+      'x-tax-evidence-ingest-token': 'evidence-token',
+    })).rejects.toThrow('EVIDENCE_LEGACY_APPEND_DISABLED');
+    expect(store.listEvidence(workspaceId)).toEqual([]);
   });
 });
 
@@ -422,43 +501,87 @@ class FakeAuthorityPayloadWriter implements AuthorityPayloadWriter {
       expiresAt: input.expiresAt,
     };
   }
+
+  async markTerminal(input: Parameters<AuthorityPayloadWriter['markTerminal']>[0]) {
+    return {
+      version: 'authority-payload-terminal-receipt-v1' as const,
+      referenceHash: hashCanonical(input.reference),
+      payloadHash: input.payloadHash,
+      authorityIdentityHash: input.authorityIdentityHash,
+      terminalState: 'officially_reconciled' as const,
+      retentionPolicyId: 'test-retention-v1',
+      retireAfter: '2026-08-15T12:00:00.000Z',
+      terminalEvidenceHash: input.terminalEvidenceHash,
+    };
+  }
 }
 
 class FakeWsfexGateway implements WsfexGateway {
   readonly providerId = 'fake-wsfex';
 
   async authorize(input: { requestId: string }): Promise<WsfexAuthorityResult> {
-    return { providerId: this.providerId, requestId: input.requestId, status: 'ambiguous', invoiceNumber: null, cae: null, reprocessed: null, receiptHash: hashCanonical('ambiguous') };
+    return {
+      providerId: this.providerId, requestId: input.requestId, status: 'ambiguous', invoiceNumber: null, cae: null,
+      caeExpiry: null, currencyId: null, currencyQuote: null, reprocessed: null, receiptHash: hashCanonical('ambiguous'),
+      authorityIdentityHash: null, reconciliationEvidenceHash: null, authorityEnvironment: 'homologation',
+    };
   }
 
   async recover(input: { requestId: string }): Promise<WsfexAuthorityResult> {
-    return { providerId: this.providerId, requestId: input.requestId, status: 'accepted', invoiceNumber: '51', cae: '98765432109876', reprocessed: true, receiptHash: hashCanonical('accepted') };
+    return {
+      providerId: this.providerId, requestId: input.requestId, status: 'accepted', invoiceNumber: '51', cae: '98765432109876',
+      caeExpiry: '2026-07-21', currencyId: 'DOL', currencyQuote: '1200.25', reprocessed: true, receiptHash: hashCanonical('accepted'),
+      authorityIdentityHash: null, reconciliationEvidenceHash: null, authorityEnvironment: 'homologation',
+    };
+  }
+
+  async reconcile(input: { requestId: string }): Promise<WsfexAuthorityResult> {
+    return this.recover(input);
   }
 
   async authorizeAdjustment(input: { requestId: string }): Promise<WsfexAuthorityResult> {
-    return { providerId: this.providerId, requestId: input.requestId, status: 'ambiguous', invoiceNumber: null, cae: null, reprocessed: null, receiptHash: hashCanonical('adjustment-ambiguous') };
+    return {
+      providerId: this.providerId, requestId: input.requestId, status: 'ambiguous', invoiceNumber: null, cae: null,
+      caeExpiry: null, currencyId: null, currencyQuote: null, reprocessed: null, receiptHash: hashCanonical('adjustment-ambiguous'),
+      authorityIdentityHash: null, reconciliationEvidenceHash: null, authorityEnvironment: 'homologation',
+    };
   }
 
   async recoverAdjustment(input: { requestId: string }): Promise<WsfexAuthorityResult> {
-    return { providerId: this.providerId, requestId: input.requestId, status: 'accepted', invoiceNumber: '52', cae: '88765432109876', reprocessed: true, receiptHash: hashCanonical('adjustment-accepted') };
+    return {
+      providerId: this.providerId, requestId: input.requestId, status: 'accepted', invoiceNumber: '52', cae: '88765432109876',
+      caeExpiry: '2026-07-21', currencyId: 'DOL', currencyQuote: '1200.25', reprocessed: true, receiptHash: hashCanonical('adjustment-accepted'),
+      authorityIdentityHash: null, reconciliationEvidenceHash: null, authorityEnvironment: 'homologation',
+    };
   }
 }
 
 async function invoke(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; authorityPayloadToken?: string },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; accountantMandates?: TaxProfileStore; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
   toolId: string,
   idempotencyKey: string,
   input: Record<string, unknown>
 ): Promise<any> {
-  const response = await route(service, options, 'POST', `/v1/agent/tools/${toolId}/invoke`, { actorId: 'agent:tax', idempotencyKey, input });
+  const path = `/v1/agent/tools/${toolId}/invoke`;
+  const body = { actorId: 'agent:tax', idempotencyKey, input };
+  const response = await route(service, options, 'POST', path, body, createTaxAgentPrincipalHeaders({
+    secret: options.agentPrincipalSecret,
+    workspaceId,
+    actorId: body.actorId,
+    toolId,
+    path,
+    rawBody: JSON.stringify(body),
+    idempotencyKey,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }));
   expect(response.status).toBe(200);
   return response.json();
 }
 
 async function route(
   service: FacturaEAgentService,
-  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; authorityPayloadToken?: string },
+  options: { userApprovalToken: string; accountantApprovalToken: string; evidenceIngestToken: string; agentPrincipalSecret: string; accountantMandates?: TaxProfileStore; authorityPayloadToken?: string; legacyEvidenceAppendEnabled?: boolean },
   method: string,
   path: string,
   body?: unknown,
@@ -499,10 +622,12 @@ function confirmArgentinaProfile(store: TaxProfileStore): void {
       operatingSubdivisions: ['AR-C'],
       answers: [
         { questionId: 'province', value: 'AR-C', confirmationState: 'user_confirmed' },
+        { questionId: 'iibb_regime', value: 'caba_simplified', confirmationState: 'accountant_confirmed' },
         { questionId: 'exports_services', value: true, confirmationState: 'user_confirmed' },
         { questionId: 'export_pos_ready', value: true, confirmationState: 'user_confirmed' },
+        { questionId: 'monotributo_category', value: 'A', confirmationState: 'user_confirmed' },
       ],
-      catalogueVersion: 'ar-catalogue-2026-07-11',
+      catalogueVersion: 'ar-catalogue-2026-07-16.2',
       version: 'profile-v0',
       confirmationState: 'user_confirmed',
     },
@@ -528,6 +653,9 @@ function financialEvidenceRecords(): TaxEvidenceRecord[] {
     observedAt: new Date().toISOString(),
     expiresAt: null,
     economicEventId: 'event:foreign-payment-1',
+    invoiceDocumentKind: null,
+    invoiceAdjustmentKind: null,
+    adjustsEconomicEventId: null,
     countingDimension: 'revenue' as const,
     direction: 'inflow' as const,
     money: { decimal: '1000.00', currency: 'USD' },
@@ -537,7 +665,9 @@ function financialEvidenceRecords(): TaxEvidenceRecord[] {
     accountReferenceHash: hashCanonical('account'),
     confidence: { extraction: '1', classification: '1', matching: '1' },
     reviewState: 'accepted' as const,
+    validityState: 'active' as const,
     consentVersion: 'consent-v1',
+    supersedesIdempotencyKey: null,
   };
   return [
     { ...common, evidenceId: 'bank-payment', sourceId: 'foreign-bank', sourceKind: 'bank', canonicalProviderId: null, artifactHash: hashCanonical('bank-artifact'), economicRole: 'payment', idempotencyKey: 'evidence-bank-payment' },

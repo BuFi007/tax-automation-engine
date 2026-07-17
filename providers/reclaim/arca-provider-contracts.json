@@ -2,6 +2,30 @@
   "version": "motora-reclaim-arca-contracts-v1",
   "providers": [
     {
+      "purpose": "arca_onboarding_readiness",
+      "environment": "user-controlled-arca-session",
+      "targetOrigin": "reviewed-current-ARCA-portal-origin",
+      "providerIdEnv": "RECLAIM_ARCA_ONBOARDING_PROVIDER_ID",
+      "allowAiProviderTags": false,
+      "transportMode": "WITNESS/prover-side; do not assume an authenticated ARCA request can be replayed from an attestor IP",
+      "requestDiscovery": "capture-after-user-login; review the current ARCA request in every provider version; do-not-guess-private-endpoints",
+      "requiredExtractedParameters": {
+        "pointOfSaleAdministrationActive": ["true"],
+        "relationshipManagerActive": ["true"],
+        "exportPointOfSaleActive": ["true"],
+        "exportPointOfSale": "positive-integer-string",
+        "wsfexDelegated": ["true"],
+        "wsfeDelegated": ["true"]
+      },
+      "forbiddenDisclosure": [
+        "clave_fiscal",
+        "session_cookie",
+        "raw_cuit",
+        "certificate_private_key",
+        "unrelated_taxpayer_data"
+      ]
+    },
+    {
       "purpose": "arca_taxpayer_readiness",
       "environment": "production-user-session",
       "targetOrigin": "https://auth.afip.gob.ar",
