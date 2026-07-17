@@ -46,6 +46,20 @@ describe('Tax agent mutation principal', () => {
     expect(principal.workspaceId).toBe('workspace:one');
   });
 
+  test('accepts the dedicated Desk principal without making Open Agents a product dependency', () => {
+    const deskSecret = 'desk-tax-principal-secret-at-least-32-bytes';
+    const principal = verifyTaxAgentPrincipal({
+      request: signedRequest({ secret: deskSecret }),
+      rawBody,
+      toolId: 'tax_ar_factura_e_get_case',
+      actorId: 'agent:tax-settlement',
+      idempotencyKey: 'invoice-settlement:event-1',
+      secret: [deskSecret, secret],
+      now: new Date('2026-07-15T20:00:00.000Z'),
+    });
+    expect(principal.workspaceId).toBe('workspace:one');
+  });
+
   test('rejects cross-tool, body, actor, idempotency and overlong authority', () => {
     const request = signedRequest();
     const base = {

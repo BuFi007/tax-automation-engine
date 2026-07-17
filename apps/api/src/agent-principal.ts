@@ -25,10 +25,12 @@ export function verifyTaxAgentPrincipal(input: Readonly<{
   toolId: string;
   actorId: string;
   idempotencyKey: string;
-  secret: string | null;
+  secret: string | null | readonly (string | null)[];
   now?: Date;
 }>): TaxAgentPrincipalV1 {
-  if (!input.secret || Buffer.byteLength(input.secret) < 32) {
+  const secrets = (Array.isArray(input.secret) ? input.secret : [input.secret])
+    .filter((secret): secret is string => Boolean(secret && Buffer.byteLength(secret) >= 32));
+  if (secrets.length === 0) {
     throw new Error('TAX_AGENT_PRINCIPAL_CONFIGURATION_REQUIRED');
   }
   const encoded = input.request.headers.get('x-tax-agent-principal');
@@ -40,10 +42,11 @@ export function verifyTaxAgentPrincipal(input: Readonly<{
     || !suppliedSignature
     || !/^[a-f0-9]{64}$/.test(suppliedSignature)
   ) throw new Error('TAX_AGENT_PRINCIPAL_UNAUTHORIZED');
-  const expectedSignature = createHmac('sha256', input.secret)
-    .update(encoded, 'utf8')
-    .digest('hex');
-  if (!constantTimeEqual(suppliedSignature, expectedSignature)) {
+  const accepted = secrets.some(secret => constantTimeEqual(
+    suppliedSignature,
+    createHmac('sha256', secret).update(encoded, 'utf8').digest('hex'),
+  ));
+  if (!accepted) {
     throw new Error('TAX_AGENT_PRINCIPAL_UNAUTHORIZED');
   }
   let decoded: string;

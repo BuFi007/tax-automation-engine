@@ -241,7 +241,7 @@ export async function handleAgentRoute(
     userApprovalToken: string | null;
     accountantApprovalToken: string | null;
     evidenceIngestToken: string | null;
-    agentPrincipalSecret: string | null;
+    agentPrincipalSecret: string | null | readonly (string | null)[];
     accountantMandates?: AccountantMandateAuthorizer | null;
     /** Retired compatibility input; never authorizes an ARCA effect. */
     authorityPayloadToken?: string | null;

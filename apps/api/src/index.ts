@@ -109,6 +109,8 @@ const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISH
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
 const openAgentsAgentPrincipalSecret =
   process.env.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
+const deskAgentPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
 const deskInvoiceSettlementPrincipalSecret =
   process.env.TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET ?? null;
 const taxDomainEventDeliveryEnabled =
@@ -189,8 +191,8 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
-  || !openAgentsAgentPrincipalSecret || !deskInvoiceSettlementPrincipalSecret)) {
-  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
+  || !deskAgentPrincipalSecret || !deskInvoiceSettlementPrincipalSecret)) {
+  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_DESK_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
 }
 if (
   accountantDecisionIngressEnabled
@@ -204,7 +206,7 @@ if (process.env.NODE_ENV === 'production') {
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
-    openAgentsAgentPrincipalSecret,
+    deskAgentPrincipalSecret,
     browserReferenceSecret,
   ].filter((value): value is string => Boolean(value));
   if (new Set(tenantSecrets).size !== tenantSecrets.length) {
@@ -215,7 +217,7 @@ if (taxDomainEventDeliveryEnabled) {
   const domainEventSecrets = [
     taxDomainEventIngressToken,
     taxDomainEventHmacSecret,
-    openAgentsAgentPrincipalSecret,
+    deskAgentPrincipalSecret,
     deskInvoiceSettlementPrincipalSecret,
     accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     evidencePublisherPrincipalSecret,
@@ -485,7 +487,7 @@ export const server = Bun.serve({
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (url.pathname === '/v1/reclaim/callback') {
-        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
+        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (request.method === 'POST'
@@ -625,7 +627,7 @@ export const server = Bun.serve({
       if (evidenceResponse) return applyCors(evidenceResponse, request);
       const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, store, deskInvoiceSettlementPrincipalSecret);
       if (settlementResponse) return applyCors(settlementResponse, request);
-      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
         return applyCors(json({
