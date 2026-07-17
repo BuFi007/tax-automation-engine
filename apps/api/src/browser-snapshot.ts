@@ -59,10 +59,10 @@ const EXACT_OBLIGATION_KINDS = {
 } as const satisfies Readonly<Record<string, Exclude<TaxObligationKindV1, 'unclassified'>>>;
 
 export function taxObligationKindForId(obligationId: string): TaxObligationKindV1 {
-  if (obligationId.startsWith('ar:recategorization:')) {
+  if (/^ar:recategorization:(02|08)$/.test(obligationId)) {
     return 'ar_monotributo_recategorization';
   }
-  if (obligationId.startsWith('us:c-corp-estimated:')) {
+  if (/^us:c-corp-estimated:[1-4]$/.test(obligationId)) {
     return 'us_c_corp_estimated_tax';
   }
   return EXACT_OBLIGATION_KINDS[obligationId as keyof typeof EXACT_OBLIGATION_KINDS]

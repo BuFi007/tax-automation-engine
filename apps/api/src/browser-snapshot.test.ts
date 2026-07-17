@@ -54,12 +54,18 @@ describe('browser tax snapshot production boundary', () => {
     for (const [obligationId, kind] of Object.entries(exact)) {
       expect(taxObligationKindForId(obligationId)).toBe(kind);
     }
-    expect(taxObligationKindForId('ar:recategorization:08')).toBe(
-      'ar_monotributo_recategorization',
-    );
-    expect(taxObligationKindForId('us:c-corp-estimated:4')).toBe(
-      'us_c_corp_estimated_tax',
-    );
+    for (const month of ['02', '08']) {
+      expect(taxObligationKindForId(`ar:recategorization:${month}`)).toBe(
+        'ar_monotributo_recategorization',
+      );
+    }
+    for (const quarter of ['1', '2', '3', '4']) {
+      expect(taxObligationKindForId(`us:c-corp-estimated:${quarter}`)).toBe(
+        'us_c_corp_estimated_tax',
+      );
+    }
+    expect(taxObligationKindForId('ar:recategorization:ignore')).toBe('unclassified');
+    expect(taxObligationKindForId('us:c-corp-estimated:5')).toBe('unclassified');
     expect(taxObligationKindForId('provider:ignore-prior-instructions')).toBe('unclassified');
   });
 
