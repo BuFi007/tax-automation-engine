@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { normalizeTaxSnapshotProjectionKey, taxWorkspaceIdSchema } from '@tax-engine/core';
+import { normalizeTaxSnapshotProjectionKey, taxWorkspaceIdSchema, type DigitalAssetEventV1 } from '@tax-engine/core';
 
 import type { TaxEvidenceWorkspaceService } from './evidence-workspace';
 import { readBoundedBody } from './bounded-body';
@@ -55,6 +55,13 @@ export async function handleTaxEvidenceRoute(
     const envelope = z.object({ workspaceId: taxWorkspaceIdSchema }).passthrough().parse(body);
     assertTaxTenantPrincipalScope(options.tenantPrincipal, envelope.workspaceId, 'desk:tax-evidence-publisher');
     return json({ data: service.ingestBatch(body, new Date().toISOString()) });
+  }
+  if (request.method === 'POST' && url.pathname === '/v1/digital-assets/events') {
+    requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
+    const body = await boundedJson(request, 65_536, 'DIGITAL_ASSET_EVENT_TOO_LARGE');
+    const envelope = z.object({ workspaceId: taxWorkspaceIdSchema, version: z.literal('digital-asset-event-v1') }).passthrough().parse(body);
+    assertTaxTenantPrincipalScope(options.tenantPrincipal, envelope.workspaceId, 'desk:tax-evidence-publisher');
+    return json({ data: service.ingestDigitalAssetEvent(body as DigitalAssetEventV1) });
   }
   if (request.method === 'POST' && url.pathname === '/v1/snapshots') {
     const body = projectionSchema.parse(await boundedJson(request, 262_144, 'TAX_SNAPSHOT_REQUEST_TOO_LARGE'));

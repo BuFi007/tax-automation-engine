@@ -489,13 +489,13 @@ export const server = Bun.serve({
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (request.method === 'POST'
-        && (url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/evidence/consent-events')) {
+        && (url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/evidence/consent-events' || url.pathname === '/v1/digital-assets/events')) {
         const scopedPrincipal = verifyTaxTenantPrincipal(
           request,
-          url.pathname === '/v1/evidence/batches'
+          url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/digital-assets/events'
             ? evidencePublisherPrincipalSecret
             : consentAuthorityPrincipalSecret,
-          url.pathname === '/v1/evidence/batches' ? 'evidence:publish' : 'consent:publish',
+          url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/digital-assets/events' ? 'evidence:publish' : 'consent:publish',
         );
         const scopedResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal: scopedPrincipal });
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
