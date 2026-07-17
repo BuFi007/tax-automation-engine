@@ -216,6 +216,7 @@ if (taxDomainEventDeliveryEnabled) {
     taxDomainEventIngressToken,
     taxDomainEventHmacSecret,
     openAgentsAgentPrincipalSecret,
+    openAgentsInvoiceSettlementPrincipalSecret,
     accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
