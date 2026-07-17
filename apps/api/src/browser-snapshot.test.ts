@@ -4,8 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  HUMAN_AUTH_CAPTURE_POLICY_HASH,
+  applyArcaOnboardingCommand,
+  createArcaOnboardingRun,
   demoSnapshot,
   hashCanonical,
+  type ArcaOnboardingEventV1,
+  type ArcaOnboardingRunV1,
   type TaxEvidencePresentationProjectionV1,
   type TaxSnapshotProjectionConfigurationV1,
   type TaxWidgetSnapshotReceiptV1,
@@ -14,6 +19,7 @@ import {
 
 import {
   resolveTaxBrowserReferenceSecret,
+  projectArcaAuthorityReadiness,
   taxObligationKindForId,
   TaxBrowserSnapshotProjector,
   TaxBrowserSnapshotService,
@@ -105,6 +111,340 @@ describe('browser tax snapshot production boundary', () => {
       'TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET_TOO_SHORT',
     );
     expect(resolveTaxBrowserReferenceSecret(SECRET, 'production')).toBe(SECRET);
+  });
+
+  test('projects explicit ARCA not-started readiness and omits it outside Argentina', async () => {
+    const arStore = new TaxProfileStore(':memory:');
+    const arSnapshot = await demoSnapshot('AR');
+    const arReceipt = persistCoreSnapshot(arStore, arSnapshot, GENERATED_AT, GENERATED_AT);
+    const arRead = browserService(
+      arStore,
+      () => arReceipt,
+      '2026-07-10T12:00:01.000Z',
+    ).read(arSnapshot.workspaceId, PROJECTION_KEY);
+    expect(arRead.result.ok).toBe(true);
+    if (!arRead.result.ok) throw new Error('expected Argentina browser snapshot');
+    expect(arRead.result.data.snapshot.authorityReadiness).toEqual({
+      version: 'tax-authority-readiness-v1',
+      kind: 'ar_factura_e_onboarding',
+      state: 'not_started',
+      environment: null,
+      currentStep: null,
+      requestedServices: [],
+      pointOfSaleState: 'unknown',
+      delegation: { wsfex: null, wsfe: null },
+      apiVerification: { wsfex: null, wsfe: null, observedAt: null },
+      reclaim: {
+        state: 'not_started',
+        teeVerified: null,
+        custodyRecorded: null,
+        verifiedAt: null,
+      },
+      updatedAt: GENERATED_AT,
+      limitationCodes: ['ARCA_ONBOARDING_NOT_STARTED'],
+      actionId: null,
+    });
+    arStore.close();
+
+    const usStore = new TaxProfileStore(':memory:');
+    const usSnapshot = await demoSnapshot('US');
+    const usReceipt = persistCoreSnapshot(usStore, usSnapshot, GENERATED_AT, GENERATED_AT);
+    Object.defineProperty(usStore, 'listArcaOnboardingRuns', {
+      configurable: true,
+      value: () => {
+        throw new Error('US projection must not access ARCA onboarding state');
+      },
+    });
+    const usRead = browserService(
+      usStore,
+      () => usReceipt,
+      '2026-07-10T12:00:01.000Z',
+    ).read(usSnapshot.workspaceId, PROJECTION_KEY);
+    expect(usRead.result.ok).toBe(true);
+    if (!usRead.result.ok) throw new Error('expected United States browser snapshot');
+    expect('authorityReadiness' in usRead.result.data.snapshot).toBe(false);
+    usStore.close();
+  });
+
+  test('advances the durable browser case when ARCA onboarding changes and replays stably', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const receipt = persistCoreSnapshot(store, snapshot, GENERATED_AT, GENERATED_AT);
+    const service = browserService(store, () => receipt, '2026-07-10T12:00:01.000Z');
+
+    const initial = service.read(snapshot.workspaceId, PROJECTION_KEY);
+    if (!initial.result.ok) throw new Error('expected initial browser snapshot');
+    expect(initial.result.data.cacheIdentity.caseRevision).toBe(1);
+    expect(initial.result.data.snapshot.authorityReadiness?.state).toBe('not_started');
+
+    const created = createArcaOnboardingRun({
+      onboardingId: '10000000-0000-4000-8000-000000000001',
+      workspaceId: snapshot.workspaceId,
+      taxpayerReferenceHash: hashCanonical('private-taxpayer-reference'),
+      environment: 'homologation',
+      requestedServices: ['wsfex', 'wsfe'],
+      actorId: 'user:owner',
+      occurredAt: '2026-07-10T12:00:00.500Z',
+      idempotencyKey: 'create-onboarding-1',
+    });
+    appendOnboarding(store, created.run, created.event);
+
+    const changed = service.read(snapshot.workspaceId, PROJECTION_KEY);
+    if (!changed.result.ok) throw new Error('expected changed browser snapshot');
+    expect(changed.result.data.cacheIdentity.caseRevision).toBe(2);
+    expect(changed.result.data.cacheIdentity.snapshotRevision)
+      .not.toBe(initial.result.data.cacheIdentity.snapshotRevision);
+    expect(changed.result.data.snapshot.authorityReadiness).toMatchObject({
+      state: 'action_required',
+      currentStep: 'login_handoff',
+      limitationCodes: ['ARCA_LOGIN_REQUIRED'],
+      actionId: null,
+    });
+    const serialized = JSON.stringify(changed.result.data.snapshot.authorityReadiness);
+    expect(serialized).not.toContain(created.run.onboardingId);
+    expect(serialized).not.toContain(created.run.taxpayerReferenceHash);
+
+    const replay = service.read(snapshot.workspaceId, PROJECTION_KEY);
+    expect(replay.result.ok && replay.result.data.cacheIdentity.caseRevision).toBe(2);
+    expect(replay.result.ok && replay.result.data.cacheIdentity.snapshotRevision)
+      .toBe(changed.result.data.cacheIdentity.snapshotRevision);
+    store.close();
+  });
+
+  test('selects the latest tenant run deterministically and fails closed on mixed workspaces', () => {
+    const workspaceId = 'workspace:arca-selection';
+    const tiedHomologation = createTestOnboarding(
+      workspaceId,
+      '10000000-0000-4000-8000-000000000001',
+      'homologation',
+      '2026-07-10T12:00:00.000Z',
+    ).run;
+    const tiedProduction = createTestOnboarding(
+      workspaceId,
+      '10000000-0000-4000-8000-000000000002',
+      'production',
+      '2026-07-10T12:00:00.000Z',
+    ).run;
+    const foreign = createTestOnboarding(
+      'workspace:foreign',
+      '90000000-0000-4000-8000-000000000009',
+      'production',
+      '2026-07-10T13:00:00.000Z',
+    ).run;
+    const readiness = projectArcaAuthorityReadiness(
+      'AR',
+      workspaceId,
+      GENERATED_AT,
+      [tiedHomologation, tiedProduction],
+    );
+    expect(readiness?.environment).toBe('production');
+    expect(readiness?.state).toBe('action_required');
+    const serialized = JSON.stringify(readiness);
+    expect(serialized).not.toContain(tiedProduction.onboardingId);
+    expect(serialized).not.toContain(tiedProduction.taxpayerReferenceHash);
+    expect(() => projectArcaAuthorityReadiness(
+      'AR',
+      workspaceId,
+      GENERATED_AT,
+      [tiedProduction, foreign],
+    )).toThrow('Tax ARCA readiness workspace scope is invalid');
+    expect(projectArcaAuthorityReadiness('US', workspaceId, GENERATED_AT, [tiedProduction]))
+      .toBeUndefined();
+  });
+
+  test('fingerprints only the safe projected ARCA output, not internal onboarding identity', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const receipt = persistCoreSnapshot(store, snapshot, GENERATED_AT, GENERATED_AT);
+    const firstRun = createTestOnboarding(
+      snapshot.workspaceId,
+      '10000000-0000-4000-8000-000000000021',
+      'homologation',
+      GENERATED_AT,
+    ).run;
+    const sameSafeOutput = createTestOnboarding(
+      snapshot.workspaceId,
+      '10000000-0000-4000-8000-000000000022',
+      'homologation',
+      GENERATED_AT,
+    ).run;
+    const changedSafeOutput = createTestOnboarding(
+      snapshot.workspaceId,
+      '10000000-0000-4000-8000-000000000023',
+      'production',
+      GENERATED_AT,
+    ).run;
+    const first = projectArcaAuthorityReadiness('AR', snapshot.workspaceId, GENERATED_AT, [firstRun]);
+    const same = projectArcaAuthorityReadiness(
+      'AR',
+      snapshot.workspaceId,
+      GENERATED_AT,
+      [sameSafeOutput],
+    );
+    const changed = projectArcaAuthorityReadiness(
+      'AR',
+      snapshot.workspaceId,
+      GENERATED_AT,
+      [changedSafeOutput],
+    );
+    const projector = new TaxBrowserSnapshotProjector(SECRET);
+    expect(projector.sourceFingerprint(receipt, first))
+      .toBe(projector.sourceFingerprint(receipt, same));
+    expect(projector.sourceFingerprint(receipt, changed))
+      .not.toBe(projector.sourceFingerprint(receipt, first));
+    store.close();
+  });
+
+  test('projects API-verified proof-pending state and externally completed ready state', () => {
+    const pending = createProofPendingOnboarding('workspace:proof-pending');
+    const pendingReadiness = projectArcaAuthorityReadiness(
+      'AR',
+      pending.workspaceId,
+      GENERATED_AT,
+      [pending],
+    );
+    expect(pendingReadiness).toMatchObject({
+      state: 'verified',
+      currentStep: 'zk_evidence',
+      pointOfSaleState: 'active',
+      delegation: { wsfex: true, wsfe: true },
+      apiVerification: { wsfex: true, wsfe: true, observedAt: GENERATED_AT },
+      reclaim: { state: 'pending', teeVerified: null, custodyRecorded: null },
+      limitationCodes: [],
+      actionId: null,
+    });
+
+    const ready = applyOnboarding(pending, {
+      kind: 'record_zk_evidence',
+      sessionId: pending.reclaimSession!.sessionId,
+      providerId: pending.reclaimSession!.providerId,
+      providerVersion: pending.reclaimSession!.providerVersion,
+      proofHash: hashCanonical('private-proof'),
+      claimsHash: hashCanonical('private-claims'),
+      verifiedAt: GENERATED_AT,
+      teeVerified: true,
+      custodyReceipt: null,
+      idempotencyKey: 'record-proof',
+    });
+    const readyReadiness = projectArcaAuthorityReadiness(
+      'AR',
+      ready.workspaceId,
+      GENERATED_AT,
+      [ready],
+    );
+    expect(readyReadiness).toMatchObject({
+      state: 'ready',
+      currentStep: 'ready',
+      pointOfSaleState: 'active',
+      reclaim: { state: 'verified', teeVerified: true, custodyRecorded: false },
+      limitationCodes: [],
+      actionId: null,
+    });
+    const serialized = JSON.stringify(readyReadiness);
+    expect(serialized).not.toContain(pending.reclaimSession!.sessionId);
+    expect(serialized).not.toContain(pending.reclaimSession!.providerId);
+    expect(serialized).not.toContain(hashCanonical('private-proof'));
+    expect(serialized).not.toContain('pointOfSaleNumber');
+    expect(serialized).not.toContain('"number"');
+  });
+
+  test('does not invent WSFE state for an export-only WSFEX onboarding', () => {
+    const pending = createProofPendingOnboarding('workspace:wsfex-only');
+    const wsfexOnly = {
+      ...pending,
+      requestedServices: ['wsfex'] as const,
+      delegation: { wsfex: true, wsfe: false },
+      apiVerification: { wsfex: true, wsfe: false, observedAt: GENERATED_AT },
+    };
+    const readiness = projectArcaAuthorityReadiness(
+      'AR',
+      pending.workspaceId,
+      GENERATED_AT,
+      [wsfexOnly],
+    );
+    expect(readiness).toMatchObject({
+      state: 'verified',
+      requestedServices: ['wsfex'],
+      delegation: { wsfex: true, wsfe: null },
+      apiVerification: { wsfex: true, wsfe: null, observedAt: GENERATED_AT },
+    });
+  });
+
+  test('preserves bounded negative external checks without inventing provider evidence', () => {
+    const pending = createProofPendingOnboarding('workspace:negative-checks');
+    const negative = {
+      ...pending,
+      status: 'active' as const,
+      currentStep: 'api_verification' as const,
+      apiVerification: { wsfex: false, wsfe: false, observedAt: GENERATED_AT },
+      reclaimSession: { ...pending.reclaimSession!, state: 'failed' as const },
+      zkEvidence: null,
+    };
+    const readiness = projectArcaAuthorityReadiness(
+      'AR',
+      negative.workspaceId,
+      GENERATED_AT,
+      [negative],
+    );
+    expect(readiness).toMatchObject({
+      state: 'in_progress',
+      currentStep: 'api_verification',
+      apiVerification: { wsfex: false, wsfe: false, observedAt: GENERATED_AT },
+      reclaim: {
+        state: 'failed',
+        teeVerified: null,
+        custodyRecorded: null,
+        verifiedAt: null,
+      },
+      limitationCodes: ['ARCA_API_VERIFICATION_REQUIRED'],
+    });
+
+    const failed = projectArcaAuthorityReadiness(
+      'AR',
+      negative.workspaceId,
+      GENERATED_AT,
+      [{ ...negative, status: 'failed' as const }],
+    );
+    expect(failed).toMatchObject({
+      state: 'failed',
+      limitationCodes: ['ARCA_ONBOARDING_FAILED'],
+      actionId: null,
+    });
+  });
+
+  test('rejects an ARCA source change inside the atomic browser stamping transaction', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('AR');
+    const receipt = persistCoreSnapshot(store, snapshot, GENERATED_AT, GENERATED_AT);
+    const created = createTestOnboarding(
+      snapshot.workspaceId,
+      '10000000-0000-4000-8000-000000000099',
+      'homologation',
+      '2026-07-10T12:00:00.500Z',
+    ).run;
+    let reads = 0;
+    Object.defineProperty(store, 'listArcaOnboardingRuns', {
+      configurable: true,
+      value: () => (reads++ === 0 ? [] : [created]),
+    });
+
+    const read = browserService(store, () => receipt, '2026-07-10T12:00:01.000Z')
+      .read(snapshot.workspaceId, PROJECTION_KEY);
+    expect(read).toEqual({
+      status: 409,
+      result: {
+        ok: false,
+        problem: {
+          version: 'tax-browser-problem-v1',
+          code: 'TAX_EVIDENCE_GENERATION_CONFLICT',
+          status: 409,
+          state: 'syncing',
+          retryable: true,
+          traceRef: null,
+        },
+      },
+    });
+    store.close();
   });
 
   test('persists one stable case, advances its revision monotonically, and rejects a stale OCC source', async () => {
@@ -560,6 +900,112 @@ function browserService(
     new TaxBrowserSnapshotProjector(SECRET),
     () => new Date(now),
   );
+}
+
+function createTestOnboarding(
+  workspaceId: string,
+  onboardingId: string,
+  environment: 'homologation' | 'production',
+  occurredAt: string,
+) {
+  return createArcaOnboardingRun({
+    onboardingId,
+    workspaceId,
+    taxpayerReferenceHash: hashCanonical(`taxpayer:${workspaceId}:${onboardingId}`),
+    environment,
+    requestedServices: ['wsfex', 'wsfe'],
+    actorId: 'user:owner',
+    occurredAt,
+    idempotencyKey: `create:${onboardingId}`,
+  });
+}
+
+function createProofPendingOnboarding(workspaceId: string): ArcaOnboardingRunV1 {
+  let run = createTestOnboarding(
+    workspaceId,
+    '10000000-0000-4000-8000-000000000010',
+    'homologation',
+    GENERATED_AT,
+  ).run;
+  run = applyOnboarding(run, {
+    kind: 'complete_login_handoff',
+    browserSessionReferenceHash: hashCanonical('private-browser-session'),
+    idempotencyKey: 'complete-login',
+  });
+  run = applyOnboarding(run, {
+    kind: 'record_human_auth_completion',
+    completion: {
+      version: 'human-auth-completion-v1',
+      completionReceiptHash: hashCanonical('private-human-auth-receipt'),
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      completedAt: GENERATED_AT,
+      signatureVerified: true,
+    },
+    idempotencyKey: 'complete-human-auth',
+  });
+  run = applyOnboarding(run, {
+    kind: 'record_service_adherence',
+    pointOfSaleAdministrationActive: true,
+    relationshipManagerActive: true,
+    evidenceHash: hashCanonical('private-service-evidence'),
+    idempotencyKey: 'record-services',
+  });
+  run = applyOnboarding(run, {
+    kind: 'record_point_of_sale_discovery',
+    exportPointOfSale: 7,
+    evidenceHash: hashCanonical('private-point-of-sale-evidence'),
+    idempotencyKey: 'discover-point-of-sale',
+  });
+  run = applyOnboarding(run, {
+    kind: 'record_ws_delegation',
+    delegatedServices: { wsfex: true, wsfe: true },
+    issuerProfileReferenceHash: hashCanonical('private-issuer-profile'),
+    representedCuitCommitment: hashCanonical('private-taxpayer-commitment'),
+    evidenceHash: hashCanonical('private-delegation-evidence'),
+    idempotencyKey: 'record-delegation',
+  });
+  run = applyOnboarding(run, {
+    kind: 'record_api_verification',
+    verifiedServices: { wsfex: true, wsfe: true },
+    activeExportPointOfSale: 7,
+    observedAt: GENERATED_AT,
+    wsfexReceiptHash: hashCanonical('private-wsfex-receipt'),
+    wsfeReceiptHash: hashCanonical('private-wsfe-receipt'),
+    idempotencyKey: 'record-api-verification',
+  });
+  return applyOnboarding(run, {
+    kind: 'start_zk_evidence',
+    session: {
+      sessionId: 'private-reclaim-session',
+      providerId: 'private-reclaim-provider',
+      providerVersion: '1.0.0',
+      contextHash: hashCanonical('private-reclaim-context'),
+      requestedAt: GENERATED_AT,
+      expiresAt: '2026-07-10T12:10:00.000Z',
+      state: 'pending',
+    },
+    idempotencyKey: 'start-proof',
+  });
+}
+
+function applyOnboarding(
+  run: ArcaOnboardingRunV1,
+  command: Parameters<typeof applyArcaOnboardingCommand>[1],
+): ArcaOnboardingRunV1 {
+  return applyArcaOnboardingCommand(run, command, 'user:owner', GENERATED_AT).run;
+}
+
+function appendOnboarding(
+  store: TaxProfileStore,
+  run: ArcaOnboardingRunV1,
+  event: ArcaOnboardingEventV1,
+): void {
+  store.appendArcaOnboardingRevision({
+    run,
+    event,
+    stateHash: hashCanonical(run),
+    appendedAt: run.updatedAt,
+  });
 }
 
 function persistCoreSnapshot(

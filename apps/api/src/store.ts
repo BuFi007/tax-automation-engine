@@ -1507,6 +1507,7 @@ export class TaxProfileStore {
     receipt: TaxWidgetSnapshotReceiptV1;
     sourceFingerprint: string;
     caseRef: string;
+    assertSourceCurrent?: () => void;
     buildSnapshot: (durable: Readonly<{
       caseRef: string;
       caseRevision: number;
@@ -1554,6 +1555,7 @@ export class TaxProfileStore {
         || latest.evidence_generation !== receipt.evidenceGeneration) {
         throw new Error('TAX_SNAPSHOT_STALE');
       }
+      input.assertSourceCurrent?.();
 
       const current = this.#db.query<StoredBrowserTaxCaseRow, [string, string]>(`
         SELECT case_ref, revision, source_fingerprint

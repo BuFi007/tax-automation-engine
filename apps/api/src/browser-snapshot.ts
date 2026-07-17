@@ -3,9 +3,11 @@ import { createHmac } from 'node:crypto';
 import {
   buildTaxSnapshotProblemV1,
   deriveTaxSourceHealthStateV1,
+  taxAuthorityReadinessV1Schema,
   taxSnapshotReadResultV1Schema,
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
+  type TaxAuthorityReadinessV1,
   type TaxSnapshotProblemCodeV1,
   type TaxSnapshotReadResultV1,
   type TaxObligationKindV1,
@@ -14,6 +16,7 @@ import {
 } from '@tax-engine/browser-contracts';
 import {
   normalizeTaxSnapshotProjectionKey,
+  type ArcaOnboardingRunV1,
   type TaxConclusionEnvelopeV1,
   type TaxWidgetSnapshotReceiptV1 as CoreTaxWidgetSnapshotReceiptV1,
 } from '@tax-engine/core';
@@ -58,6 +61,20 @@ const EXACT_OBLIGATION_KINDS = {
   'us:owner-income-return-review': 'us_owner_income_return_review',
 } as const satisfies Readonly<Record<string, Exclude<TaxObligationKindV1, 'unclassified'>>>;
 
+const ARCA_SERVICE_ORDER = ['wsfex', 'wsfe'] as const;
+
+const ARCA_STEP_LIMITATION = {
+  login_handoff: 'ARCA_LOGIN_REQUIRED',
+  human_auth: 'ARCA_PRIVATE_AUTH_REQUIRED',
+  service_adherence: 'ARCA_SERVICE_ADHERENCE_REQUIRED',
+  point_of_sale_discovery: 'ARCA_POINT_OF_SALE_DISCOVERY_REQUIRED',
+  point_of_sale_creation: 'ARCA_POINT_OF_SALE_REQUIRED',
+  ws_delegation: 'ARCA_WEB_SERVICE_DELEGATION_REQUIRED',
+  api_verification: 'ARCA_API_VERIFICATION_REQUIRED',
+  zk_evidence: 'RECLAIM_PROOF_REQUIRED',
+  ready: 'ARCA_ONBOARDING_FAILED',
+} as const satisfies Readonly<Record<ArcaOnboardingRunV1['currentStep'], string>>;
+
 export function taxObligationKindForId(obligationId: string): TaxObligationKindV1 {
   if (/^ar:recategorization:(02|08)$/.test(obligationId)) {
     return 'ar_monotributo_recategorization';
@@ -67,6 +84,171 @@ export function taxObligationKindForId(obligationId: string): TaxObligationKindV
   }
   return EXACT_OBLIGATION_KINDS[obligationId as keyof typeof EXACT_OBLIGATION_KINDS]
     ?? 'unclassified';
+}
+
+/**
+ * Produces the only ARCA state allowed to cross the browser/agent boundary.
+ * Selection may inspect internal run IDs to break ties, but the projection
+ * contains only closed readiness facts and never the selected identifier.
+ */
+export function projectArcaAuthorityReadiness(
+  jurisdiction: CoreTaxWidgetSnapshotReceiptV1['snapshot']['profile']['jurisdiction'],
+  workspaceId: string,
+  fallbackUpdatedAt: string,
+  candidates: readonly ArcaOnboardingRunV1[],
+): TaxAuthorityReadinessV1 | undefined {
+  if (jurisdiction !== 'AR') return undefined;
+  const run = latestWorkspaceOnboarding(workspaceId, candidates);
+  if (!run) {
+    return taxAuthorityReadinessV1Schema.parse({
+      version: 'tax-authority-readiness-v1',
+      kind: 'ar_factura_e_onboarding',
+      state: 'not_started',
+      environment: null,
+      currentStep: null,
+      requestedServices: [],
+      pointOfSaleState: 'unknown',
+      delegation: { wsfex: null, wsfe: null },
+      apiVerification: { wsfex: null, wsfe: null, observedAt: null },
+      reclaim: {
+        state: 'not_started',
+        teeVerified: null,
+        custodyRecorded: null,
+        verifiedAt: null,
+      },
+      updatedAt: fallbackUpdatedAt,
+      limitationCodes: ['ARCA_ONBOARDING_NOT_STARTED'],
+      actionId: null,
+    });
+  }
+
+  const requestedServices = canonicalRequestedServices(run);
+  const requested = new Set(requestedServices);
+  const reclaim = projectReclaimReadiness(run);
+  const failedStep = run.steps.some(step => step.state === 'failed');
+  const invalidVerifiedSession = run.reclaimSession?.state === 'verified' && run.zkEvidence === null;
+  const apiSatisfied = requestedServices.every(service => run.apiVerification[service]);
+  const pendingVerifiedProof = run.currentStep === 'zk_evidence'
+    && apiSatisfied
+    && reclaim.state === 'pending';
+  const requiresUserAction = run.currentStep === 'point_of_sale_discovery'
+    ? (run.pointOfSale.candidates?.length ?? 0) > 1
+    : !['api_verification'].includes(run.currentStep);
+
+  let state: TaxAuthorityReadinessV1['state'];
+  if (run.status === 'failed' || failedStep || invalidVerifiedSession
+    || (run.currentStep === 'ready' && run.status !== 'ready')) {
+    state = 'failed';
+  } else if (run.status === 'ready') {
+    state = 'ready';
+  } else if (pendingVerifiedProof) {
+    state = 'verified';
+  } else if (requiresUserAction) {
+    state = 'action_required';
+  } else {
+    state = 'in_progress';
+  }
+
+  return taxAuthorityReadinessV1Schema.parse({
+    version: 'tax-authority-readiness-v1',
+    kind: 'ar_factura_e_onboarding',
+    state,
+    environment: run.environment,
+    currentStep: run.currentStep,
+    requestedServices,
+    pointOfSaleState: projectPointOfSaleState(run),
+    delegation: {
+      wsfex: requested.has('wsfex') ? run.delegation.wsfex : null,
+      wsfe: requested.has('wsfe') ? run.delegation.wsfe : null,
+    },
+    apiVerification: {
+      wsfex: requested.has('wsfex') ? run.apiVerification.wsfex : null,
+      wsfe: requested.has('wsfe') ? run.apiVerification.wsfe : null,
+      observedAt: run.apiVerification.observedAt,
+    },
+    reclaim,
+    updatedAt: run.updatedAt,
+    limitationCodes: state === 'ready' || state === 'verified'
+      ? []
+      : [state === 'failed' ? 'ARCA_ONBOARDING_FAILED' : ARCA_STEP_LIMITATION[run.currentStep]],
+    // Browser actions require a separate, same-snapshot policy descriptor.
+    actionId: null,
+  });
+}
+
+function latestWorkspaceOnboarding(
+  workspaceId: string,
+  candidates: readonly ArcaOnboardingRunV1[],
+): ArcaOnboardingRunV1 | null {
+  if (candidates.some(candidate => candidate.workspaceId !== workspaceId)) {
+    throw new Error('Tax ARCA readiness workspace scope is invalid');
+  }
+  return candidates
+    .reduce<ArcaOnboardingRunV1 | null>((latest, candidate) => {
+      if (!latest) return candidate;
+      const candidateUpdatedAt = Date.parse(candidate.updatedAt);
+      const latestUpdatedAt = Date.parse(latest.updatedAt);
+      if (!Number.isFinite(candidateUpdatedAt) || !Number.isFinite(latestUpdatedAt)) {
+        throw new Error('Tax ARCA readiness source is invalid');
+      }
+      const updated = candidateUpdatedAt - latestUpdatedAt;
+      if (updated !== 0) return updated > 0 ? candidate : latest;
+      if (candidate.revision !== latest.revision) {
+        return candidate.revision > latest.revision ? candidate : latest;
+      }
+      return candidate.onboardingId.localeCompare(latest.onboardingId) > 0 ? candidate : latest;
+    }, null);
+}
+
+function canonicalRequestedServices(
+  run: ArcaOnboardingRunV1,
+): readonly (typeof ARCA_SERVICE_ORDER)[number][] {
+  const raw = run.requestedServices as readonly string[];
+  if (raw.length === 0
+    || new Set(raw).size !== raw.length
+    || raw.some(service => !(ARCA_SERVICE_ORDER as readonly string[]).includes(service))) {
+    throw new Error('Tax ARCA readiness source is invalid');
+  }
+  return ARCA_SERVICE_ORDER.filter(service => raw.includes(service));
+}
+
+function projectPointOfSaleState(
+  run: ArcaOnboardingRunV1,
+): TaxAuthorityReadinessV1['pointOfSaleState'] {
+  if (run.pointOfSale.active && run.pointOfSale.number !== null) return 'active';
+  const discovery = run.steps.find(step => step.step === 'point_of_sale_discovery');
+  const discoveryCompleted = discovery?.state === 'completed'
+    || discovery?.state === 'skipped'
+    || discovery?.state === 'failed';
+  const candidatesFound = (run.pointOfSale.candidates?.length ?? 0) > 0;
+  return discoveryCompleted || candidatesFound ? 'missing' : 'unknown';
+}
+
+function projectReclaimReadiness(
+  run: ArcaOnboardingRunV1,
+): TaxAuthorityReadinessV1['reclaim'] {
+  if (run.zkEvidence) {
+    return {
+      state: 'verified',
+      teeVerified: run.zkEvidence.teeVerified,
+      custodyRecorded: run.zkEvidence.custodyReceipt !== null,
+      verifiedAt: run.zkEvidence.verifiedAt,
+    };
+  }
+  if (run.reclaimSession) {
+    return {
+      state: run.reclaimSession.state === 'verified' ? 'failed' : run.reclaimSession.state,
+      teeVerified: null,
+      custodyRecorded: null,
+      verifiedAt: null,
+    };
+  }
+  return {
+    state: 'not_started',
+    teeVerified: null,
+    custodyRecorded: null,
+    verifiedAt: null,
+  };
 }
 
 type SnapshotReader = Pick<TaxEvidenceWorkspaceService, 'latestSnapshot'>;
@@ -107,7 +289,10 @@ export class TaxBrowserSnapshotProjector {
     this.#references = new TaxBrowserReferenceScope(resolved);
   }
 
-  sourceFingerprint(receipt: CoreTaxWidgetSnapshotReceiptV1): string {
+  sourceFingerprint(
+    receipt: CoreTaxWidgetSnapshotReceiptV1,
+    authorityReadiness?: TaxAuthorityReadinessV1,
+  ): string {
     return this.#references.digest('source-fingerprint', receipt.snapshot.workspaceId, receipt.projectionKey, JSON.stringify({
       snapshotHash: receipt.snapshotHash,
       inputHash: receipt.inputHash,
@@ -117,6 +302,7 @@ export class TaxBrowserSnapshotProjector {
       asOf: receipt.asOf,
       expiresAt: receipt.expiresAt,
       profileVersion: receipt.snapshot.profile.version,
+      authorityReadiness: authorityReadiness ?? null,
     }));
   }
 
@@ -131,6 +317,7 @@ export class TaxBrowserSnapshotProjector {
   project(
     receipt: CoreTaxWidgetSnapshotReceiptV1,
     durable: Readonly<{ caseRef: string; caseRevision: number; sourceFingerprint: string }>,
+    authorityReadiness?: TaxAuthorityReadinessV1,
   ): BrowserTaxWidgetSnapshotV1 {
     const workspaceId = receipt.snapshot.workspaceId;
     const projectionKey = receipt.projectionKey;
@@ -262,6 +449,7 @@ export class TaxBrowserSnapshotProjector {
           gap => gap.severity === 'blocking',
         ) ? ['EVIDENCE_GAP_BLOCKING'] : [],
       },
+      ...(authorityReadiness ? { authorityReadiness } : {}),
       evidenceTasks: receipt.snapshot.evidenceCoverage.gaps.map(gap => ({
         taskRef: ref('evidence-task', gap.id),
         title: evidenceTaskTitle(gap.kind),
@@ -428,15 +616,34 @@ export class TaxBrowserSnapshotService {
       if (internal.expiresAt !== null && Date.parse(checkedAt) >= Date.parse(internal.expiresAt)) {
         return problemRead('TAX_SNAPSHOT_EXPIRED');
       }
-      const sourceFingerprint = this.projector.sourceFingerprint(internal);
+      const isArgentina = internal.snapshot.profile.jurisdiction === 'AR';
+      const authorityReadiness = projectArcaAuthorityReadiness(
+        internal.snapshot.profile.jurisdiction,
+        workspaceId,
+        internal.asOf,
+        isArgentina ? this.store.listArcaOnboardingRuns(workspaceId) : [],
+      );
+      const sourceFingerprint = this.projector.sourceFingerprint(internal, authorityReadiness);
       const stamped = this.store.stampBrowserTaxSnapshot({
         receipt: internal,
         sourceFingerprint,
         caseRef: this.projector.caseReference(workspaceId, normalizedProjectionKey),
+        assertSourceCurrent: () => {
+          const currentAuthorityReadiness = projectArcaAuthorityReadiness(
+            internal.snapshot.profile.jurisdiction,
+            workspaceId,
+            internal.asOf,
+            isArgentina ? this.store.listArcaOnboardingRuns(workspaceId) : [],
+          );
+          if (this.projector!.sourceFingerprint(internal, currentAuthorityReadiness)
+            !== sourceFingerprint) {
+            throw new Error('TAX_EVIDENCE_GENERATION_CONFLICT');
+          }
+        },
         buildSnapshot: durable => this.projector!.project(internal, {
           ...durable,
           sourceFingerprint,
-        }),
+        }, authorityReadiness),
       });
       const receipt = parseBrowserReceipt({
         version: 'tax-browser-snapshot-receipt-v1',
