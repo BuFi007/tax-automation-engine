@@ -23,7 +23,9 @@
     "homologation:probe-signer": "bun --filter @tax-engine/api homologation:probe-signer",
     "homologation:probe-wsfe-signer": "bun --filter @tax-engine/api homologation:probe-wsfe-signer",
     "homologation:probe-proof-vault": "bun --filter @tax-engine/api homologation:probe-proof-vault",
-    "homologation:validate": "bun --filter @tax-engine/api homologation:validate"
+    "homologation:validate": "bun --filter @tax-engine/api homologation:validate",
+    "release:backend": "bun apps/api/src/backend-release-gate-cli.ts",
+    "release:backend:software": "bun apps/api/src/backend-release-gate-cli.ts --software-only"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5",
