@@ -100,6 +100,14 @@ describe('accountant mandate routes', () => {
       accountantOrganizationId: 'firm:1',
       totals: { authorizedClientCount: 0 },
       clients: [],
+      mandates: [
+        {
+          mandateId: 'mandate:review',
+          workspaceId: 'workspace:1',
+          scopes: ['review_tax_obligation'],
+          revokedAt: null,
+        },
+      ],
     });
   });
 });

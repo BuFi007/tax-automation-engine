@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  assertActiveAccountantMandate,
   buildAccountantPortfolioProjection,
   type AccountantClientCaseSummaryV1,
   type AccountantMandateScope,
@@ -77,7 +78,20 @@ export async function handleAccountantMandateRoute(
       mandates,
       clientCases,
     });
-    return json({ data: projection }, 200, {
+    const activeMandates = mandates.filter(mandate => {
+      try {
+        assertActiveAccountantMandate(mandate, {
+          workspaceId: mandate.workspaceId,
+          accountantActorId: principal.actorId,
+          scope: 'review_tax_obligation',
+          at: now.toISOString(),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    return json({ data: { ...projection, mandates: activeMandates } }, 200, {
       'cache-control': 'private, no-store',
       vary: 'authorization, x-tax-tenant-principal, x-tax-tenant-signature',
     });
