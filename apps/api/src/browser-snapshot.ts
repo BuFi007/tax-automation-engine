@@ -4,10 +4,13 @@ import {
   buildTaxSnapshotProblemV1,
   deriveTaxSourceHealthStateV1,
   taxAuthorityReadinessV1Schema,
+  taxJurisdictionProfileReadinessV1Schema,
   taxSnapshotReadResultV1Schema,
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
+  TAX_JURISDICTION_PROFILE_LIMITATIONS_V1,
   type TaxAuthorityReadinessV1,
+  type TaxJurisdictionProfileReadinessV1,
   type TaxSnapshotProblemCodeV1,
   type TaxSnapshotReadResultV1,
   type TaxObligationKindV1,
@@ -16,8 +19,10 @@ import {
 } from '@tax-engine/browser-contracts';
 import {
   normalizeTaxSnapshotProjectionKey,
+  UnitedStatesJurisdictionProvider,
   type ArcaOnboardingRunV1,
   type TaxConclusionEnvelopeV1,
+  type TaxProfile,
   type TaxWidgetSnapshotReceiptV1 as CoreTaxWidgetSnapshotReceiptV1,
 } from '@tax-engine/core';
 
@@ -63,6 +68,16 @@ const EXACT_OBLIGATION_KINDS = {
 
 const ARCA_SERVICE_ORDER = ['wsfex', 'wsfe'] as const;
 
+const US_ENTITY_STRUCTURE_BY_REGIME: ReadonlyMap<
+  string,
+  Exclude<TaxJurisdictionProfileReadinessV1['entityStructure'], 'unclassified'>
+> = new Map([
+  ['llc_single_member', 'single_member_llc'],
+  ['llc_multi_member', 'multi_member_llc'],
+  ['s_corp', 's_corporation'],
+  ['c_corp', 'c_corporation'],
+]);
+
 const ARCA_STEP_LIMITATION = {
   login_handoff: 'ARCA_LOGIN_REQUIRED',
   human_auth: 'ARCA_PRIVATE_AUTH_REQUIRED',
@@ -84,6 +99,150 @@ export function taxObligationKindForId(obligationId: string): TaxObligationKindV
   }
   return EXACT_OBLIGATION_KINDS[obligationId as keyof typeof EXACT_OBLIGATION_KINDS]
     ?? 'unclassified';
+}
+
+/**
+ * Projects only the bounded US profile facts needed to explain specialist
+ * readiness. Filing paths stay in cited obligations; owner countries, raw
+ * answers, identifiers, amounts, and provider material never cross this edge.
+ */
+export function projectTaxJurisdictionProfileReadiness(
+  profile: TaxProfile,
+): TaxJurisdictionProfileReadinessV1 | undefined {
+  if (profile.jurisdiction !== 'US') return undefined;
+
+  const provider = new UnitedStatesJurisdictionProvider();
+  const validation = provider.validateProfile(profile);
+  const entityStructure = US_ENTITY_STRUCTURE_BY_REGIME.get(profile.regimeId) ?? 'unclassified';
+  const founderResidency = uniqueProfileAnswer(profile, 'founder_residency');
+  const ownerStatus = uniqueProfileAnswer(profile, 'owner_us_person_status');
+  const classification = uniqueProfileAnswer(profile, 'tax_classification');
+  const memberCount = uniqueProfileAnswer(profile, 'member_count');
+  const formationState = uniqueProfileAnswer(profile, 'formation_state');
+  const operatingStates = uniqueProfileAnswer(profile, 'operating_states');
+  const salesStates = uniqueProfileAnswer(profile, 'sales_states');
+  const hasPayroll = uniqueProfileAnswer(profile, 'has_payroll');
+
+  const founderDomicileScope = founderResidency === 'local'
+    ? 'us_domiciled'
+    : founderResidency === 'foreign'
+      ? 'foreign_domiciled'
+      : 'unconfirmed';
+  const ownerUsPersonStatus = ownerStatus === 'us_person' || ownerStatus === 'non_us_person'
+    ? ownerStatus
+    : ownerStatus === 'needs_classification'
+      ? 'needs_review'
+      : 'unconfirmed';
+  const federalClassification = [
+    'disregarded_entity',
+    'partnership',
+    's_corp',
+    'c_corp',
+  ].includes(String(classification))
+    ? classification as 'disregarded_entity' | 'partnership' | 's_corp' | 'c_corp'
+    : classification === 'needs_classification'
+      ? 'needs_review'
+      : 'unconfirmed';
+  const memberStructure = entityStructure === 's_corporation' || entityStructure === 'c_corporation'
+    ? 'not_applicable'
+    : typeof memberCount === 'number' && Number.isInteger(memberCount) && memberCount >= 1
+      ? memberCount === 1 ? 'single' : 'multiple'
+      : 'unconfirmed';
+  const formationSubdivision = typeof formationState === 'string'
+    && formationState === profile.formationSubdivision
+    && isUsSubdivision(formationState)
+    ? formationState
+    : null;
+  const operatingSubdivisionCount = validUsSubdivisionSet(operatingStates)
+    && validUsSubdivisionSet(profile.operatingSubdivisions)
+    && sameStringSet(operatingStates, profile.operatingSubdivisions)
+    ? operatingStates.length
+    : null;
+  const salesSubdivisionCount = validUsSubdivisionSet(salesStates)
+    ? salesStates.length
+    : null;
+  const payrollState = hasPayroll === true
+    ? 'present'
+    : hasPayroll === false
+      ? 'absent'
+      : 'unconfirmed';
+
+  const projectedInputsMissing = entityStructure === 'unclassified'
+    || founderDomicileScope === 'unconfirmed'
+    || ownerUsPersonStatus === 'unconfirmed'
+    || federalClassification === 'unconfirmed'
+    || memberStructure === 'unconfirmed'
+    || formationSubdivision === null
+    || operatingSubdivisionCount === null
+    || salesSubdivisionCount === null
+    || payrollState === 'unconfirmed';
+  const state = projectedInputsMissing
+    ? 'incomplete'
+    : validation.length > 0 || profile.confirmationState !== 'accountant_confirmed'
+      ? 'accountant_review'
+      : 'confirmed';
+
+  const limitations = new Set<(typeof TAX_JURISDICTION_PROFILE_LIMITATIONS_V1)[number]>();
+  if (state !== 'confirmed') limitations.add('US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED');
+  if (state === 'incomplete') limitations.add('US_PROFILE_INCOMPLETE');
+  if (ownerUsPersonStatus === 'unconfirmed' || ownerUsPersonStatus === 'needs_review'
+    || validation.some(code => code.includes('OWNER_US_PERSON') || code.startsWith('S_CORP_NON_US_OWNER'))) {
+    limitations.add('US_OWNER_STATUS_REVIEW_REQUIRED');
+  }
+  if (federalClassification === 'unconfirmed' || federalClassification === 'needs_review'
+    || validation.some(code => code.includes('CLASSIFICATION') || code.startsWith('S_CORP_NON_US_OWNER'))) {
+    limitations.add('US_FEDERAL_CLASSIFICATION_REVIEW_REQUIRED');
+  }
+  if (entityStructure === 'unclassified' || memberStructure === 'unconfirmed'
+    || validation.some(code => code.includes('REGIME') || code.includes('MEMBER_COUNT'))) {
+    limitations.add('US_ENTITY_STRUCTURE_REVIEW_REQUIRED');
+  }
+  if (formationSubdivision === null || operatingSubdivisionCount === null
+    || salesSubdivisionCount === null || validation.some(code => code.includes('STATE'))) {
+    limitations.add('US_STATE_SCOPE_REVIEW_REQUIRED');
+  }
+  if (payrollState === 'unconfirmed' || validation.some(code => code.includes('PAYROLL'))) {
+    limitations.add('US_PAYROLL_SCOPE_REVIEW_REQUIRED');
+  }
+
+  return taxJurisdictionProfileReadinessV1Schema.parse({
+    version: 'tax-jurisdiction-profile-readiness-v1',
+    kind: 'us_entity',
+    state,
+    entityStructure,
+    founderDomicileScope,
+    ownerUsPersonStatus,
+    federalClassification,
+    memberStructure,
+    formationSubdivision,
+    operatingSubdivisionCount,
+    salesSubdivisionCount,
+    payrollState,
+    accountantReviewRequired: state !== 'confirmed',
+    limitationCodes: TAX_JURISDICTION_PROFILE_LIMITATIONS_V1.filter(code => limitations.has(code)),
+  });
+}
+
+function uniqueProfileAnswer(profile: TaxProfile, questionId: string): TaxProfile['answers'][number]['value'] | undefined {
+  const matches = profile.answers.filter(answer => answer.questionId === questionId);
+  return matches.length === 1 ? matches[0]?.value : undefined;
+}
+
+function isUsSubdivision(value: string): boolean {
+  return /^US-[A-Z]{2}$/.test(value);
+}
+
+function validUsSubdivisionSet(value: unknown): value is readonly string[] {
+  return Array.isArray(value)
+    && value.every(entry => typeof entry === 'string' && isUsSubdivision(entry))
+    && new Set(value).size === value.length
+    && value.length <= 100;
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const values = new Set(left);
+  return right.every(value => values.has(value));
 }
 
 /**
@@ -303,6 +462,7 @@ export class TaxBrowserSnapshotProjector {
       expiresAt: receipt.expiresAt,
       profileVersion: receipt.snapshot.profile.version,
       authorityReadiness: authorityReadiness ?? null,
+      jurisdictionProfileReadiness: projectTaxJurisdictionProfileReadiness(receipt.snapshot.profile) ?? null,
     }));
   }
 
@@ -332,6 +492,7 @@ export class TaxBrowserSnapshotProjector {
       sourceRefForId(unwrapCoreSourceReference(value))
     );
     const profile = receipt.snapshot.profile;
+    const jurisdictionProfileReadiness = projectTaxJurisdictionProfileReadiness(profile);
     const cacheIdentity = {
       version: 'tax-cache-identity-v1' as const,
       projectionKey,
@@ -450,6 +611,7 @@ export class TaxBrowserSnapshotProjector {
         ) ? ['EVIDENCE_GAP_BLOCKING'] : [],
       },
       ...(authorityReadiness ? { authorityReadiness } : {}),
+      ...(jurisdictionProfileReadiness ? { jurisdictionProfileReadiness } : {}),
       evidenceTasks: receipt.snapshot.evidenceCoverage.gaps.map(gap => ({
         taskRef: ref('evidence-task', gap.id),
         title: evidenceTaskTitle(gap.kind),
