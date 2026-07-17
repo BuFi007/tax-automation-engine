@@ -82,60 +82,7 @@ const adjustmentSchema = z.object({
   amount: moneySchema,
   reason: z.string().min(1).max(4_000),
 }).strict();
-const settlementCurrencySchema = z.string().regex(/^[A-Z][A-Z0-9]{2,11}$/);
-const settlementEvidenceSchema = z.object({
-  version: z.literal('factura-e-settlement-evidence-v1'),
-  source: z.object({
-    kind: z.enum([
-      'circle_transfer',
-      'circle_memo',
-      'bridge_liquidation',
-      'external_wallet_receipt',
-      'reviewed_bank_match',
-      'reviewed_accounting_match',
-      'approved_manual_evidence',
-      'recibu_payment',
-      'provider_reversal',
-    ]),
-    provider: z.string().regex(/^[a-z][a-z0-9._-]{1,62}[a-z0-9]$/),
-    identityHash: sha256Schema,
-    revision: z.number().int().positive().safe(),
-  }).strict(),
-  sourceMoney: z.object({
-    currency: settlementCurrencySchema,
-    grossAmount: decimalSchema,
-    feeAmount: decimalSchema,
-    netAmount: decimalSchema,
-  }).strict(),
-  sourceEquivalentAmount: decimalSchema,
-  allocationBasis: z.enum(['gross', 'net']),
-  fx: z.object({
-    rate: decimalSchema,
-    sourceCurrency: settlementCurrencySchema,
-    allocationCurrency: settlementCurrencySchema,
-    evidenceHash: sha256Schema,
-    verifiedAt: z.iso.datetime({ offset: true }),
-  }).strict().nullable(),
-  verification: z.object({
-    method: z.enum(['provider_webhook', 'onchain_receipt', 'reviewed_financial_match', 'approved_manual_review']),
-    evidenceHash: sha256Schema,
-    verifiedAt: z.iso.datetime({ offset: true }),
-  }).strict(),
-}).strict();
-
-const settlementSchema = z.object({
-  settlementReferenceHash: sha256Schema,
-  asset: z.string().min(1).max(32),
-  network: z.string().min(1).max(64),
-  amount: moneySchema,
-  observedAt: z.iso.datetime({ offset: true }),
-  finalityState: z.enum(['observed', 'final', 'reversed', 'disputed']),
-  fees: moneySchema.nullable(),
-  reversesSettlementReferenceHash: sha256Schema.nullable(),
-  evidence: settlementEvidenceSchema.nullable().optional(),
-}).strict();
 const intentJsonSchema = z.toJSONSchema(intentSchema);
-const settlementJsonSchema = z.toJSONSchema(settlementSchema);
 const evidenceProposalJsonSchema = z.toJSONSchema(evidenceProposalSchema);
 
 const invocationSchema = z.object({
@@ -223,10 +170,6 @@ export const FACTURA_E_AGENT_TOOLS = [
   tool('tax_ar_factura_e_request_approval', 'Freeze the validated intent candidate and request a separate human approval. This tool cannot approve it.', {
     type: 'object', required: ['runId'], additionalProperties: false, properties: { runId: { type: 'string', format: 'uuid' } },
   }, 'user_interaction_required'),
-  tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence, including an optional privacy-safe source/fee/FX proof envelope. This does not mark FX ingress or tax declaration verified.', {
-    type: 'object', required: ['runId', 'settlement'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, settlement: settlementJsonSchema },
-  }, 'automatic'),
   tool('tax_ar_factura_e_prepare_adjustment', 'Prepare an immutable associated export debit note (20) or credit note (21). The adjustment freezes financing and requires a new human approval.', z.toJSONSchema(adjustmentSchema), 'automatic'),
   tool('tax_ar_factura_e_get_adjustment_copilot_packet', 'Return the approved Path B adjustment packet, including the mandatory original Factura E association.', {
     type: 'object', required: ['runId', 'adjustmentId'], additionalProperties: false,
@@ -535,11 +478,7 @@ async function invokeTool(
       throw new Error('TAX_AUTHORITY_CORRIDOR_REQUIRED');
     }
     case 'tax_ar_factura_e_record_settlement': {
-      if (body.actorId !== 'agent:tax-settlement') {
-        throw new Error('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
-      }
-      const input = z.object({ runId: z.uuid(), settlement: settlementSchema }).strict().parse(body.input);
-      return service.recordSettlement({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });
+      throw new Error('TAX_CANONICAL_SETTLEMENT_CORRIDOR_REQUIRED');
     }
     case 'tax_ar_factura_e_prepare_adjustment': {
       const input = adjustmentSchema.parse(body.input);
