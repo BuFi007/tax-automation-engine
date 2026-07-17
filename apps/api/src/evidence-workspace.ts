@@ -10,6 +10,7 @@ import {
   type TaxEvidenceBatchReceiptV1,
   type TaxEvidenceConsentEventReceiptV1,
   type TaxEvidenceRecord,
+  type DigitalAssetEventV1,
   type TaxEvidenceScope,
   type TaxEvidenceSourceAdapter,
   type TaxEvidenceSourceManifestV1,
@@ -53,6 +54,10 @@ export class TaxEvidenceWorkspaceService {
 
   ingestConsentEvent(value: unknown): TaxEvidenceConsentEventReceiptV1 {
     return this.store.appendEvidenceConsentEvent(parseTaxEvidenceConsentEventV1(value));
+  }
+
+  ingestDigitalAssetEvent(event: DigitalAssetEventV1): ReturnType<TaxProfileStore['appendDigitalAssetEvent']> {
+    return this.store.appendDigitalAssetEvent(event, this.now().toISOString());
   }
 
   configureSnapshotProjection(input: Readonly<{
