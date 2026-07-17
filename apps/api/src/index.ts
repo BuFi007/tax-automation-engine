@@ -76,6 +76,7 @@ import { taxDemoRoutesEnabled } from './demo-route-policy';
 import { readBoundedBody } from './bounded-body';
 import { handleAccountantMandateRoute } from './accountant-mandate-routes';
 import { handleExternalAccountantDecisionRoute } from './accountant-decision-routes';
+import { handleAccountantReviewRoute } from './accountant-review-routes';
 import {
   assertNoTaxEngineFundingAuthority,
   resolveArgentinaLaunchPolicyReadiness,
@@ -593,6 +594,13 @@ export const server = Bun.serve({
         : null;
       const accountantMandateResponse = await handleAccountantMandateRoute(request, url, store, tenantPrincipal);
       if (accountantMandateResponse) return applyCors(accountantMandateResponse, request);
+      const accountantReviewResponse = await handleAccountantReviewRoute(
+        request,
+        url,
+        store,
+        tenantPrincipal,
+      );
+      if (accountantReviewResponse) return applyCors(accountantReviewResponse, request);
       const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, {
         userApprovalToken,
         evidenceIngestToken,

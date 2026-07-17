@@ -53,4 +53,12 @@ describe('Tax API production composition contract', () => {
     expect(source).toContain("url.pathname === '/v1/accountant-decisions'");
     expect(source).toContain('externalAccountantDecisionIngress: accountantDecisionIngressEnabled');
   });
+
+  test('serves accountant decisions only from a Tax-owned current review queue', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toContain("import { handleAccountantReviewRoute } from './accountant-review-routes'");
+    expect(source).toMatch(
+      /handleAccountantMandateRoute\([\s\S]*?handleAccountantReviewRoute\([\s\S]*?handleArcaOnboardingRoute\(/,
+    );
+  });
 });

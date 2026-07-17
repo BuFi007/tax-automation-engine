@@ -11,6 +11,8 @@ sequenceDiagram
   participant D as Canonical Tax store
   participant O as TaxDomainEventV1 outbox
   participant E as Open Agents / Eve inbox
+  A->>T: GET /v1/accountant-review-queue + scoped principal
+  T-->>A: Current minimized subjects + snapshot commitments
   A->>T: POST /v1/accountant-decisions + bound principal
   T->>T: Verify signature, actor, workspace, path, body, expiry
   T->>D: Verify active scoped mandate + processing consent
@@ -54,3 +56,9 @@ expired, revoked or differently scoped delivery fails without mutation.
 This is the supported external-accountant integration path for U.S. review.
 It is not an IRS e-file integration and does not claim filing-provider or IRS
 acceptance.
+
+The queue is not a second tax ledger. Tax derives it from the current durable
+browser projection and exact active mandate. A newer core snapshot makes the
+queue item unavailable until the browser projection catches up, so an
+accountant never reviews an aggregate portfolio count as though it were a
+canonical case or subject.

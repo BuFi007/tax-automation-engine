@@ -7,6 +7,7 @@ import {
   facturaEFactoringProjectionV1Schema,
   type FacturaEFactoringProjectionReceiptV1,
   type FacturaEFactoringProjectionV1,
+  taxWidgetSnapshotV1Schema as browserTaxWidgetSnapshotV1Schema,
   type TaxWidgetSnapshotV1 as BrowserTaxWidgetSnapshotV1,
 } from '@tax-engine/browser-contracts';
 
@@ -1677,6 +1678,72 @@ export class TaxProfileStore {
       || this.get(workspaceId)?.version !== snapshot.profile.version) throw new Error('TAX_SNAPSHOT_STALE');
     if (row.valid_until && parseInstant(now) >= parseInstant(row.valid_until)) throw new Error('TAX_SNAPSHOT_EXPIRED');
     return this.#snapshotReceipt(row, now);
+  }
+
+  /**
+   * Returns only the current, integrity-checked browser projection needed to
+   * construct an external accountant review queue. A newer core snapshot
+   * makes the review projection stale until the browser projector catches up.
+   */
+  getCurrentAccountantReviewSnapshot(
+    workspaceId: string,
+    now = new Date().toISOString(),
+    projectionKey?: string,
+  ): Readonly<{
+    caseRef: string;
+    caseRevision: number;
+    snapshotHash: string;
+    snapshot: BrowserTaxWidgetSnapshotV1;
+  }> | null {
+    const normalizedProjectionKey = normalizeTaxSnapshotProjectionKey(projectionKey);
+    const coreReceipt = this.getLatestTaxWidgetSnapshot(
+      workspaceId,
+      now,
+      normalizedProjectionKey,
+    );
+    if (!coreReceipt) return null;
+    const current = this.#db.query<{
+      case_ref: string;
+      revision: number;
+      source_fingerprint: string;
+      updated_at: string;
+    }, [string, string]>(`
+      SELECT case_ref, revision, source_fingerprint, updated_at
+      FROM tax_browser_cases
+      WHERE workspace_id = ? AND projection_key = ?
+    `).get(workspaceId, normalizedProjectionKey);
+    if (!current) return null;
+    if (current.updated_at !== coreReceipt.generatedAt) {
+      throw new Error('ACCOUNTANT_REVIEW_PROJECTION_STALE');
+    }
+    const stored = this.#browserSnapshotRow(
+      workspaceId,
+      normalizedProjectionKey,
+      current.revision,
+    );
+    if (
+      !stored
+      || stored.case_ref !== current.case_ref
+      || stored.source_fingerprint !== current.source_fingerprint
+    ) {
+      throw new Error('ACCOUNTANT_REVIEW_PROJECTION_INTEGRITY_INVALID');
+    }
+    const snapshot = browserTaxWidgetSnapshotV1Schema.parse(
+      JSON.parse(stored.snapshot_json) as unknown,
+    );
+    if (
+      snapshot.caseId !== current.case_ref
+      || snapshot.cacheIdentity.caseRevision !== current.revision
+      || hashCanonical(snapshot) !== stored.browser_snapshot_hash
+    ) {
+      throw new Error('ACCOUNTANT_REVIEW_PROJECTION_INTEGRITY_INVALID');
+    }
+    return {
+      caseRef: current.case_ref,
+      caseRevision: current.revision,
+      snapshotHash: stored.browser_snapshot_hash,
+      snapshot,
+    };
   }
 
   /**

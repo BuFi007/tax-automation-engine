@@ -14,6 +14,7 @@ const capabilitySchema = z.enum([
   'arca:onboard',
   'accountant:mandate',
   'accountant:portfolio',
+  'accountant:review-queue',
   'accountant:decision',
 ]);
 const principalSchema = z.object({
@@ -269,6 +270,7 @@ export function requiredTaxTenantPrincipalCapability(
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   if (method === 'GET' && pathname === '/v1/accountant-portfolio') return 'accountant:portfolio';
+  if (method === 'GET' && pathname === '/v1/accountant-review-queue') return 'accountant:review-queue';
   if (method === 'POST' && pathname === '/v1/accountant-decisions') return 'accountant:decision';
   return null;
 }

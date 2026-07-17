@@ -26,6 +26,15 @@ interactive onboarding contract: it omits the onboarding run ID, point-of-sale
 number, Reclaim provider/session references, and proof material so it can be
 used by browser and specialist-agent consumers.
 
+Package `0.10.0` adds `AccountantReviewQueueV1`, the only browser-safe source
+for an external accountant decision. Tax emits it from the current durable
+browser projection and exact active mandate. It contains opaque case/subject
+references, one snapshot commitment, closed policy/rule references and closed
+outcome/reason choices; it excludes money, taxpayer identifiers, raw returns,
+evidence bodies, provider data and free text. Stale or missing client
+projections remain unavailable and cannot be approved from aggregate portfolio
+counts.
+
 Package `0.6.0` adds the consented, non-scoring Tax evidence-quality union. Only
 `ready` carries the frozen 0–100 value, band, and five dimensions. Named
 no-value states remain fail-closed, while the 0.5.x supplemental shape stays

@@ -92,3 +92,14 @@ and filing conclusions. Filing applicability remains exclusively owned by
 closed obligations with rule-version citations. Consumers must accept this
 optional projection before Tax begins emitting it; absence means specialist
 profile readiness was not projected.
+
+Package `0.10.0` adds the strict `AccountantReviewQueueV1` read projection. It
+contains only active-mandate client workspace references, opaque Tax case and
+subject references, the exact browser snapshot commitment and revision,
+closed rule/policy references, limitations, outcomes, and reason codes. It
+contains no money, tax identifier, raw return, provider payload, evidence
+body, credential, or free-text decision. Missing, stale, or invalid client
+projections are returned as closed unavailable states and never substituted
+with aggregate portfolio data. Consumers must upgrade before calling
+`GET /v1/accountant-review-queue`; the separate decision ingress remains
+request-bound and server-only.
