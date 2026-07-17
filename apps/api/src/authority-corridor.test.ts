@@ -19,7 +19,7 @@ const runId = '22222222-2222-4222-8222-222222222222';
 const intentHash = 'a'.repeat(64);
 const motoraSecret = 'motora-authority-secret-1111111111111111';
 const approvalSecret = 'open-agents-approval-secret-2222222222';
-const approvalRef = 'oa_approval_abcdefghijklmnopqrstuvwx';
+const approvalRef = 'human_approval_abcdefghijklmnopqrstuvwx';
 
 function fixture(
   recoverOutcomes: ReadonlyArray<'authority_accepted_unverified' | 'ambiguous'> = [
@@ -154,7 +154,7 @@ describe('Tax-owned Factura E authority corridor', () => {
       const response = await handleFacturaEAuthorityCorridorRoute(
         signedRequest(path, body, { capability: 'factura-e:case:create', actorId: 'motora:user-1', secret: motoraSecret }),
         new URL(`https://tax.test${path}`), service,
-        { corridorEnabled: true, secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret }, taxCases },
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
       );
       expect(response?.status).toBe(200);
       expect(await response?.json()).toEqual({ data: {
@@ -290,7 +290,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         request,
         rawBody: body,
         capability: 'factura-e:intent:create',
-        secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+        secrets: { motora: motoraSecret },
         now: new Date('2026-07-15T16:00:00.000Z'),
       })
     ).toMatchObject({ workspaceId, actorId: 'motora:desk-user' });
@@ -299,7 +299,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         request,
         rawBody: JSON.stringify({ value: 'tampered' }),
         capability: 'factura-e:intent:create',
-        secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+        secrets: { motora: motoraSecret },
         now: new Date('2026-07-15T16:00:00.000Z'),
       })
     ).toThrow('TAX_AUTHORITY_PRINCIPAL_SCOPE_UNAUTHORIZED');
@@ -386,7 +386,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         executionId: intent.executionId,
         workspaceId,
         intentHash,
-        approvalRef: 'oa_approval_recovery_restart_abcdefghijkl',
+        approvalRef: 'human_approval_recovery_restart_abcdefghijkl',
         actorId: 'oa:approval:recovery-restart',
         idempotencyKey: 'register-authority-recovery-restart',
         occurredAt: '2026-07-15T16:01:00.000Z',
@@ -520,7 +520,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         executionId: intent.executionId,
         workspaceId,
         intentHash,
-        approvalRef: 'oa_approval_restart_abcdefghijklmnop',
+        approvalRef: 'human_approval_restart_abcdefghijklmnop',
         actorId: 'oa:approval:restart',
         idempotencyKey: 'register-authority-restart-1',
         occurredAt: '2026-07-15T16:01:00.000Z',
@@ -625,11 +625,11 @@ describe('Tax-owned Factura E authority corridor', () => {
     }
   });
 
-  test('exposes only safe receipts through distinct Motora and OA principals', async () => {
+  test('exposes only safe receipts through the Motora human-authority principal', async () => {
     const { store, service } = fixture();
     const options = {
       corridorEnabled: true,
-      secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+      secrets: { motora: motoraSecret },
     };
     try {
       const createBody = {
@@ -663,12 +663,12 @@ describe('Tax-owned Factura E authority corridor', () => {
             workspaceId,
             intentHash,
             approvalRef,
-            idempotencyKey: 'oa-register-approval-1',
+            idempotencyKey: 'motora-register-human-approval-1',
           },
           {
             capability: 'factura-e:approval:register',
-            actorId: 'oa:approval:run-1',
-            secret: approvalSecret,
+            actorId: 'motora:human-approver-1',
+            secret: motoraSecret,
           }
         ),
         new URL(`https://tax.test${approvePath}`),
@@ -782,7 +782,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         service,
         {
           corridorEnabled: true,
-          secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+          secrets: { motora: motoraSecret },
         },
       );
       expect(response?.status).toBe(413);
