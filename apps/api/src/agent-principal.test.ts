@@ -6,7 +6,7 @@ import {
 } from './agent-principal';
 
 const secret = 'open-agents-tax-principal-secret-at-least-32';
-const path = '/v1/agent/tools/tax_ar_factura_e_record_settlement/invoke';
+const path = '/v1/agent/tools/tax_ar_factura_e_get_case/invoke';
 const rawBody = JSON.stringify({
   actorId: 'agent:tax-settlement',
   idempotencyKey: 'invoice-settlement:event-1',
@@ -18,7 +18,7 @@ function signedRequest(overrides: Partial<Parameters<typeof createTaxAgentPrinci
     secret,
     workspaceId: 'workspace:one',
     actorId: 'agent:tax-settlement',
-    toolId: 'tax_ar_factura_e_record_settlement',
+    toolId: 'tax_ar_factura_e_get_case',
     path,
     rawBody,
     idempotencyKey: 'invoice-settlement:event-1',
@@ -37,7 +37,7 @@ describe('Tax agent mutation principal', () => {
     const principal = verifyTaxAgentPrincipal({
       request: signedRequest(),
       rawBody,
-      toolId: 'tax_ar_factura_e_record_settlement',
+      toolId: 'tax_ar_factura_e_get_case',
       actorId: 'agent:tax-settlement',
       idempotencyKey: 'invoice-settlement:event-1',
       secret,
@@ -51,13 +51,13 @@ describe('Tax agent mutation principal', () => {
     const base = {
       request,
       rawBody,
-      toolId: 'tax_ar_factura_e_record_settlement',
+      toolId: 'tax_ar_factura_e_get_case',
       actorId: 'agent:tax-settlement',
       idempotencyKey: 'invoice-settlement:event-1',
       secret,
       now: new Date('2026-07-15T20:00:00.000Z'),
     } as const;
-    expect(() => verifyTaxAgentPrincipal({ ...base, toolId: 'tax_ar_factura_e_get_case' }))
+    expect(() => verifyTaxAgentPrincipal({ ...base, toolId: 'tax_ar_factura_e_create_case' }))
       .toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
     expect(() => verifyTaxAgentPrincipal({ ...base, rawBody: `${rawBody} ` }))
       .toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
