@@ -103,6 +103,34 @@ describe('browser-safe Tax V1 contracts', () => {
       },
     };
     expect(taxAuthorityReadinessV1Schema.safeParse(ready).success).toBe(true);
+
+    const failedChecks = {
+      ...actionRequired,
+      currentStep: 'api_verification',
+      pointOfSaleState: 'active',
+      delegation: { wsfex: true, wsfe: true },
+      apiVerification: {
+        wsfex: false,
+        wsfe: false,
+        observedAt: '2026-07-17T09:55:00.000Z',
+      },
+      reclaim: {
+        state: 'failed',
+        teeVerified: false,
+        custodyRecorded: true,
+        verifiedAt: null,
+      },
+      limitationCodes: ['ARCA_API_VERIFICATION_REQUIRED'],
+    };
+    expect(taxAuthorityReadinessV1Schema.safeParse(failedChecks).success).toBe(true);
+    expect(taxAuthorityReadinessV1Schema.safeParse({
+      ...failedChecks,
+      reclaim: { ...failedChecks.reclaim, state: 'pending' },
+    }).success).toBe(false);
+    expect(taxAuthorityReadinessV1Schema.safeParse({
+      ...ready,
+      reclaim: { ...ready.reclaim, teeVerified: null },
+    }).success).toBe(false);
   });
 
   test('keeps liability unavailable and exact activity separate', () => {

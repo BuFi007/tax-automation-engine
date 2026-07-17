@@ -70,3 +70,9 @@ emitting it; absence means authority readiness was not projected.
 Package `0.8.1` fails closed when Argentina authority readiness is attached to
 a non-Argentina profile or references an action outside the snapshot's own
 authorized-next-action set. It does not add or expose any field.
+
+Package `0.8.2` preserves authoritative negative checks: an API observation may
+record all requested services as false, and a failed Reclaim check may carry
+bounded TEE/custody booleans without claiming verification. Verified Reclaim
+state requires both booleans and its verification time. No field is widened to
+free text or provider material.
