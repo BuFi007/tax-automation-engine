@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   HUMAN_AUTH_CAPTURE_POLICY_HASH,
   applyArcaOnboardingCommand,
+  argentinaProfile,
   createArcaOnboardingRun,
   demoSnapshot,
   hashCanonical,
@@ -15,11 +16,13 @@ import {
   type TaxSnapshotProjectionConfigurationV1,
   type TaxWidgetSnapshotReceiptV1,
   type TaxWidgetSnapshotV1,
+  unitedStatesProfile,
 } from '@tax-engine/core';
 
 import {
   resolveTaxBrowserReferenceSecret,
   projectArcaAuthorityReadiness,
+  projectTaxJurisdictionProfileReadiness,
   taxObligationKindForId,
   TaxBrowserSnapshotProjector,
   TaxBrowserSnapshotService,
@@ -73,6 +76,152 @@ describe('browser tax snapshot production boundary', () => {
     expect(taxObligationKindForId('ar:recategorization:ignore')).toBe('unclassified');
     expect(taxObligationKindForId('us:c-corp-estimated:5')).toBe('unclassified');
     expect(taxObligationKindForId('provider:ignore-prior-instructions')).toBe('unclassified');
+  });
+
+  test('projects only deterministic, accountant-bounded US entity profile readiness', async () => {
+    expect(projectTaxJurisdictionProfileReadiness(argentinaProfile())).toBeUndefined();
+
+    const userConfirmed = unitedStatesProfile();
+    expect(projectTaxJurisdictionProfileReadiness(userConfirmed)).toEqual({
+      version: 'tax-jurisdiction-profile-readiness-v1',
+      kind: 'us_entity',
+      state: 'accountant_review',
+      entityStructure: 'single_member_llc',
+      founderDomicileScope: 'foreign_domiciled',
+      ownerUsPersonStatus: 'non_us_person',
+      federalClassification: 'disregarded_entity',
+      memberStructure: 'single',
+      formationSubdivision: 'US-DE',
+      operatingSubdivisionCount: 1,
+      salesSubdivisionCount: 2,
+      payrollState: 'absent',
+      accountantReviewRequired: true,
+      limitationCodes: ['US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED'],
+    });
+
+    const accountantConfirmed = {
+      ...userConfirmed,
+      confirmationState: 'accountant_confirmed' as const,
+    };
+    expect(projectTaxJurisdictionProfileReadiness(accountantConfirmed)).toMatchObject({
+      state: 'confirmed',
+      accountantReviewRequired: false,
+      limitationCodes: [],
+    });
+
+    const missingOwnerStatus = {
+      ...accountantConfirmed,
+      answers: accountantConfirmed.answers.filter(
+        answer => answer.questionId !== 'owner_us_person_status',
+      ),
+    };
+    expect(projectTaxJurisdictionProfileReadiness(missingOwnerStatus)).toMatchObject({
+      state: 'incomplete',
+      ownerUsPersonStatus: 'unconfirmed',
+      accountantReviewRequired: true,
+      limitationCodes: [
+        'US_PROFILE_INCOMPLETE',
+        'US_OWNER_STATUS_REVIEW_REQUIRED',
+        'US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+      ],
+    });
+
+    const duplicateOwnerStatus = {
+      ...accountantConfirmed,
+      answers: [
+        ...accountantConfirmed.answers,
+        accountantConfirmed.answers.find(
+          answer => answer.questionId === 'owner_us_person_status',
+        )!,
+      ],
+    };
+    expect(projectTaxJurisdictionProfileReadiness(duplicateOwnerStatus)).toMatchObject({
+      state: 'incomplete',
+      ownerUsPersonStatus: 'unconfirmed',
+      limitationCodes: [
+        'US_PROFILE_INCOMPLETE',
+        'US_OWNER_STATUS_REVIEW_REQUIRED',
+        'US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+      ],
+    });
+
+    const needsOwnerReview = {
+      ...accountantConfirmed,
+      answers: accountantConfirmed.answers.map(answer =>
+        answer.questionId === 'owner_us_person_status'
+          ? { ...answer, value: 'needs_classification' }
+          : answer
+      ),
+    };
+    expect(projectTaxJurisdictionProfileReadiness(needsOwnerReview)).toMatchObject({
+      state: 'accountant_review',
+      ownerUsPersonStatus: 'needs_review',
+      limitationCodes: [
+        'US_OWNER_STATUS_REVIEW_REQUIRED',
+        'US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+      ],
+    });
+
+    const foreignSCorporation = await demoSnapshot('US', 's_corp', 'foreign');
+    const sCorporationReadiness = projectTaxJurisdictionProfileReadiness({
+      ...foreignSCorporation.profile,
+      confirmationState: 'accountant_confirmed',
+    });
+    expect(sCorporationReadiness).toMatchObject({
+      state: 'accountant_review',
+      entityStructure: 's_corporation',
+      ownerUsPersonStatus: 'non_us_person',
+      federalClassification: 's_corp',
+      limitationCodes: [
+        'US_OWNER_STATUS_REVIEW_REQUIRED',
+        'US_FEDERAL_CLASSIFICATION_REVIEW_REQUIRED',
+        'US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED',
+      ],
+    });
+
+    const serialized = JSON.stringify(sCorporationReadiness);
+    for (const forbidden of [
+      'ownerDomicileCountries',
+      'ownerTaxResidenceCountries',
+      'founder_residency',
+      'related_party_reportable_transactions',
+      'answers',
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  test('fingerprints the safe US readiness while ignoring internal-only profile detail', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const snapshot = await demoSnapshot('US');
+    const receipt = persistCoreSnapshot(store, snapshot, GENERATED_AT, GENERATED_AT);
+    const projector = new TaxBrowserSnapshotProjector(SECRET);
+    const original = projector.sourceFingerprint(receipt);
+    const sameSafeReadiness = projector.sourceFingerprint({
+      ...receipt,
+      snapshot: {
+        ...receipt.snapshot,
+        profile: {
+          ...receipt.snapshot.profile,
+          ownerDomicileCountries: ['UY'],
+          ownerTaxResidenceCountries: ['UY'],
+        },
+      },
+    });
+    const accountantConfirmed = projector.sourceFingerprint({
+      ...receipt,
+      snapshot: {
+        ...receipt.snapshot,
+        profile: {
+          ...receipt.snapshot.profile,
+          confirmationState: 'accountant_confirmed',
+        },
+      },
+    });
+
+    expect(sameSafeReadiness).toBe(original);
+    expect(accountantConfirmed).not.toBe(original);
+    store.close();
   });
 
   test('does not turn an empty internal rule identifier into an opaque citation', async () => {
@@ -144,6 +293,7 @@ describe('browser tax snapshot production boundary', () => {
       limitationCodes: ['ARCA_ONBOARDING_NOT_STARTED'],
       actionId: null,
     });
+    expect('jurisdictionProfileReadiness' in arRead.result.data.snapshot).toBe(false);
     arStore.close();
 
     const usStore = new TaxProfileStore(':memory:');
@@ -163,6 +313,27 @@ describe('browser tax snapshot production boundary', () => {
     expect(usRead.result.ok).toBe(true);
     if (!usRead.result.ok) throw new Error('expected United States browser snapshot');
     expect('authorityReadiness' in usRead.result.data.snapshot).toBe(false);
+    expect(usRead.result.data.snapshot.jurisdictionProfileReadiness).toEqual({
+      version: 'tax-jurisdiction-profile-readiness-v1',
+      kind: 'us_entity',
+      state: 'accountant_review',
+      entityStructure: 'single_member_llc',
+      founderDomicileScope: 'foreign_domiciled',
+      ownerUsPersonStatus: 'non_us_person',
+      federalClassification: 'disregarded_entity',
+      memberStructure: 'single',
+      formationSubdivision: 'US-DE',
+      operatingSubdivisionCount: 1,
+      salesSubdivisionCount: 2,
+      payrollState: 'absent',
+      accountantReviewRequired: true,
+      limitationCodes: ['US_SPECIALIST_ACCOUNTANT_REVIEW_REQUIRED'],
+    });
+    const serializedUsReadiness = JSON.stringify(
+      usRead.result.data.snapshot.jurisdictionProfileReadiness,
+    );
+    expect(serializedUsReadiness).not.toContain('ownerDomicileCountries');
+    expect(serializedUsReadiness).not.toContain('answers');
     usStore.close();
   });
 
