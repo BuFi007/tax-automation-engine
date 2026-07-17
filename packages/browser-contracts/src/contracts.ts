@@ -489,6 +489,107 @@ export const TAX_OBLIGATION_KINDS_V1 = [
 export const taxObligationKindV1Schema = z.enum(TAX_OBLIGATION_KINDS_V1);
 export type TaxObligationKindV1 = z.infer<typeof taxObligationKindV1Schema>;
 
+export const TAX_AUTHORITY_READINESS_KINDS_V1 = [
+  'ar_factura_e_onboarding',
+] as const;
+
+export const TAX_AUTHORITY_READINESS_STEPS_V1 = [
+  'login_handoff',
+  'human_auth',
+  'service_adherence',
+  'point_of_sale_discovery',
+  'point_of_sale_creation',
+  'ws_delegation',
+  'api_verification',
+  'zk_evidence',
+  'ready',
+] as const;
+
+export const taxAuthorityReadinessV1Schema = z.object({
+  version: z.literal('tax-authority-readiness-v1'),
+  kind: z.enum(TAX_AUTHORITY_READINESS_KINDS_V1),
+  state: z.enum(['not_started', 'in_progress', 'action_required', 'verified', 'ready', 'failed']),
+  environment: z.enum(['homologation', 'production']).nullable(),
+  currentStep: z.enum(TAX_AUTHORITY_READINESS_STEPS_V1).nullable(),
+  requestedServices: z.array(z.enum(['wsfex', 'wsfe'])).max(2),
+  pointOfSaleState: z.enum(['unknown', 'missing', 'active']),
+  delegation: z.object({
+    wsfex: z.boolean().nullable(),
+    wsfe: z.boolean().nullable(),
+  }).strict(),
+  apiVerification: z.object({
+    wsfex: z.boolean().nullable(),
+    wsfe: z.boolean().nullable(),
+    observedAt: isoDateTimeSchema.nullable(),
+  }).strict(),
+  reclaim: z.object({
+    state: z.enum(['not_started', 'pending', 'verified', 'failed', 'expired', 'cancelled']),
+    teeVerified: z.boolean().nullable(),
+    custodyRecorded: z.boolean().nullable(),
+    verifiedAt: isoDateTimeSchema.nullable(),
+  }).strict(),
+  updatedAt: isoDateTimeSchema,
+  limitationCodes: z.array(z.string().regex(/^[A-Z0-9_]+$/)).max(20),
+  actionId: safeReferenceSchema.nullable(),
+}).strict().superRefine((readiness, context) => {
+  if (new Set(readiness.requestedServices).size !== readiness.requestedServices.length) {
+    context.addIssue({ code: 'custom', message: 'Requested authority services must be unique', path: ['requestedServices'] });
+  }
+
+  const notStarted = readiness.state === 'not_started';
+  if (notStarted !== (readiness.currentStep === null)) {
+    context.addIssue({ code: 'custom', message: 'Only not-started authority readiness omits the current step', path: ['currentStep'] });
+  }
+  if (notStarted !== (readiness.environment === null)) {
+    context.addIssue({ code: 'custom', message: 'Only not-started authority readiness omits the environment', path: ['environment'] });
+  }
+  if (notStarted !== (readiness.requestedServices.length === 0)) {
+    context.addIssue({ code: 'custom', message: 'Only not-started authority readiness omits requested services', path: ['requestedServices'] });
+  }
+
+  const requested = new Set(readiness.requestedServices);
+  for (const service of ['wsfex', 'wsfe'] as const) {
+    const values = [readiness.delegation[service], readiness.apiVerification[service]];
+    if (requested.has(service) && !notStarted && values.some(value => value === null)) {
+      context.addIssue({ code: 'custom', message: 'Requested services require closed delegation and API states', path: ['delegation', service] });
+    }
+    if (!requested.has(service) && values.some(value => value !== null)) {
+      context.addIssue({ code: 'custom', message: 'Unrequested services cannot carry authority state', path: ['delegation', service] });
+    }
+  }
+
+  const anyApiVerified = [readiness.apiVerification.wsfex, readiness.apiVerification.wsfe]
+    .some(value => value === true);
+  if (anyApiVerified !== (readiness.apiVerification.observedAt !== null)) {
+    context.addIssue({ code: 'custom', message: 'API observation time must agree with verified service state', path: ['apiVerification', 'observedAt'] });
+  }
+  const reclaimVerified = readiness.reclaim.state === 'verified';
+  if (reclaimVerified !== (readiness.reclaim.verifiedAt !== null)) {
+    context.addIssue({ code: 'custom', message: 'Reclaim verification time must agree with verified state', path: ['reclaim', 'verifiedAt'] });
+  }
+  if (!reclaimVerified && (readiness.reclaim.teeVerified !== null || readiness.reclaim.custodyRecorded !== null)) {
+    context.addIssue({ code: 'custom', message: 'Unverified Reclaim state cannot carry verification claims', path: ['reclaim'] });
+  }
+
+  if (readiness.state === 'ready') {
+    if (readiness.currentStep !== 'ready'
+      || readiness.pointOfSaleState !== 'active'
+      || readiness.reclaim.state !== 'verified'
+      || readiness.requestedServices.some(service => (
+        readiness.delegation[service] !== true || readiness.apiVerification[service] !== true
+      ))) {
+      context.addIssue({ code: 'custom', message: 'Ready authority state requires completed external authority and proof checks' });
+    }
+    if (readiness.actionId !== null || readiness.limitationCodes.length > 0) {
+      context.addIssue({ code: 'custom', message: 'Ready authority state cannot carry a pending action or limitation' });
+    }
+  } else if (readiness.limitationCodes.length === 0) {
+    context.addIssue({ code: 'custom', message: 'Non-ready authority state requires a named limitation', path: ['limitationCodes'] });
+  }
+});
+
+export type TaxAuthorityReadinessV1 = z.infer<typeof taxAuthorityReadinessV1Schema>;
+
 export const taxWidgetSnapshotV1Schema = z.object({
   version: z.literal('tax-widget-snapshot-v1'),
   workspaceId: safeReferenceSchema,
@@ -528,6 +629,7 @@ export const taxWidgetSnapshotV1Schema = z.object({
   accountantPacket: accountantPacketV1Schema.optional(),
   planningForecast: planningForecastV1Schema.optional(),
   supplementalEvidenceQuality: supplementalEvidenceQualityV1Schema.optional(),
+  authorityReadiness: taxAuthorityReadinessV1Schema.optional(),
   authorizedNextActions: z.array(safeReferenceSchema).max(20),
   conclusions: z.array(conclusionV1Schema).max(500),
   warnings: z.array(z.string().max(500)).max(100),

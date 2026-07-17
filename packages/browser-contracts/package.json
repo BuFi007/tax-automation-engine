@@ -1,6 +1,6 @@
 {
   "name": "@tax-engine/browser-contracts",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Browser-safe runtime contracts shared by the Tax Engine, Open Agents, and Desk.",
   "license": "UNLICENSED",
   "repository": {

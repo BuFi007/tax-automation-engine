@@ -6,6 +6,7 @@ import {
   deriveTaxSourceHealthStateV1,
   facturaEFactoringProjectionV1Schema,
   facturaEFactoringProjectionReadResultV1Schema,
+  taxAuthorityReadinessV1Schema,
   taxCaseV1Schema,
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
@@ -27,6 +28,69 @@ describe('browser-safe Tax V1 contracts', () => {
     specialist.obligations[0].kind = 'arbitrary_prompt_text';
     expect(taxWidgetSnapshotV1Schema.safeParse(specialist).success).toBe(false);
     expect(TAX_OBLIGATION_KINDS_V1).toContain('us_form_5472_pro_forma_1120');
+  });
+
+  test('accepts only privacy-minimized, coherent ARCA authority readiness', () => {
+    const actionRequired = {
+      version: 'tax-authority-readiness-v1',
+      kind: 'ar_factura_e_onboarding',
+      state: 'action_required',
+      environment: 'homologation',
+      currentStep: 'point_of_sale_creation',
+      requestedServices: ['wsfex', 'wsfe'],
+      pointOfSaleState: 'missing',
+      delegation: { wsfex: false, wsfe: false },
+      apiVerification: { wsfex: false, wsfe: false, observedAt: null },
+      reclaim: {
+        state: 'not_started',
+        teeVerified: null,
+        custodyRecorded: null,
+        verifiedAt: null,
+      },
+      updatedAt: '2026-07-17T10:00:00.000Z',
+      limitationCodes: ['ARCA_POINT_OF_SALE_REQUIRED'],
+      actionId: 'action:arca_onboarding_continue',
+    } as const;
+    expect(taxAuthorityReadinessV1Schema.safeParse(actionRequired).success).toBe(true);
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...argentinaTaxWidgetSnapshotV1Fixture,
+      authorityReadiness: actionRequired,
+    }).success).toBe(true);
+
+    const leaked = {
+      ...actionRequired,
+      pointOfSaleNumber: 7,
+      onboardingId: '00000000-0000-4000-8000-000000000001',
+      reclaimSessionRef: 'session:forbidden',
+    };
+    expect(taxAuthorityReadinessV1Schema.safeParse(leaked).success).toBe(false);
+
+    const prematureReady = {
+      ...actionRequired,
+      state: 'ready',
+      currentStep: 'ready',
+      limitationCodes: [],
+      actionId: null,
+    };
+    expect(taxAuthorityReadinessV1Schema.safeParse(prematureReady).success).toBe(false);
+
+    const ready = {
+      ...prematureReady,
+      pointOfSaleState: 'active',
+      delegation: { wsfex: true, wsfe: true },
+      apiVerification: {
+        wsfex: true,
+        wsfe: true,
+        observedAt: '2026-07-17T09:55:00.000Z',
+      },
+      reclaim: {
+        state: 'verified',
+        teeVerified: true,
+        custodyRecorded: true,
+        verifiedAt: '2026-07-17T09:59:00.000Z',
+      },
+    };
+    expect(taxAuthorityReadinessV1Schema.safeParse(ready).success).toBe(true);
   });
 
   test('keeps liability unavailable and exact activity separate', () => {
