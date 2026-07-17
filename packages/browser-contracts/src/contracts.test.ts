@@ -8,6 +8,7 @@ import {
   facturaEFactoringProjectionReadResultV1Schema,
   taxAuthorityReadinessV1Schema,
   taxCaseV1Schema,
+  taxJurisdictionProfileReadinessV1Schema,
   taxWidgetSnapshotReceiptV1Schema,
   taxWidgetSnapshotV1Schema,
 } from './contracts';
@@ -16,6 +17,7 @@ import {
   argentinaTaxWidgetSnapshotReceiptV1Fixture,
   argentinaTaxWidgetSnapshotV1Fixture,
   facturaENeedsConsentProjectionV1Fixture,
+  unitedStatesTaxWidgetSnapshotV1Fixture,
 } from './fixtures';
 
 describe('browser-safe Tax V1 contracts', () => {
@@ -144,6 +146,78 @@ describe('browser-safe Tax V1 contracts', () => {
       },
       limitationCodes: [],
     }).success).toBe(true);
+  });
+
+  test('accepts only coherent, jurisdiction-bound United States specialist profile readiness', () => {
+    const confirmed = {
+      version: 'tax-jurisdiction-profile-readiness-v1',
+      kind: 'us_entity',
+      state: 'confirmed',
+      entityStructure: 'single_member_llc',
+      founderDomicileScope: 'foreign_domiciled',
+      ownerUsPersonStatus: 'non_us_person',
+      federalClassification: 'disregarded_entity',
+      memberStructure: 'single',
+      formationSubdivision: 'US-DE',
+      operatingSubdivisionCount: 1,
+      salesSubdivisionCount: 2,
+      payrollState: 'absent',
+      accountantReviewRequired: false,
+      limitationCodes: [],
+    } as const;
+    expect(taxJurisdictionProfileReadinessV1Schema.safeParse(confirmed).success).toBe(true);
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...unitedStatesTaxWidgetSnapshotV1Fixture,
+      jurisdictionProfileReadiness: confirmed,
+    }).success).toBe(true);
+
+    const incomplete = {
+      ...confirmed,
+      state: 'incomplete',
+      ownerUsPersonStatus: 'unconfirmed',
+      accountantReviewRequired: true,
+      limitationCodes: ['US_PROFILE_INCOMPLETE', 'US_OWNER_STATUS_REVIEW_REQUIRED'],
+    } as const;
+    expect(taxJurisdictionProfileReadinessV1Schema.safeParse(incomplete).success).toBe(true);
+
+    expect(taxJurisdictionProfileReadinessV1Schema.safeParse({
+      ...incomplete,
+      state: 'confirmed',
+      accountantReviewRequired: false,
+      limitationCodes: [],
+    }).success).toBe(false);
+    expect(taxJurisdictionProfileReadinessV1Schema.safeParse({
+      ...confirmed,
+      entityStructure: 's_corporation',
+      memberStructure: 'not_applicable',
+      federalClassification: 's_corp',
+    }).success).toBe(false);
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...argentinaTaxWidgetSnapshotV1Fixture,
+      jurisdictionProfileReadiness: confirmed,
+    }).success).toBe(false);
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...unitedStatesTaxWidgetSnapshotV1Fixture,
+      profile: {
+        ...unitedStatesTaxWidgetSnapshotV1Fixture.profile,
+        confirmationState: 'user_confirmed',
+      },
+      jurisdictionProfileReadiness: confirmed,
+    }).success).toBe(false);
+    expect(taxWidgetSnapshotV1Schema.safeParse({
+      ...unitedStatesTaxWidgetSnapshotV1Fixture,
+      profile: {
+        ...unitedStatesTaxWidgetSnapshotV1Fixture.profile,
+        regimeId: 'unsupported_us_regime',
+      },
+      jurisdictionProfileReadiness: confirmed,
+    }).success).toBe(false);
+    expect(taxJurisdictionProfileReadinessV1Schema.safeParse({
+      ...confirmed,
+      ein: 'forbidden',
+      ownerCountry: 'AR',
+      rawAnswers: [],
+    }).success).toBe(false);
   });
 
   test('keeps liability unavailable and exact activity separate', () => {
