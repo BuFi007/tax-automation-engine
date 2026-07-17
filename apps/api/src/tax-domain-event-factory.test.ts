@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { createFacturaEAgentRun, demoSnapshot } from '@tax-engine/core';
+import {
+  HUMAN_AUTH_CAPTURE_POLICY,
+  HUMAN_AUTH_CAPTURE_POLICY_HASH,
+  createFacturaEAgentRun,
+  demoSnapshot,
+} from '@tax-engine/core';
 import type {
   ArcaOnboardingEventV1,
   ArcaOnboardingRunV1,
@@ -59,6 +64,14 @@ function onboardingRun(workspaceId = 'workspace_opaque_1'): ArcaOnboardingRunV1 
     },
     apiVerification: { wsfex: true, wsfe: false, observedAt: T0 },
     reclaimSession: null,
+    humanAuth: {
+      capturePolicy: HUMAN_AUTH_CAPTURE_POLICY,
+      capturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+      startedAt: null,
+      expiresAt: null,
+      completionReceiptHash: null,
+      completedAt: null,
+    },
     zkEvidence: null,
     processedCommandKeys: ['arca-provider-command-raw'],
     eventIds: [],
