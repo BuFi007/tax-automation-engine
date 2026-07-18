@@ -344,6 +344,24 @@ export class FacturaEAgentService {
     };
   }
 
+  invoiceTaxCaseStatus(input: Readonly<{ workspaceId: string; runId: string }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (run.workspaceId !== input.workspaceId || !binding)
+      throw new Error('TAX_INVOICE_CASE_BINDING_CONFLICT');
+    return {
+      runId: run.runId,
+      workspaceId: run.workspaceId,
+      ledgerInvoiceId: binding.invoiceId,
+      intentHash: run.intentHash,
+      revision: run.revision,
+      readinessState: run.readinessState,
+      intentState: run.intentState,
+      approvalState: run.approvalState,
+      issuanceState: run.issuanceState,
+    };
+  }
+
   invoiceAuthorityAttestation(input: Readonly<{
     workspaceId: string;
     runId: string;
