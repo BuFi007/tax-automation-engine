@@ -284,6 +284,25 @@ export class FacturaEAuthorityExecutionStore {
     return row ? recordFromRow(row) : null;
   }
 
+  officiallyReconciledForRun(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    intentHash: string;
+  }>): FacturaEAuthorityExecutionRecord | null {
+    const rows = this.#db
+      .query<AuthorityExecutionRow, [string, string, string]>(`
+        SELECT * FROM factura_e_authority_executions
+        WHERE workspace_id = ? AND run_id = ? AND intent_hash = ?
+          AND state = 'officially_reconciled'
+        ORDER BY updated_at DESC, execution_id DESC
+        LIMIT 2
+      `)
+      .all(input.workspaceId, input.runId, input.intentHash);
+    if (rows.length > 1)
+      throw new Error('TAX_AUTHORITY_MULTIPLE_OFFICIAL_RESULTS_CONFLICT');
+    return rows[0] ? recordFromRow(rows[0]) : null;
+  }
+
   create(input: Readonly<{
     workspaceId: string;
     runId: string;
@@ -949,6 +968,33 @@ export class FacturaEAuthorityExecutionService {
   current(workspaceId: string): SafeFacturaEAuthorityExecutionReceipt | null {
     const record = this.store.latestForWorkspace(workspaceId);
     return record ? safeReceipt(record, false) : null;
+  }
+
+  officialAttestationBinding(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    intentHash: string;
+  }>): Readonly<{
+    executionId: string;
+    receiptHash: string;
+    authorityEnvironment: 'homologation' | 'production';
+    authorityProviderId: string;
+  }> {
+    const record = this.store.officiallyReconciledForRun(input);
+    if (
+      !record ||
+      !record.receiptHash ||
+      record.authorityEnvironment === 'unbound' ||
+      record.authorityEnvironment !== this.authorityContext.environment ||
+      record.authorityProviderId !== this.authorityContext.providerId
+    )
+      throw new Error('TAX_AUTHORITY_OFFICIAL_ATTESTATION_STATE_CONFLICT');
+    return {
+      executionId: record.executionId,
+      receiptHash: record.receiptHash,
+      authorityEnvironment: record.authorityEnvironment,
+      authorityProviderId: record.authorityProviderId,
+    };
   }
 
   createIntent(input: Readonly<{
