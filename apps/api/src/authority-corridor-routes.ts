@@ -288,9 +288,15 @@ function matchRoute(method: string, pathname: string): Readonly<{
       capability: 'factura-e:case:read',
       executionId: caseStatus[1]!,
     };
-  const intentApproval = pathname.match(/^\/v1\/authority\/factura-e\/cases\/([^/]+)\/intent-approval$/);
+  const intentApproval = pathname.match(
+    /^\/v1\/authority\/factura-e\/cases\/([^/]+)\/intent-approval$/
+  );
   if (method === 'POST' && intentApproval)
-    return { operation: 'approve_intent', capability: 'factura-e:intent:approve', executionId: intentApproval[1]! };
+    return {
+      operation: 'approve_intent',
+      capability: 'factura-e:intent:approve',
+      executionId: intentApproval[1]!,
+    };
   if (method === 'POST' && pathname === '/v1/authority/factura-e/intents')
     return { operation: 'create', capability: 'factura-e:intent:create' };
   const readiness = pathname.match(/^\/v1\/authority\/factura-e\/readiness\/([^/]+)$/);
