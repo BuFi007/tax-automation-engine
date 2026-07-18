@@ -81,6 +81,7 @@ function signedRequest(
   input: Readonly<{
     capability:
       | 'factura-e:case:create'
+      | 'factura-e:intent:approve'
       | 'factura-e:intent:create'
       | 'factura-e:approval:register'
       | 'factura-e:execute'
@@ -131,6 +132,93 @@ function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:use
 }
 
 describe('Tax-owned Factura E authority corridor', () => {
+  test('approves a frozen intent through Motora and rejects cross-tenant run access', async () => {
+    const { store, service } = fixture();
+    const calls: Record<string, unknown>[] = [];
+    const run = {
+      runId,
+      workspaceId,
+      approvalState: 'user_approved',
+      issuanceState: 'ready_for_wsfex',
+    };
+    const taxCases = {
+      getRun: (candidateRunId: string) => {
+        calls.push({ kind: 'read', runId: candidateRunId });
+        return run;
+      },
+      approveIntent: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'approve', ...input });
+        return { run, replayed: false };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    const path = `/v1/authority/factura-e/cases/${runId}/intent-approval`;
+    const body = {
+      version: 'factura-e-intent-approve-v1',
+      workspaceId,
+      intentHash,
+      idempotencyKey: 'motora-approve-intent-1',
+    } as const;
+    try {
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, {
+          capability: 'factura-e:intent:approve',
+          actorId: 'user:human-approver-1',
+          secret: motoraSecret,
+        }),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({ data: {
+        version: 'factura-e-intent-approval-receipt-v1',
+        runId,
+        workspaceId,
+        intentHash,
+        approvalState: 'user_approved',
+        issuanceState: 'ready_for_wsfex',
+        replayed: false,
+      } });
+      expect(calls).toEqual([
+        { kind: 'read', runId },
+        expect.objectContaining({
+          kind: 'approve',
+          runId,
+          actorId: 'user:human-approver-1',
+          intentHash,
+        }),
+      ]);
+
+      const otherWorkspaceId = '99999999-9999-4999-8999-999999999999';
+      const crossTenantRun = {
+        ...run,
+        workspaceId: otherWorkspaceId,
+      };
+      const crossTenantCases = {
+        getRun: () => crossTenantRun,
+        approveIntent: () => {
+          throw new Error('CROSS_TENANT_APPROVAL_MUST_NOT_RUN');
+        },
+      } as unknown as import('./factura-e-agent').FacturaEAgentService;
+      const denied = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, {
+          capability: 'factura-e:intent:approve',
+          actorId: 'user:human-approver-1',
+          secret: motoraSecret,
+        }),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases: crossTenantCases },
+      );
+      expect(denied?.status).toBe(403);
+      expect(await denied?.json()).toEqual({
+        error: 'TAX_AUTHORITY_PRINCIPAL_SCOPE_UNAUTHORIZED',
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test('creates and binds a manual TaxCase without drafting, approving, or issuing', async () => {
     const { store, service } = fixture();
     const calls: Record<string, unknown>[] = [];
