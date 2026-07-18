@@ -344,6 +344,91 @@ export class FacturaEAgentService {
     };
   }
 
+  invoiceAuthorityAttestation(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    ledgerInvoiceId: string;
+    intentHash: string;
+    authorityReceiptHash: string;
+    authorityExecutionId: string;
+    authorityEnvironment: 'homologation' | 'production';
+    authorityProviderId: string;
+  }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (
+      run.workspaceId !== input.workspaceId ||
+      run.intentHash !== input.intentHash ||
+      run.issuanceState !== 'arca_authorized' ||
+      !run.intent ||
+      run.intent.documentType !== 19 ||
+      !binding ||
+      binding.invoiceId !== input.ledgerInvoiceId
+    )
+      throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+    if (
+      !run.authority.invoiceNumber ||
+      !run.authority.cae ||
+      !run.authority.caeExpiry ||
+      !run.authority.currencyId ||
+      !run.authority.currencyQuote ||
+      !run.authority.authorizedAt ||
+      !run.authority.receiptHash ||
+      run.authority.receiptHash !== input.authorityReceiptHash
+    )
+      throw new Error('TAX_AUTHORITY_OFFICIAL_ATTESTATION_STATE_CONFLICT');
+    return {
+      version: 'factura-e-invoice-authority-attestation-v1' as const,
+      authorityExecutionId: input.authorityExecutionId,
+      workspaceId: run.workspaceId,
+      ledgerInvoiceId: binding.invoiceId,
+      runId: run.runId,
+      intentHash: run.intentHash,
+      revision: run.revision,
+      authorityState: 'officially_reconciled' as const,
+      authorityEnvironment: input.authorityEnvironment,
+      authorityProviderId: input.authorityProviderId,
+      invoice: {
+        documentType: 19 as const,
+        pointOfSale: run.intent.pointOfSale,
+        invoiceNumber: run.authority.invoiceNumber,
+        cae: run.authority.cae,
+        caeExpiry: run.authority.caeExpiry,
+        currencyId: run.authority.currencyId,
+        currencyQuote: run.authority.currencyQuote,
+        authorizedAt: run.authority.authorizedAt,
+        authorityReceiptHash: run.authority.receiptHash,
+        issueDate: run.intent.issueDate,
+      },
+    };
+  }
+
+  authorityPreparationBinding(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    ledgerInvoiceId: string;
+    intentHash: string;
+  }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (
+      run.workspaceId !== input.workspaceId ||
+      run.intentHash !== input.intentHash ||
+      run.intentState !== 'frozen' ||
+      run.issuanceState !== 'ready_for_wsfex' ||
+      !run.intent ||
+      !binding ||
+      binding.invoiceId !== input.ledgerInvoiceId
+    )
+      throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+    return {
+      version: 'factura-e-authority-preparation-binding-v1' as const,
+      ledgerInvoiceId: binding.invoiceId,
+      taxpayerReferenceHash: run.intent.taxpayerReferenceHash,
+      foreignCustomerReferenceHash: run.intent.foreignCustomerReferenceHash,
+    };
+  }
+
   draftIntent(input: Readonly<{
     runId: string;
     intent: FacturaEIntentV1;

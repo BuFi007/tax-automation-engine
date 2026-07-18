@@ -1288,6 +1288,21 @@ export class TaxProfileStore {
     return { replayed: false };
   }
 
+  getInvoiceTaxCaseBindingByRun(
+    workspaceId: string,
+    runId: string
+  ): Readonly<{ invoiceId: string; boundAt: string }> | null {
+    const row = this.#db.query<{
+      invoice_id: string;
+      bound_at: string;
+    }, [string, string]>(`
+      SELECT invoice_id, bound_at
+      FROM invoice_tax_case_bindings
+      WHERE workspace_id = ? AND run_id = ?
+    `).get(workspaceId, runId);
+    return row ? { invoiceId: row.invoice_id, boundAt: row.bound_at } : null;
+  }
+
   #appendEvidenceRecords(
     records: readonly TaxEvidenceRecord[],
     appendedAt: string,

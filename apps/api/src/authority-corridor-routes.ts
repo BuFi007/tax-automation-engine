@@ -29,6 +29,7 @@ const createIntentSchema = z
     version: z.literal('factura-e-authority-intent-create-v1'),
     workspaceId: workspaceIdSchema,
     runId: z.uuid(),
+    ledgerInvoiceId: z.uuid(),
     intentHash: sha256Schema,
     idempotencyKey: idempotencyKeySchema,
   })
@@ -60,6 +61,15 @@ const approveIntentSchema = z
     workspaceId: workspaceIdSchema,
     intentHash: sha256Schema,
     idempotencyKey: idempotencyKeySchema,
+  })
+  .strict();
+
+const authorityAttestationSchema = z
+  .object({
+    version: z.literal('factura-e-invoice-authority-attestation-request-v1'),
+    workspaceId: workspaceIdSchema,
+    ledgerInvoiceId: z.uuid(),
+    intentHash: sha256Schema,
   })
   .strict();
 
@@ -198,16 +208,54 @@ export async function handleFacturaEAuthorityCorridorRoute(
         },
       }, 200);
     }
+    if (route.operation === 'attest_authority') {
+      if (!options.taxCases) throw new Error('TAX_CASE_CORRIDOR_CONFIGURATION_REQUIRED');
+      const body = authorityAttestationSchema.parse(JSON.parse(rawBody) as unknown);
+      assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      const runId = z.uuid().parse(decodeURIComponent(route.executionId ?? ''));
+      const run = options.taxCases.getRun(runId);
+      assertPrincipalWorkspace(principal.workspaceId, run.workspaceId);
+      if (run.intentHash !== body.intentHash)
+        throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+      const official = service.officialAttestationBinding({
+        workspaceId: body.workspaceId,
+        runId,
+        intentHash: body.intentHash,
+      });
+      return privateJson({
+        data: options.taxCases.invoiceAuthorityAttestation({
+          workspaceId: body.workspaceId,
+          runId,
+          ledgerInvoiceId: body.ledgerInvoiceId,
+          intentHash: body.intentHash,
+          authorityReceiptHash: official.receiptHash,
+          authorityExecutionId: official.executionId,
+          authorityEnvironment: official.authorityEnvironment,
+          authorityProviderId: official.authorityProviderId,
+        }),
+      }, 200);
+    }
 
     if (route.operation === 'create') {
+      if (!options.taxCases) throw new Error('TAX_CASE_CORRIDOR_CONFIGURATION_REQUIRED');
       const body = createIntentSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      const preparationBinding = options.taxCases.authorityPreparationBinding({
+        workspaceId: body.workspaceId,
+        runId: body.runId,
+        ledgerInvoiceId: body.ledgerInvoiceId,
+        intentHash: body.intentHash,
+      });
+      const { ledgerInvoiceId: _ledgerInvoiceId, ...authorityIntent } = body;
       return privateJson({
-        data: service.createIntent({
-          ...body,
-          actorId: principal.actorId,
-          occurredAt,
-        }),
+        data: {
+          ...service.createIntent({
+            ...authorityIntent,
+            actorId: principal.actorId,
+            occurredAt,
+          }),
+          preparationBinding,
+        },
       }, 200);
     }
     const executionId = z.uuid().parse(decodeURIComponent(route.executionId ?? ''));
@@ -269,6 +317,7 @@ function matchRoute(method: string, pathname: string): Readonly<{
     | 'status'
     | 'create_case'
     | 'read_case'
+    | 'attest_authority'
     | 'approve_intent'
     | 'create'
     | 'approve'
@@ -296,6 +345,15 @@ function matchRoute(method: string, pathname: string): Readonly<{
       operation: 'approve_intent',
       capability: 'factura-e:intent:approve',
       executionId: intentApproval[1]!,
+    };
+  const authorityAttestation = pathname.match(
+    /^\/v1\/authority\/factura-e\/cases\/([^/]+)\/authority-attestation$/
+  );
+  if (method === 'POST' && authorityAttestation)
+    return {
+      operation: 'attest_authority',
+      capability: 'factura-e:authority:attest',
+      executionId: authorityAttestation[1]!,
     };
   if (method === 'POST' && pathname === '/v1/authority/factura-e/intents')
     return { operation: 'create', capability: 'factura-e:intent:create' };

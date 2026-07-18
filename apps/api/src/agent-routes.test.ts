@@ -232,6 +232,24 @@ describe('Factura E agent HTTP tools', () => {
     service.approveIntent({ ...base, runId: pathARunId, intentHash: pending.intentHash!, idempotencyKey: 'path-a-approve-user-1' });
     expect(service.getRun(pathARunId).issuanceState).toBe('not_ready');
     service.approveIntentByAccountant({ ...base, actorId: 'accountant:1', runId: pathARunId, intentHash: pending.intentHash!, idempotencyKey: 'path-a-approve-accountant-1' });
+    const ledgerInvoiceId = '50000000-0000-4000-8000-000000000002';
+    service.bindLedgerInvoice({
+      runId: pathARunId,
+      ledgerInvoiceId,
+      idempotencyKey: 'path-a-ledger-binding-1',
+      occurredAt: base.occurredAt,
+    });
+    expect(service.authorityPreparationBinding({
+      workspaceId,
+      runId: pathARunId,
+      ledgerInvoiceId,
+      intentHash: pending.intentHash!,
+    })).toEqual({
+      version: 'factura-e-authority-preparation-binding-v1',
+      ledgerInvoiceId,
+      taxpayerReferenceHash: pending.intent!.taxpayerReferenceHash,
+      foreignCustomerReferenceHash: pending.intent!.foreignCustomerReferenceHash,
+    });
 
     const authorityInput = {
       actorId: 'agent:tax', idempotencyKey: 'path-a-trusted-payload-1', requestId: '9001', invoiceNumber: '51',
