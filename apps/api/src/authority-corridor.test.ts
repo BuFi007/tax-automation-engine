@@ -132,7 +132,82 @@ function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:use
   };
 }
 
+function signedCaseStatusRequest(candidateWorkspaceId = workspaceId) {
+  const path = `/v1/authority/factura-e/cases/${runId}`;
+  return {
+    path,
+    request: new Request(`https://tax.test${path}`, {
+      method: 'GET',
+      headers: createTaxAuthorityPrincipalHeaders({
+        secret: motoraSecret,
+        workspaceId: candidateWorkspaceId,
+        actorId: 'motora:desk-case-status',
+        capability: 'factura-e:case:read',
+        method: 'GET',
+        path,
+        rawBody: '',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+  };
+}
+
 describe('Tax-owned Factura E authority corridor', () => {
+  test('returns the invoice-bound intent hash in the browser-safe TaxCase status', async () => {
+    const { store, service } = fixture();
+    const ledgerInvoiceId = '33333333-3333-4333-8333-333333333333';
+    const calls: Record<string, unknown>[] = [];
+    const taxCases = {
+      invoiceTaxCaseStatus: (input: Record<string, unknown>) => {
+        calls.push(input);
+        if (input.workspaceId !== workspaceId) throw new Error('TAX_INVOICE_CASE_BINDING_CONFLICT');
+        return {
+          runId,
+          workspaceId,
+          ledgerInvoiceId,
+          intentHash,
+          revision: 7,
+          readinessState: 'verified',
+          intentState: 'frozen',
+          approvalState: 'user_approved',
+          issuanceState: 'ready_for_wsfex',
+        };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    try {
+      const signed = signedCaseStatusRequest();
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signed.request,
+        new URL(`https://tax.test${signed.path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({
+        data: expect.objectContaining({
+          version: 'factura-e-tax-case-status-v1',
+          runId,
+          workspaceId,
+          ledgerInvoiceId,
+          intentHash,
+          nextAction: 'persist_authority_intent',
+        }),
+      });
+      expect(calls).toEqual([{ workspaceId, runId }]);
+
+      const denied = signedCaseStatusRequest('99999999-9999-4999-8999-999999999999');
+      const deniedResponse = await handleFacturaEAuthorityCorridorRoute(
+        denied.request,
+        new URL(`https://tax.test${denied.path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(deniedResponse?.status).toBe(409);
+    } finally {
+      store.close();
+    }
+  });
+
   test('releases an invoice-bound authority tuple only after official reconciliation', async () => {
     const { store, service } = fixture();
     const ledgerInvoiceId = '33333333-3333-4333-8333-333333333333';

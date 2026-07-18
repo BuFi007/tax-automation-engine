@@ -173,10 +173,13 @@ export async function handleFacturaEAuthorityCorridorRoute(
     if (route.operation === 'read_case') {
       if (!options.taxCases) throw new Error('TAX_CASE_CORRIDOR_CONFIGURATION_REQUIRED');
       const runId = z.uuid().parse(decodeURIComponent(route.executionId ?? ''));
-      const run = options.taxCases.getRun(runId);
-      assertPrincipalWorkspace(principal.workspaceId, run.workspaceId);
+      const run = options.taxCases.invoiceTaxCaseStatus({
+        workspaceId: principal.workspaceId,
+        runId,
+      });
       return privateJson({ data: {
         version: 'factura-e-tax-case-status-v1', runId: run.runId, workspaceId: run.workspaceId,
+        ledgerInvoiceId: run.ledgerInvoiceId, intentHash: run.intentHash,
         revision: run.revision, readinessState: run.readinessState, intentState: run.intentState,
         approvalState: run.approvalState, issuanceState: run.issuanceState,
         nextAction: run.intentState === 'missing' ? 'collect_verified_evidence' : run.approvalState === 'pending' ? 'await_separate_human_approval' : run.issuanceState === 'ready_for_wsfex' ? 'persist_authority_intent' : 'wait_for_tax_update',
