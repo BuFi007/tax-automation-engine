@@ -15,6 +15,7 @@ import { TaxProfileStore } from './store';
 import { HttpWsfexGateway } from './wsfex';
 import { HttpAuthorityPayloadWriter } from './authority-payload';
 import { ArcaOnboardingService } from './arca-onboarding';
+import { HttpArcaWorkbenchPublisher } from './arca-workbench';
 import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
@@ -428,6 +429,7 @@ const arcaOnboarding = new ArcaOnboardingService(
   proofVault,
   proofCustodyRequired,
   wsfexGateway,
+  HttpArcaWorkbenchPublisher.fromEnvironment(),
 );
 const jurisdictionSchema = z.enum(['AR', 'US']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
