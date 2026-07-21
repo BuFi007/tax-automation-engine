@@ -57,6 +57,48 @@ describe('tax evidence resolver', () => {
     expect(expenseReferences).toHaveLength(4);
   });
 
+  test('projects approved BUFI bill tax as exact input credit with a traceable bill count', async () => {
+    const inputTax: TaxEvidenceRecord = {
+      ...record(
+        'bill-tax',
+        'receipt',
+        'tax',
+        '2026-07-01',
+        '2026-07-31',
+        '1580.90',
+        'bill:1',
+      ),
+      sourceKind: 'bufi_bill',
+      direction: 'outflow',
+      money: { decimal: '1580.90', currency: 'USD' },
+      normalizedMoney: { decimal: '1580.90', currency: 'USD' },
+    };
+    const projection = await new TaxEvidenceResolver([
+      new PagesAdapter('bufi-bill', 'bufi_bill', [[inputTax]]),
+    ]).resolve(context(['bufi-bill']));
+
+    const inputTaxFact = projection.safeFacts.find(
+      fact => fact.value.kind === 'purchase_input_tax',
+    );
+    const countFact = projection.safeFacts.find(
+      fact => fact.value.kind === 'purchase_input_tax_document_count',
+    );
+    expect(inputTaxFact?.value).toEqual({
+      kind: 'purchase_input_tax',
+      safeDisplayValue: '1580.9',
+      unit: 'USD',
+    });
+    expect(inputTaxFact?.sourceReferenceIds).toEqual([
+      `evidence:${inputTax.idempotencyKey}`,
+      'source:bufi-bill',
+    ]);
+    expect(countFact?.value).toEqual({
+      kind: 'purchase_input_tax_document_count',
+      safeDisplayValue: '1',
+      unit: 'count',
+    });
+  });
+
   test('withdraws settlement finality on reversal and restores it only after re-finalization', async () => {
     const invoice = record('invoice', 'invoice', 'revenue');
     const finalized = record('settlement-finalized', 'settlement', 'none');

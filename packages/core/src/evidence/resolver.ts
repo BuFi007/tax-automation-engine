@@ -146,6 +146,9 @@ export class TaxEvidenceResolver {
     const invoiceEvidence = accepted.filter(record => record.economicRole === 'invoice' && record.countingDimension === 'revenue');
     const lineageInvoiceEvidence = acceptedLineage.filter(record => record.economicRole === 'invoice' && record.countingDimension === 'revenue');
     const expenseEvidence = accepted.filter(record => record.economicRole === 'expense' && record.countingDimension === 'expense');
+    const inputTaxEvidence = accepted.filter(record => record.sourceKind === 'bufi_bill'
+      && record.countingDimension === 'tax'
+      && record.direction === 'outflow');
     const fxEvidenceById = new Map(acceptedLineage
       .filter(record => record.sourceKind === 'fx')
       .map(record => [record.idempotencyKey, record]));
@@ -159,8 +162,10 @@ export class TaxEvidenceResolver {
     const graph = buildEvidenceGraph(context.workspaceId, dedupeEvidenceRecords([...activeRecords, ...adjustmentLineageRecords]));
     const invoiceFxEvidence = resolveFxEvidence([...countableInvoiceEvidence, ...adjustmentTargets], fxEvidenceById);
     const expenseFxEvidence = resolveFxEvidence(expenseEvidence, fxEvidenceById);
+    const inputTaxFxEvidence = resolveFxEvidence(inputTaxEvidence, fxEvidenceById);
     const invoiceRecords = uniqueEconomicRole(countableInvoiceEvidence);
     const expenseRecords = uniqueEconomicRole(expenseEvidence);
+    const inputTaxRecords = uniqueEconomicRole(inputTaxEvidence);
     const acceptedRolesByEvent = groupRolesByEvent(acceptedLineage);
     const currency = context.displayCurrency;
     const invoiced = sumNormalizedOrNull(invoiceRecords, currency);
@@ -184,6 +189,7 @@ export class TaxEvidenceResolver {
     const supportedExpenseRecords = expenseRecords.filter(record => acceptedRolesByEvent.get(record.economicEventId)?.has('receipt'));
     const supportedExpenses = sumNormalizedOrNull(supportedExpenseRecords, currency);
     const supportedExpenseFxEvidence = resolveFxEvidence(supportedExpenseRecords, fxEvidenceById);
+    const inputTax = sumNormalizedOrNull(inputTaxRecords, currency);
     const reconciledInvoiceEventIds = new Set(reconciledInvoiceRecords.map(record => record.economicEventId));
     const reconciledSettlementEventIds = new Set(reconciledInvoiceRecords.map(record => (
       record.invoiceAdjustmentKind === 'credit' ? record.adjustsEconomicEventId! : record.economicEventId
@@ -218,6 +224,7 @@ export class TaxEvidenceResolver {
           ...invoiceFxEvidence,
           ...expenseFxEvidence,
           ...supportedExpenseFxEvidence,
+          ...inputTaxFxEvidence,
         ])
           .map(record => ({ idempotencyKey: record.idempotencyKey, hash: hashTaxEvidenceRecord(record) }))
           .sort((left, right) => left.idempotencyKey.localeCompare(right.idempotencyKey)),
@@ -249,6 +256,8 @@ export class TaxEvidenceResolver {
       fact('fact:revenue:reconciled', 'reconciled_revenue', reconciled?.decimal ?? null, currency, context, [...reconciliationEvidence, ...reconciledFxEvidence], bundleHash),
       fact('fact:expenses:recorded', 'recorded_expenses', recordedExpenses?.decimal ?? null, currency, context, [...expenseEvidence, ...expenseFxEvidence], bundleHash),
       fact('fact:expenses:supported', 'supported_expenses', supportedExpenses?.decimal ?? null, currency, context, [...expenseSupportEvidence, ...supportedExpenseFxEvidence], bundleHash),
+      fact('fact:tax:purchase-input', 'purchase_input_tax', inputTax?.decimal ?? null, currency, context, [...inputTaxRecords, ...inputTaxFxEvidence], bundleHash),
+      fact('fact:tax:purchase-input-documents', 'purchase_input_tax_document_count', inputTax ? String(inputTaxRecords.length) : null, 'count', context, inputTaxRecords, bundleHash),
     ];
     const limitations = sources
       .filter(source => source.connectionState !== 'connected')
@@ -264,6 +273,7 @@ export class TaxEvidenceResolver {
       ...invoiceFxEvidence,
       ...expenseFxEvidence,
       ...supportedExpenseFxEvidence,
+      ...inputTaxFxEvidence,
     ]).map(record => record.expiresAt).filter((value): value is string => value !== null));
     const evidenceQuality = calculateTaxEvidenceQualityV1({
       context,
