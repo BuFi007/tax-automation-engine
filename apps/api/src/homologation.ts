@@ -163,11 +163,30 @@ export function validateLiveWsfexSmoke(input: unknown): Readonly<{
 
 export function buildHomologationPreflight(environment: EnvironmentSource = process.env): HomologationPreflightV1 {
   const authorityEnvironment = environment.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologacion' as const;
+  const trustedHumanChannelSecrets = [
+    environment.TAX_ENGINE_API_KEY,
+    environment.TAX_ENGINE_USER_APPROVAL_TOKEN,
+    environment.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN,
+    environment.TAX_ENGINE_EVIDENCE_INGEST_TOKEN,
+    environment.TAX_ENGINE_CONSENT_EVENT_TOKEN,
+    environment.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN,
+    environment.TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN,
+  ];
+  const tenantPrincipalSecrets = [
+    environment.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET,
+    environment.TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET,
+  ];
   const gates: HomologationGateV1[] = [
     booleanGate('explicit_homologation_authority', environment.ARCA_HOMOLOGATION_AUTHORIZED === 'true', 'Explicit homologation authority has not been recorded.'),
     booleanGate('approved_test_identity', environment.ARCA_HOMOLOGATION_TEST_IDENTITY_APPROVED === 'true', 'No approved homologation test identity is recorded.'),
-    configuredGate('trusted_human_channels', [environment.TAX_ENGINE_USER_APPROVAL_TOKEN, environment.TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, environment.TAX_ENGINE_EVIDENCE_INGEST_TOKEN, environment.TAX_ENGINE_CONSENT_EVENT_TOKEN, environment.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, environment.TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN], 'Trusted user, accountant, evidence-ingest, consent-event, snapshot-projector, and authority-payload channels must all be configured.'),
-    distinctConfiguredGate('tenant_principal_boundaries', [environment.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, environment.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, environment.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, environment.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET], 'The user, snapshot-projector, evidence-publisher, and consent-authority tenant-principal boundaries must all be configured with distinct scoped secrets.'),
+    distinctConfiguredGate('trusted_human_channels', trustedHumanChannelSecrets, 'The Tax API, user approval, accountant approval, evidence-ingest, consent-event, snapshot-projector, and authority-payload channels must all be configured with distinct secrets.'),
+    distinctConfiguredGate('tenant_principal_boundaries', tenantPrincipalSecrets, 'The user, onboarding gateway, snapshot-projector, evidence-publisher, consent-authority, Open Agents, and browser-reference tenant boundaries must all be configured with distinct scoped secrets.'),
+    distinctConfiguredGate('security_channel_isolation', [...trustedHumanChannelSecrets, ...tenantPrincipalSecrets], 'Bearer-channel and tenant-signing secrets must be globally distinct; no channel credential may be reused as a principal or browser-reference signing key.'),
     configuredGate('reclaim_application', [environment.RECLAIM_APP_ID, environment.RECLAIM_APP_SECRET, environment.RECLAIM_CALLBACK_BASE_URL], 'Reclaim application and callback configuration is incomplete.'),
     booleanAndConfiguredGate('reviewed_reclaim_readiness_provider', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_ID, 'The readiness provider is missing or has not been explicitly reviewed.'),
     booleanAndConfiguredGate('reviewed_reclaim_cae_provider', environment.RECLAIM_ARCA_CAE_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_CAE_PROVIDER_ID, 'The CAE provider is missing or has not been explicitly reviewed.'),
@@ -326,7 +345,13 @@ function configuredGate(id: string, values: readonly (string | undefined)[], mis
 }
 
 function distinctConfiguredGate(id: string, values: readonly (string | undefined)[], missingReason: string): HomologationGateV1 {
-  return booleanGate(id, values.every(Boolean) && new Set(values).size === values.length, missingReason);
+  if (!values.every(Boolean)) {
+    return { id, required: true, state: 'missing', safeReason: missingReason };
+  }
+  if (new Set(values).size !== values.length) {
+    return { id, required: true, state: 'unsafe', safeReason: missingReason };
+  }
+  return { id, required: true, state: 'ready', safeReason: 'Configured.' };
 }
 
 function booleanAndConfiguredGate(id: string, reviewed: boolean, value: string | undefined, missingReason: string): HomologationGateV1 {

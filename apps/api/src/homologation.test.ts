@@ -37,7 +37,23 @@ describe('ARCA homologation acceptance harness', () => {
     expect(buildHomologationPreflight({
       ...readyEnvironment(),
       TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
-    }).gates.find(gate => gate.id === 'tenant_principal_boundaries')?.state).toBe('missing');
+    }).gates.find(gate => gate.id === 'tenant_principal_boundaries')?.state).toBe('unsafe');
+  });
+
+  test('rejects reused channel and tenant-signing secrets', () => {
+    const reusedHumanChannel = buildHomologationPreflight({
+      ...readyEnvironment(),
+      TAX_ENGINE_CONSENT_EVENT_TOKEN: 'user-approval-token',
+    });
+    expect(reusedHumanChannel.state).toBe('blocked');
+    expect(reusedHumanChannel.gates.find(gate => gate.id === 'trusted_human_channels')?.state).toBe('unsafe');
+
+    const reusedAcrossBoundaries = buildHomologationPreflight({
+      ...readyEnvironment(),
+      TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET: 'evidence-ingest-token',
+    });
+    expect(reusedAcrossBoundaries.state).toBe('blocked');
+    expect(reusedAcrossBoundaries.gates.find(gate => gate.id === 'security_channel_isolation')?.state).toBe('unsafe');
   });
 
   test('accepts only redacted evidence with complete Reclaim, WSFEX, journey, and human-review coverage', () => {
@@ -144,16 +160,20 @@ function readyEnvironment(): Record<string, string> {
     ARCA_ENVIRONMENT: 'homologacion',
     ARCA_HOMOLOGATION_AUTHORIZED: 'true',
     ARCA_HOMOLOGATION_TEST_IDENTITY_APPROVED: 'true',
-    TAX_ENGINE_USER_APPROVAL_TOKEN: 'user-token',
-    TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN: 'accountant-token',
-    TAX_ENGINE_EVIDENCE_INGEST_TOKEN: 'ingest-token',
-    TAX_ENGINE_CONSENT_EVENT_TOKEN: 'consent-token',
+    TAX_ENGINE_API_KEY: 'tax-api-token',
+    TAX_ENGINE_USER_APPROVAL_TOKEN: 'user-approval-token',
+    TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN: 'accountant-approval-token',
+    TAX_ENGINE_EVIDENCE_INGEST_TOKEN: 'evidence-ingest-token',
+    TAX_ENGINE_CONSENT_EVENT_TOKEN: 'consent-event-token',
     TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN: 'snapshot-projector-token',
     TAX_ENGINE_AUTHORITY_PAYLOAD_TOKEN: 'authority-payload-token',
     TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET: 'user-principal-secret',
+    TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET: 'onboarding-principal-secret',
     TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET: 'snapshot-projector-principal-secret',
     TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET: 'publisher-principal-secret',
     TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'consent-principal-secret',
+    TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET: 'open-agents-principal-secret',
+    TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET: 'browser-reference-secret',
     RECLAIM_APP_ID: 'app-id',
     RECLAIM_APP_SECRET: 'app-secret',
     RECLAIM_CALLBACK_BASE_URL: 'https://tax-api.example.test',
