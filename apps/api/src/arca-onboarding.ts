@@ -11,6 +11,7 @@ import {
 } from '@tax-engine/core';
 
 import type { ArcaOnboardingReclaimGateway, ArcaOnboardingReclaimRequest } from './arca-onboarding-reclaim';
+import type { ArcaWorkbenchPublisher } from './arca-workbench';
 import type { ReclaimProofVault } from './proof-vault';
 import type { TaxProfileStore } from './store';
 import type { WsfexPointOfSaleGateway } from './wsfex';
@@ -26,12 +27,15 @@ export type ManualArcaOnboardingCommand = Exclude<ArcaOnboardingCommand,
   Readonly<{ kind: 'start_zk_evidence' }> | Readonly<{ kind: 'record_zk_evidence' }>>;
 
 export class ArcaOnboardingService {
+  private workbenchPublishTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly store: TaxProfileStore,
     private readonly reclaim: ArcaOnboardingReclaimGateway | null,
     private readonly proofVault: ReclaimProofVault | null,
     private readonly proofCustodyRequired: boolean,
     private readonly wsfexPointOfSale: WsfexPointOfSaleGateway | null = null,
+    private readonly workbench: ArcaWorkbenchPublisher | null = null,
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -261,7 +265,19 @@ export class ArcaOnboardingService {
   }
 
   private persist(run: ArcaOnboardingRunV1, event: ArcaOnboardingEventV1, appendedAt: string): ArcaOnboardingRunV1 {
-    return this.store.appendArcaOnboardingRevision({ run, event, stateHash: hashCanonical(run), appendedAt });
+    const persisted = this.store.appendArcaOnboardingRevision({
+      run,
+      event,
+      stateHash: hashCanonical(run),
+      appendedAt,
+    });
+    if (this.workbench) {
+      this.workbenchPublishTail = this.workbenchPublishTail
+        .then(() => this.workbench?.publish(persisted))
+        .then(() => undefined)
+        .catch(() => undefined);
+    }
+    return persisted;
   }
 }
 

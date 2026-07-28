@@ -8,6 +8,7 @@ import {
 } from '@tax-engine/core';
 
 import { ArcaOnboardingService } from './arca-onboarding';
+import type { ArcaWorkbenchPublisher } from './arca-workbench';
 import type {
   ArcaOnboardingReclaimGateway,
   ArcaOnboardingReclaimRequest,
@@ -22,6 +23,39 @@ const onboardingId = '60000000-0000-4000-8000-000000000010';
 const hash = (value: string) => hashCanonical(value);
 
 describe('ARCA onboarding API service', () => {
+  test('retains canonical state when Workbench delivery fails', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const failingPublisher: ArcaWorkbenchPublisher = {
+      publish: async () => {
+        throw new Error('workbench unavailable');
+      },
+    };
+    const service = new ArcaOnboardingService(
+      store,
+      null,
+      null,
+      false,
+      null,
+      failingPublisher
+    );
+
+    const created = service.createRun({
+      onboardingId,
+      workspaceId: 'workspace-1',
+      taxpayerReferenceHash: hash('taxpayer'),
+      environment: 'homologation',
+      requestedServices: ['wsfex'],
+      actorId: 'user:owner',
+      idempotencyKey: 'create-onboarding',
+      occurredAt: now,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(created.run.revision).toBe(1);
+    expect(service.getRun(onboardingId)).toEqual(created.run);
+  });
+
   test('completes WSFEX API verification only with an active, authority-bound FEEWS point', async () => {
     const store = new TaxProfileStore(':memory:');
     grantTaxWorkspaceConsent(store);
