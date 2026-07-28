@@ -1,0 +1,27 @@
+primary_region = "gru"
+
+[build]
+  dockerfile = "apps/wsfe-signer/Dockerfile"
+
+[env]
+  PORT = "4300"
+  ARCA_ENVIRONMENT = "homologacion"
+  WSFE_SIGNER_HOST = "0.0.0.0"
+  WSFE_SIGNER_DB_PATH = "/data/wsfe-signer.sqlite"
+  WSFE_SIGNER_VERSION = "0.1.0"
+  WSFE_SIGNER_PRODUCTION_APPROVED = "false"
+
+[http_service]
+  internal_port = 4300
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[mounts]]
+  source = "wsfe_signer_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
