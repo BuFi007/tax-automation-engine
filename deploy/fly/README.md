@@ -53,10 +53,20 @@ to one Machine and does not make SQLite multi-writer safe.
 ## Configure secrets
 
 Generate every value independently with a cryptographically secure generator.
-The two encryption/commitment keys are base64-encoded 32-byte values. All bearer
-and HMAC credentials must be at least 32 random bytes and must not be reused.
-Use `fly secrets import --app APP` from a temporary, access-controlled input
-stream so values do not enter shell history.
+The boundary and vault processes expect each mounted key file to contain the
+base64 text representation of exactly 32 random bytes. Fly decodes a
+`[[files]].secret_name` value once before writing the file, so these file-backed
+secrets require two representation layers:
+
+1. generate 32 random bytes and base64-encode them for the service; then
+2. base64-encode that resulting text when storing it as the Fly secret.
+
+After Fly's one decode, the mounted file contains the first-layer base64 text
+that the service expects. Do not double-encode ordinary bearer/HMAC variables;
+those are injected directly as environment strings rather than mounted files.
+All bearer and HMAC credentials must be at least 32 random bytes and must not be
+reused. Use `fly secrets import --app APP` from a temporary, access-controlled
+input stream so values do not enter shell history.
 
 The boundary app needs:
 
