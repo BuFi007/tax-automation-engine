@@ -59,4 +59,15 @@ describe('Fly ARCA homologation topology', () => {
     expect(proofVault).toContain('guest_path = "/run/secrets/reclaim_proof_vault_master_key"');
     expect(proofVault).toContain('RECLAIM_PROOF_VAULT_MASTER_KEY_FILE = "/run/secrets/reclaim_proof_vault_master_key"');
   });
+
+  test('documents Fly file-secret decoding without double-encoding bearer credentials', () => {
+    const readme = readFileSync(
+      resolve(repositoryRoot, 'deploy/fly/README.md'),
+      'utf8',
+    );
+
+    expect(readme).toContain('require two representation layers');
+    expect(readme).toContain("After Fly's one decode");
+    expect(readme).toContain('Do not double-encode ordinary bearer/HMAC variables');
+  });
 });
