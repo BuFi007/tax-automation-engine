@@ -181,17 +181,25 @@ export function buildHomologationPreflight(environment: EnvironmentSource = proc
     environment.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET,
     environment.TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET,
   ];
+  const workbenchCommitmentSecrets = [
+    environment.TAX_WORKBENCH_INGEST_SECRET,
+  ];
   const gates: HomologationGateV1[] = [
     booleanGate('explicit_homologation_authority', environment.ARCA_HOMOLOGATION_AUTHORIZED === 'true', 'Explicit homologation authority has not been recorded.'),
     booleanGate('approved_test_identity', environment.ARCA_HOMOLOGATION_TEST_IDENTITY_APPROVED === 'true', 'No approved homologation test identity is recorded.'),
     distinctConfiguredGate('trusted_human_channels', trustedHumanChannelSecrets, 'The Tax API, user approval, accountant approval, evidence-ingest, consent-event, snapshot-projector, and authority-payload channels must all be configured with distinct secrets.'),
     distinctConfiguredGate('tenant_principal_boundaries', tenantPrincipalSecrets, 'The user, onboarding gateway, snapshot-projector, evidence-publisher, consent-authority, Open Agents, and browser-reference tenant boundaries must all be configured with distinct scoped secrets.'),
-    distinctConfiguredGate('security_channel_isolation', [...trustedHumanChannelSecrets, ...tenantPrincipalSecrets], 'Bearer-channel and tenant-signing secrets must be globally distinct; no channel credential may be reused as a principal or browser-reference signing key.'),
+    distinctConfiguredGate('security_channel_isolation', [...trustedHumanChannelSecrets, ...tenantPrincipalSecrets, ...workbenchCommitmentSecrets], 'Bearer-channel, tenant-signing, and commitment-ingest secrets must be globally distinct; no channel credential may be reused across authority, principal, browser-reference, or Workbench boundaries.'),
     configuredGate('reclaim_application', [environment.RECLAIM_APP_ID, environment.RECLAIM_APP_SECRET, environment.RECLAIM_CALLBACK_BASE_URL], 'Reclaim application and callback configuration is incomplete.'),
     booleanAndConfiguredGate('reviewed_reclaim_readiness_provider', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_TAXPAYER_PROVIDER_ID, 'The readiness provider is missing or has not been explicitly reviewed.'),
     booleanAndConfiguredGate('reviewed_reclaim_cae_provider', environment.RECLAIM_ARCA_CAE_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_CAE_PROVIDER_ID, 'The CAE provider is missing or has not been explicitly reviewed.'),
     booleanAndConfiguredGate('reviewed_reclaim_onboarding_provider', environment.RECLAIM_ARCA_ONBOARDING_PROVIDER_REVIEWED === 'true', environment.RECLAIM_ARCA_ONBOARDING_PROVIDER_ID, 'The ARCA onboarding provider is missing or has not passed the prover-side WITNESS review.'),
     configuredGate('encrypted_proof_custody', [environment.RECLAIM_PROOF_VAULT_URL, environment.RECLAIM_PROOF_VAULT_TOKEN, environment.RECLAIM_PROOF_RETENTION_POLICY_ID], 'Encrypted proof-vault custody and retention policy must be configured for acceptance.'),
+    configuredGate('commitment_only_workbench_ingest', [
+      environment.TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED === 'true' ? 'enabled' : undefined,
+      environment.TAX_WORKBENCH_INGEST_URL,
+      environment.TAX_WORKBENCH_INGEST_SECRET,
+    ], 'Commitment-only Workbench publishing must be explicitly enabled with its HTTPS endpoint and independent ingest secret.'),
     configuredGate('isolated_wsfex_signer', [environment.ARCA_SIGNER_URL, environment.ARCA_SIGNER_TOKEN], 'The isolated WSFEX signer is not configured.'),
     configuredGate('isolated_wsfe_signer', [environment.ARCA_WSFE_SIGNER_URL, environment.ARCA_WSFE_SIGNER_TOKEN], 'The isolated WSFE (Factura C) signer is not configured.'),
     configuredGate('encrypted_arca_boundary', [environment.ARCA_BOUNDARY_URL, environment.ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN], 'The encrypted ARCA payload boundary is not configured.'),
@@ -201,6 +209,7 @@ export function buildHomologationPreflight(environment: EnvironmentSource = proc
     safeEnvironmentGate(authorityEnvironment, environment.TAX_ENGINE_PRODUCTION_APPROVED === 'true'),
     httpsGate('reclaim_callback_https', environment.RECLAIM_CALLBACK_BASE_URL, 'Reclaim callback must use HTTPS for homologation.'),
     httpsGate('proof_vault_https', environment.RECLAIM_PROOF_VAULT_URL, 'Proof vault must use HTTPS for homologation.'),
+    httpsGate('workbench_ingest_https', environment.TAX_WORKBENCH_INGEST_URL, 'Workbench commitment ingest must use HTTPS for homologation.'),
     httpsGate('wsfex_signer_https', environment.ARCA_SIGNER_URL, 'WSFEX signer must use HTTPS for homologation.'),
     httpsGate('wsfe_signer_https', environment.ARCA_WSFE_SIGNER_URL, 'WSFE signer must use HTTPS for homologation.'),
     httpsGate('arca_boundary_https', environment.ARCA_BOUNDARY_URL, 'ARCA authority boundary must use HTTPS for homologation.'),

@@ -60,13 +60,26 @@ describe('ARCA Workbench publisher', () => {
     expect(() =>
       HttpArcaWorkbenchPublisher.fromEnvironment({
         TAX_WORKBENCH_INGEST_URL: 'https://workbench.example/ingest',
+        TAX_WORKBENCH_INGEST_SECRET: secret,
+      })
+    ).toThrow('TAX_WORKBENCH_COMMITMENT_PUBLISHING_GATE_REQUIRED');
+    expect(() =>
+      HttpArcaWorkbenchPublisher.fromEnvironment({
+        TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED: 'true',
+        TAX_WORKBENCH_INGEST_URL: 'https://workbench.example/ingest',
       })
     ).toThrow('TAX_WORKBENCH_INGEST_CONFIGURATION_REQUIRED');
+    expect(
+      HttpArcaWorkbenchPublisher.fromEnvironment({
+        TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED: 'false',
+      })
+    ).toBeNull();
     expect(
       () => new HttpArcaWorkbenchPublisher(new URL('http://workbench.example/ingest'), secret)
     ).toThrow('TAX_WORKBENCH_INGEST_HTTPS_REQUIRED');
     expect(
       HttpArcaWorkbenchPublisher.fromEnvironment({
+        TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED: 'true',
         TAX_WORKBENCH_INGEST_URL: 'http://127.0.0.1:4300/api/orchestrations/ingest',
         TAX_WORKBENCH_INGEST_SECRET: secret,
       })

@@ -53,9 +53,13 @@ export class HttpArcaWorkbenchPublisher implements ArcaWorkbenchPublisher {
   static fromEnvironment(
     env: Readonly<Record<string, string | undefined>> = process.env
   ): HttpArcaWorkbenchPublisher | null {
+    const enabled = env.TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED === 'true';
     const endpoint = env.TAX_WORKBENCH_INGEST_URL ?? null;
     const secret = env.TAX_WORKBENCH_INGEST_SECRET ?? null;
-    if (!endpoint && !secret) return null;
+    if (!enabled) {
+      if (endpoint || secret) throw new Error('TAX_WORKBENCH_COMMITMENT_PUBLISHING_GATE_REQUIRED');
+      return null;
+    }
     if (!endpoint || !secret) throw new Error('TAX_WORKBENCH_INGEST_CONFIGURATION_REQUIRED');
     return new HttpArcaWorkbenchPublisher(new URL(endpoint), secret);
   }
