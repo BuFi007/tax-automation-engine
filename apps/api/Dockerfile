@@ -1,0 +1,30 @@
+FROM oven/bun:1.3.10
+
+WORKDIR /app
+COPY package.json bun.lock tsconfig.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/arca-boundary/package.json apps/arca-boundary/package.json
+COPY apps/reclaim-proof-vault/package.json apps/reclaim-proof-vault/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
+COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
+COPY apps/wsfecred/package.json apps/wsfecred/package.json
+COPY packages/browser-contracts/package.json packages/browser-contracts/package.json
+COPY packages/core/package.json packages/core/package.json
+COPY packages/erp/package.json packages/erp/package.json
+RUN bun install --frozen-lockfile
+
+COPY packages/browser-contracts packages/browser-contracts
+COPY packages/core packages/core
+COPY packages/erp packages/erp
+COPY apps/wsfex-signer apps/wsfex-signer
+COPY apps/api apps/api
+RUN bun run --filter @tax-engine/browser-contracts build
+RUN mkdir -p /data && chown -R bun:bun /data
+
+ENV NODE_ENV=production
+ENV PORT=4100
+ENV TAX_ENGINE_DB_PATH=/data/tax-engine.sqlite
+EXPOSE 4100
+USER bun
+CMD ["bun", "run", "--filter", "@tax-engine/api", "start"]
