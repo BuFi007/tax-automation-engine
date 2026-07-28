@@ -27,6 +27,7 @@ describe('ARCA homologation acceptance harness', () => {
     expect(preflight.gates.find(gate => gate.id === 'wsfe_certificate_delegation')?.state).toBe('missing');
     expect(preflight.gates.find(gate => gate.id === 'feews_point_of_sale')?.state).toBe('missing');
     expect(preflight.gates.find(gate => gate.id === 'reviewed_reclaim_onboarding_provider')?.state).toBe('missing');
+    expect(preflight.gates.find(gate => gate.id === 'commitment_only_workbench_ingest')?.state).toBe('missing');
   });
 
   test('becomes ready only with reviewed HTTPS homologation boundaries and explicit authority', () => {
@@ -54,6 +55,13 @@ describe('ARCA homologation acceptance harness', () => {
     });
     expect(reusedAcrossBoundaries.state).toBe('blocked');
     expect(reusedAcrossBoundaries.gates.find(gate => gate.id === 'security_channel_isolation')?.state).toBe('unsafe');
+
+    const reusedWorkbenchSecret = buildHomologationPreflight({
+      ...readyEnvironment(),
+      TAX_WORKBENCH_INGEST_SECRET: 'evidence-ingest-token',
+    });
+    expect(reusedWorkbenchSecret.state).toBe('blocked');
+    expect(reusedWorkbenchSecret.gates.find(gate => gate.id === 'security_channel_isolation')?.state).toBe('unsafe');
   });
 
   test('accepts only redacted evidence with complete Reclaim, WSFEX, journey, and human-review coverage', () => {
@@ -174,6 +182,9 @@ function readyEnvironment(): Record<string, string> {
     TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET: 'consent-principal-secret',
     TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET: 'open-agents-principal-secret',
     TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET: 'browser-reference-secret',
+    TAX_WORKBENCH_COMMITMENT_PUBLISHING_ENABLED: 'true',
+    TAX_WORKBENCH_INGEST_URL: 'https://workbench.example.test/api/orchestrations/ingest',
+    TAX_WORKBENCH_INGEST_SECRET: 'workbench-commitment-ingest-secret',
     RECLAIM_APP_ID: 'app-id',
     RECLAIM_APP_SECRET: 'app-secret',
     RECLAIM_CALLBACK_BASE_URL: 'https://tax-api.example.test',
