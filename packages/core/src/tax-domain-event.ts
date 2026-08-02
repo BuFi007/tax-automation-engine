@@ -21,6 +21,7 @@ export const TAX_DOMAIN_EVENT_KINDS_V1 = [
   'consent.revoked',
   'accountant.decision_recorded',
   'factura_e_feature_published',
+  'uae_einvoicing.reporting_verified',
 ] as const;
 
 const opaqueRefSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/)
@@ -29,7 +30,16 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const isoDateTimeSchema = z.iso.datetime({ offset: true });
 
 const eventSourceSchema = z.object({
-  system: z.enum(['arca', 'reclaim', 'invoice_ledger', 'tax_engine', 'evidence_graph', 'accountant_workspace', 'factoring']),
+  system: z.enum([
+    'arca',
+    'reclaim',
+    'invoice_ledger',
+    'tax_engine',
+    'evidence_graph',
+    'accountant_workspace',
+    'factoring',
+    'uae_einvoicing_asp',
+  ]),
   sourceEventHash: hashSchema,
   verifiedAt: isoDateTimeSchema,
 }).strict();

@@ -13,6 +13,8 @@ import {
   type TaxEvidenceConsentEventV1,
   type TaxObligation,
   type TaxWidgetSnapshotV1,
+  type UaeEinvoicingOnboardingEventV1,
+  type UaeEinvoicingOnboardingRunV1,
 } from '@tax-engine/core';
 import type { EvidenceGap } from '@tax-engine/core';
 
@@ -114,6 +116,73 @@ export function createArcaOnboardingTaxDomainEvent(input: Readonly<{
     policyVersionIds: ['tax-domain-event-minimization-v1'],
     actionRefs: [
       `arca_action_${commit('action', input.event.eventId).slice(0, 40)}`,
+    ],
+  });
+}
+
+export function createUaeEinvoicingOnboardingTaxDomainEvent(input: Readonly<{
+  run: UaeEinvoicingOnboardingRunV1;
+  event: UaeEinvoicingOnboardingEventV1;
+  consent: ActiveConsent;
+  commitmentSecret: string;
+  eventId?: string;
+}>): TaxDomainEventV1 | null {
+  if (input.event.action !== 'record_fta_reporting_validation') return null;
+  if (
+    input.run.status !== 'ready'
+    || input.run.currentStep !== 'ready'
+    || !input.run.ftaReportingValidation.reportingReceiptHash
+    || !input.run.ftaReportingValidation.observedAt
+  ) {
+    throw new Error('UAE_EINVOICING_REPORTING_VERIFICATION_REQUIRED');
+  }
+  assertCommitmentSecret(input.commitmentSecret);
+  const commit = (purpose: string, value: string) => privacyCommitment(
+    input.commitmentSecret,
+    purpose,
+    input.run.workspaceId,
+    value,
+  );
+  const sourceEventHash = hashCanonical(input.event);
+  return assertTaxDomainEventV1({
+    version: 'tax-domain-event-v1',
+    eventId: input.eventId ?? uuidFromCommitment(
+      commit('event-id', `${input.event.eventId}:uae_einvoicing.reporting_verified`),
+    ),
+    workspaceId: input.run.workspaceId,
+    caseRef: null,
+    kind: 'uae_einvoicing.reporting_verified',
+    state: 'verified',
+    occurredAt: input.event.occurredAt,
+    idempotencyKey:
+      `taxevt_${commit('idempotency', input.event.idempotencyKey).slice(0, 40)}`,
+    correlationRef:
+      `uaeeinv_${commit('correlation', input.run.onboardingId).slice(0, 40)}`,
+    source: {
+      system: 'uae_einvoicing_asp',
+      sourceEventHash: commit('source-event', sourceEventHash),
+      verifiedAt: input.run.ftaReportingValidation.observedAt,
+    },
+    authentication: {
+      method: 'provider_webhook',
+      principalRef: 'uae_einvoicing_asp_reporting_verifier',
+      credentialVersion: 'uae-einvoicing-asp-reporting-v1',
+      signatureHash: commit('authentication', sourceEventHash),
+    },
+    consent: {
+      purpose: 'tax_workspace_processing',
+      version:
+        `consent_${commit('consent-version', input.consent.version).slice(0, 40)}`,
+      scopeHash: commit('consent-scope', input.consent.scopeHash),
+      state: 'active',
+    },
+    evidenceHashes: [
+      commit('evidence', input.run.ftaReportingValidation.reportingReceiptHash),
+    ],
+    ruleVersionIds: ['ae-einvoicing-provider-onboarding-2026-v1'],
+    policyVersionIds: ['tax-domain-event-minimization-v1'],
+    actionRefs: [
+      `uaeeinv_action_${commit('action', input.event.eventId).slice(0, 40)}`,
     ],
   });
 }

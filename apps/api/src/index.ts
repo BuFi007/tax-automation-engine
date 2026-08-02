@@ -18,6 +18,9 @@ import { ArcaOnboardingService } from './arca-onboarding';
 import { HttpArcaWorkbenchPublisher } from './arca-workbench';
 import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
+import { UaeEinvoicingOnboardingService } from './uae-einvoicing-onboarding';
+import { handleUaeEinvoicingOnboardingRoute } from './uae-einvoicing-onboarding-routes';
+import { HttpUaeWorkbenchPublisher } from './uae-workbench';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
 import { handleTaxEvidenceRoute } from './evidence-routes';
 import {
@@ -97,6 +100,8 @@ const snapshotProjectorToken = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN ?
 const userPrincipalSecret = process.env.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET ?? null;
 const motoraOnboardingPrincipalSecret =
   process.env.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
+const deskUaeOnboardingPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_UAE_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
 const snapshotProjectorPrincipalSecret = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET ?? null;
 const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET ?? null;
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
@@ -177,22 +182,24 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !snapshotProjectorToken
   || !userPrincipalSecret
   || !motoraOnboardingPrincipalSecret
+  || !deskUaeOnboardingPrincipalSecret
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
   || !openAgentsAgentPrincipalSecret)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
+  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_DESK_UAE_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
 }
 if (process.env.NODE_ENV === 'production'
   && new Set([
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    deskUaeOnboardingPrincipalSecret,
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
-  ]).size !== 7) {
+  ]).size !== 8) {
   throw new Error('TAX_ENGINE_TENANT_AND_BROWSER_REFERENCE_SECRETS_MUST_BE_DISTINCT');
 }
 if (taxDomainEventDeliveryEnabled) {
@@ -431,7 +438,13 @@ const arcaOnboarding = new ArcaOnboardingService(
   wsfexGateway,
   HttpArcaWorkbenchPublisher.fromEnvironment(),
 );
-const jurisdictionSchema = z.enum(['AR', 'US']);
+const uaeEinvoicingOnboardingEnabled =
+  process.env.TAX_ENGINE_UAE_EINVOICING_ONBOARDING_ENABLED === 'true';
+const uaeEinvoicingOnboarding = new UaeEinvoicingOnboardingService(
+  store,
+  HttpUaeWorkbenchPublisher.fromEnvironment()
+);
+const jurisdictionSchema = z.enum(['AR', 'US', 'AE']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
   profileId: z.string().min(1),
@@ -512,6 +525,31 @@ export const server = Bun.serve({
         );
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
+      if (
+        /^\/v1\/uae-einvoicing-onboarding(?:\/|$)/.test(url.pathname)
+        && request.headers.has('x-tax-tenant-principal')
+      ) {
+        const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
+          request,
+          deskUaeOnboardingPrincipalSecret,
+          'uae-einvoicing:onboard'
+        );
+        const scopedResponse = await handleUaeEinvoicingOnboardingRoute(
+          request,
+          url,
+          uaeEinvoicingOnboarding,
+          {
+            enabled: uaeEinvoicingOnboardingEnabled,
+            userApprovalToken,
+            evidenceIngestToken,
+            tenantPrincipal: scopedPrincipal,
+          }
+        );
+        return applyCors(
+          scopedResponse ?? json({ error: 'NOT_FOUND' }, 404),
+          request
+        );
+      }
       const authorityCorridorResponse = await handleFacturaEAuthorityCorridorRoute(
         request,
         url,
@@ -536,6 +574,7 @@ export const server = Bun.serve({
       if (featureResponse) return applyCors(featureResponse, request);
       if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
       const tenantCapability = /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
+        || /^\/v1\/uae-einvoicing-onboarding(?:\/|$)/.test(url.pathname)
         ? null
         : requiredTaxTenantPrincipalCapability(request.method, url.pathname);
       const tenantPrincipal = tenantCapability
@@ -556,6 +595,20 @@ export const server = Bun.serve({
         tenantPrincipal: null,
       });
       if (onboardingResponse) return applyCors(onboardingResponse, request);
+      const uaeOnboardingResponse = await handleUaeEinvoicingOnboardingRoute(
+        request,
+        url,
+        uaeEinvoicingOnboarding,
+        {
+          enabled: uaeEinvoicingOnboardingEnabled,
+          userApprovalToken,
+          evidenceIngestToken,
+          tenantPrincipal: null,
+        }
+      );
+      if (uaeOnboardingResponse) {
+        return applyCors(uaeOnboardingResponse, request);
+      }
       const browserSnapshotResponse = handleTaxBrowserSnapshotRoute(request, url, taxBrowserSnapshots, tenantPrincipal);
       if (browserSnapshotResponse) return applyCors(browserSnapshotResponse, request);
       const factoringBrowserResponse = await handleFacturaEFactoringBrowserRoute(
@@ -592,6 +645,9 @@ export const server = Bun.serve({
             : { remoteEffects: 'dark', downstreamEligibility: 'blocked' },
           agent: facturaEAgent.capabilities(),
           arcaOnboarding: arcaOnboarding.capabilities(),
+          uaeEinvoicingOnboarding: uaeEinvoicingOnboardingEnabled
+            ? uaeEinvoicingOnboarding.capabilities()
+            : { state: 'dark' },
           facturaEFeaturePublication: facturaEFeatureEnabled
             ? {
                 state: 'armed',

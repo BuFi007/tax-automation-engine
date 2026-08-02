@@ -120,7 +120,9 @@ export function stripeTaxTransactionEvidence(input: StripeTaxTransactionEvidence
     || input.route.fiscalAuthority !== 'stripe_tax_supported_jurisdiction'
     || !input.route.calculationState.startsWith('eligible_')
   ) throw new Error('STRIPE_TAX_CALCULATION_EVIDENCE_NOT_AUTHORIZED');
-  const expectedJurisdiction = input.route.issuerCountry === 'AR' || input.route.issuerCountry === 'US'
+  const expectedJurisdiction = input.route.issuerCountry === 'AR'
+    || input.route.issuerCountry === 'US'
+    || input.route.issuerCountry === 'AE'
     ? input.route.issuerCountry
     : null;
   if (expectedJurisdiction !== input.issuerJurisdiction) throw new Error('STRIPE_TAX_EVIDENCE_JURISDICTION_MISMATCH');

@@ -13,6 +13,7 @@ export * from './factura-e-agent';
 export * from './factura-e-feature';
 export * from './factura-e-feature-head';
 export * from './arca-onboarding';
+export * from './uae-einvoicing-onboarding';
 export * from './accountant-mandate';
 export * from './digital-assets';
 export * from './stripe-tax';

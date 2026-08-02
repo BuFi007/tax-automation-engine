@@ -3,7 +3,9 @@ import { describe, expect, test } from 'bun:test';
 import {
   HUMAN_AUTH_CAPTURE_POLICY,
   HUMAN_AUTH_CAPTURE_POLICY_HASH,
+  applyUaeEinvoicingOnboardingCommand,
   createFacturaEAgentRun,
+  createUaeEinvoicingOnboardingRun,
   demoSnapshot,
 } from '@tax-engine/core';
 import type {
@@ -12,6 +14,9 @@ import type {
   FacturaEAgentEventV1,
   FacturaEAgentRunV1,
   TaxEvidenceConsentEventV1,
+  UaeEinvoicingOnboardingCommand,
+  UaeEinvoicingOnboardingEventV1,
+  UaeEinvoicingOnboardingRunV1,
 } from '@tax-engine/core';
 
 import {
@@ -19,6 +24,7 @@ import {
   createConsentRevokedTaxDomainEvent,
   createFacturaEAgentTaxDomainEvents,
   createSnapshotTaxDomainEvents,
+  createUaeEinvoicingOnboardingTaxDomainEvent,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
 
@@ -219,6 +225,55 @@ describe('TaxDomainEventV1 producer minimization', () => {
       eventId: '30000000-0000-4000-8000-000000000002',
     });
     expect(otherWorkspace?.evidenceHashes[0]).not.toBe(firstEvidenceHash);
+  });
+
+  test('emits UAE readiness only from final provider-verified reporting evidence', () => {
+    const final = finalUaeOnboarding();
+    const event = createUaeEinvoicingOnboardingTaxDomainEvent({
+      ...final,
+      consent: { version: 'uae-consent-raw-v1', scopeHash: RAW_SCOPE_HASH },
+      commitmentSecret: SECRET,
+      eventId: '30000000-0000-4000-8000-000000000003',
+    });
+
+    expect(event).toMatchObject({
+      kind: 'uae_einvoicing.reporting_verified',
+      state: 'verified',
+      source: {
+        system: 'uae_einvoicing_asp',
+      },
+      authentication: {
+        method: 'provider_webhook',
+      },
+    });
+    expect(event?.evidenceHashes).toHaveLength(1);
+    const serialized = JSON.stringify(event);
+    for (const forbidden of [
+      final.run.taxpayerReferenceHash,
+      final.run.legalEntityReferenceHash,
+      final.run.ftaReportingValidation.reportingReceiptHash!,
+      RAW_SCOPE_HASH,
+      'uae-consent-raw-v1',
+      'asp:verified',
+    ]) expect(serialized).not.toContain(forbidden);
+
+    const created = createUaeEinvoicingOnboardingRun({
+      onboardingId: '70000000-0000-4000-8000-000000000002',
+      workspaceId: 'workspace_opaque_1',
+      taxpayerReferenceHash: '1'.repeat(64),
+      legalEntityReferenceHash: '2'.repeat(64),
+      environment: 'pilot',
+      revenueBand: 'below_aed_50m',
+      actorId: 'user:owner',
+      occurredAt: T0,
+      idempotencyKey: 'uae-create-raw',
+    });
+    expect(createUaeEinvoicingOnboardingTaxDomainEvent({
+      run: created.run,
+      event: created.event,
+      consent: { version: 'uae-consent-raw-v1', scopeHash: RAW_SCOPE_HASH },
+      commitmentSecret: SECRET,
+    })).toBeNull();
   });
 
   test('emits revocation without treating revoked consent as active', () => {
@@ -491,3 +546,74 @@ describe('TaxDomainEventV1 producer minimization', () => {
     ]);
   });
 });
+
+function finalUaeOnboarding(): Readonly<{
+  run: UaeEinvoicingOnboardingRunV1;
+  event: UaeEinvoicingOnboardingEventV1;
+}> {
+  let { run } = createUaeEinvoicingOnboardingRun({
+    onboardingId: '70000000-0000-4000-8000-000000000001',
+    workspaceId: 'workspace_opaque_1',
+    taxpayerReferenceHash: '1'.repeat(64),
+    legalEntityReferenceHash: '2'.repeat(64),
+    environment: 'pilot',
+    revenueBand: 'below_aed_50m',
+    actorId: 'user:owner',
+    occurredAt: T0,
+    idempotencyKey: 'uae-create-raw',
+  });
+  const commands: readonly UaeEinvoicingOnboardingCommand[] = [
+    {
+      kind: 'record_emaratax_asp_selection',
+      aspReferenceHash: '3'.repeat(64),
+      selectionReceiptHash: '4'.repeat(64),
+      selectedAt: T0,
+      idempotencyKey: 'uae-select-raw',
+    },
+    {
+      kind: 'record_commercial_agreement',
+      agreementReferenceHash: '5'.repeat(64),
+      effectiveAt: T0,
+      idempotencyKey: 'uae-agreement-raw',
+    },
+    {
+      kind: 'record_asp_participant_registration',
+      participantReferenceHash: '6'.repeat(64),
+      registrationReceiptHash: '7'.repeat(64),
+      idempotencyKey: 'uae-participant-raw',
+    },
+    {
+      kind: 'record_pint_ae_validation',
+      specificationVersion: 'PINT-AE-1.0',
+      validationReceiptHash: '8'.repeat(64),
+      idempotencyKey: 'uae-pint-raw',
+    },
+    {
+      kind: 'record_network_connectivity',
+      exchangeReceiptHash: '9'.repeat(64),
+      idempotencyKey: 'uae-network-raw',
+    },
+    {
+      kind: 'record_fta_reporting_validation',
+      reportingReceiptHash: 'a'.repeat(64),
+      observedAt: T0,
+      idempotencyKey: 'uae-reporting-raw',
+    },
+  ];
+  let finalEvent: UaeEinvoicingOnboardingEventV1 | null = null;
+  for (const command of commands) {
+    const applied = applyUaeEinvoicingOnboardingCommand(
+      run,
+      command,
+      command.kind === 'record_emaratax_asp_selection'
+      || command.kind === 'record_commercial_agreement'
+        ? 'user:owner'
+        : 'asp:verified',
+      T0,
+    );
+    run = applied.run;
+    finalEvent = applied.event;
+  }
+  if (!finalEvent) throw new Error('UAE_FINAL_EVENT_REQUIRED');
+  return { run, event: finalEvent };
+}

@@ -61,6 +61,65 @@ export function unitedStatesProfile(): TaxProfile {
   };
 }
 
+export function uaeProfile(): TaxProfile {
+  return {
+    profileId: 'profile:ae-demo',
+    workspaceId: 'workspace:demo',
+    jurisdiction: 'AE',
+    entityType: 'company',
+    regimeId: 'uae_free_zone_person',
+    ownerDomicileCountries: ['AR'],
+    ownerTaxResidenceCountries: ['AE'],
+    formationSubdivision: 'AE-DU',
+    operatingSubdivisions: ['AE-DU'],
+    answers: [
+      {
+        questionId: 'formation_emirate',
+        value: 'AE-DU',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'entity_structure',
+        value: 'free_zone_company',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'corporate_tax_registration',
+        value: 'registered',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'vat_threshold_state',
+        value: 'below_voluntary',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'vat_registration',
+        value: 'not_registered',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'free_zone_qualifying_status',
+        value: 'needs_review',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'einvoicing_revenue_band',
+        value: 'below_aed_50m',
+        confirmationState: 'user_confirmed',
+      },
+      {
+        questionId: 'einvoicing_onboarding_state',
+        value: 'not_selected',
+        confirmationState: 'user_confirmed',
+      },
+    ],
+    catalogueVersion: 'ae-catalogue-2026-07-27',
+    version: 'profile-v1',
+    confirmationState: 'user_confirmed',
+  };
+}
+
 export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regimeId?: string, founderResidency: FounderResidency = 'foreign') {
   const sourceIds = ['bufi-ledger', 'quickbooks', 'magic-inbox', 'knowledge-graph', 'financial-analytics'];
   const consent: TaxConsentGrant = {
@@ -78,7 +137,7 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regime
     connectionId: null,
     consentGrants: [consent],
     period: PERIOD,
-    displayCurrency: jurisdiction === 'AR' ? 'ARS' : 'USD',
+    displayCurrency: jurisdiction === 'AR' ? 'ARS' : jurisdiction === 'AE' ? 'AED' : 'USD',
     asOf: AS_OF,
     dataScope: { mode: 'all_connected' },
   });
@@ -87,7 +146,12 @@ export async function demoSnapshot(jurisdiction: JurisdictionCode = 'AR', regime
 }
 
 function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefined, founderResidency: FounderResidency): TaxProfile {
-  const base = jurisdiction === 'AR' ? argentinaProfile() : unitedStatesProfile();
+  const base =
+    jurisdiction === 'AR'
+      ? argentinaProfile()
+      : jurisdiction === 'AE'
+        ? uaeProfile()
+        : unitedStatesProfile();
   if (jurisdiction === 'AR') {
     if (!regimeId || regimeId === base.regimeId) return base;
     if (!['responsable_inscripto', 'sociedad_mipyme'].includes(regimeId)) throw new Error('UNSUPPORTED_REGIME');
@@ -104,6 +168,30 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
       regimeId,
       entityType: regimeId === 'sociedad_mipyme' ? 'company' : 'individual',
       answers: [...base.answers, ...regimeAnswers],
+    };
+  }
+
+  if (jurisdiction === 'AE') {
+    const selectedRegimeId = regimeId ?? base.regimeId;
+    if (!['uae_free_zone_person', 'uae_mainland_company'].includes(selectedRegimeId)) {
+      throw new Error('UNSUPPORTED_REGIME');
+    }
+    const mainland = selectedRegimeId === 'uae_mainland_company';
+    return {
+      ...base,
+      profileId: `profile:ae-demo:${selectedRegimeId}`,
+      regimeId: selectedRegimeId,
+      entityType: 'company',
+      answers: base.answers
+        .filter(answer => !mainland || answer.questionId !== 'free_zone_qualifying_status')
+        .map(answer =>
+          answer.questionId === 'entity_structure'
+            ? {
+                ...answer,
+                value: mainland ? 'mainland_company' : 'free_zone_company',
+              }
+            : answer
+        ),
     };
   }
 
@@ -136,7 +224,7 @@ function demoProfile(jurisdiction: JurisdictionCode, regimeId: string | undefine
 }
 
 function adapterInput(sourceId: string, jurisdiction: JurisdictionCode): StaticAdapterInput {
-  const currency = jurisdiction === 'AR' ? 'ARS' : 'USD';
+  const currency = jurisdiction === 'AR' ? 'ARS' : jurisdiction === 'AE' ? 'AED' : 'USD';
   const sourceKind = sourceId === 'quickbooks' ? 'accounting' : sourceId === 'magic-inbox' ? 'magic_inbox' : sourceId === 'knowledge-graph' ? 'knowledge_graph' : sourceId === 'financial-analytics' ? 'financial_analytics' : 'bank';
   const records = sourceId === 'bufi-ledger' ? [
     record('invoice-1', sourceId, sourceKind, jurisdiction, 'event:invoice-1', 'invoice', 'revenue', 'inflow', '10000', currency),

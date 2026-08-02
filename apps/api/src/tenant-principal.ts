@@ -12,6 +12,7 @@ const capabilitySchema = z.enum([
   'snapshot:read',
   'tax.factoring.read',
   'arca:onboard',
+  'uae-einvoicing:onboard',
   'accountant:mandate',
   'accountant:portfolio',
 ]);
@@ -227,6 +228,9 @@ export function requiredTaxTenantPrincipalCapability(
   if (method === 'GET' && /^\/v1\/browser\/snapshots\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (method === 'GET' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'tax.factoring.read';
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
+  if (/^\/v1\/uae-einvoicing-onboarding(?:\/|$)/.test(pathname)) {
+    return 'uae-einvoicing:onboard';
+  }
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   if (method === 'GET' && pathname === '/v1/accountant-portfolio') return 'accountant:portfolio';
   return null;

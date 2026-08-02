@@ -154,7 +154,7 @@ const evidenceRecordSchema = z.object({
   externalReferenceHash: z.string().min(1),
   sourceEventHash: z.string().min(1),
   artifactHash: z.string().min(1),
-  jurisdiction: z.enum(['AR', 'US']).nullable(),
+  jurisdiction: z.enum(['AR', 'US', 'AE']).nullable(),
   period: z.object({ start: z.iso.date(), end: z.iso.date() }).strict(),
   observedAt: z.iso.datetime({ offset: true }),
   expiresAt: z.iso.datetime({ offset: true }).nullable(),

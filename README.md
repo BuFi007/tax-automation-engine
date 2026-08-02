@@ -113,6 +113,23 @@ Tenant isolation uses canonical `tax-tenant-principal-v2` assertions in `X-Tax-T
 
 The ARCA UI accepts the short-lived `arca:onboard` assertion through the `arcaAuthority` prop on `App`; Motora's authenticated gateway must mint and refresh it. The browser never receives `TAX_ENGINE_API_KEY`, `TAX_ENGINE_USER_APPROVAL_TOKEN`, or `TAX_ENGINE_EVIDENCE_INGEST_TOKEN`. With that authority present, the UI creates or resumes the workspace-scoped run and persists login handoff, service confirmation, point creation, and explicit selection among multiple discovered FEEWS points. Discovery and API verification remain machine-evidence operations. When `TAX_WORKBENCH_INGEST_URL` and `TAX_WORKBENCH_INGEST_SECRET` are both configured, the API publishes a commitment-only operational projection after each durable onboarding revision. This is observability only: Workbench cannot advance the flow, and the projection excludes taxpayer identifiers, point-of-sale values, credentials, browser state, and proof contents.
 
+UAE eInvoicing authority onboarding is separately dark by default behind
+`TAX_ENGINE_UAE_EINVOICING_ONBOARDING_ENABLED=false`. It follows the official
+business corridor: the user selects a UAE accredited service provider in
+EmaraTax and accepts the provider agreement; only the trusted provider evidence
+channel may then record Peppol participant registration, PINT-AE validation,
+network exchange testing, and FTA Tax Data Document reporting validation.
+Readiness requires the final reporting receipt and cannot be asserted by Desk
+or the user.
+
+The UAE schemas accept only hashes for taxpayer, legal-entity, provider,
+agreement, participant, validation, exchange, and reporting references. Tax
+registration numbers, UAE Pass/EmaraTax or ASP credentials, browser state,
+agreement contents, invoice samples, proof contents, and provider/FTA response
+bodies are forbidden. Production Desk calls use the distinct short-lived
+`uae-einvoicing:onboard` principal backed by
+`TAX_ENGINE_DESK_UAE_ONBOARDING_PRINCIPAL_HMAC_SECRET`.
+
 The rollback-safe browser read path is `GET /v1/browser/snapshots/:workspaceId/:projectionKey?`; legacy `/v1/snapshots` remains unchanged. This endpoint returns the canonical `TaxSnapshotReadResultV1` envelope and uses the existing `snapshot:read` tenant principal. Production additionally requires a dedicated, distinct, server-only `TAX_ENGINE_BROWSER_REFERENCE_HMAC_SECRET` of at least 32 bytes. Tax uses it to scope every browser reference and revision to purpose, workspace, and projection; raw core IDs and hashes are never returned.
 
 ## Repository map

@@ -33,6 +33,8 @@ import type {
   TaxWidgetSnapshotReceiptV1,
   TaxWidgetSnapshotV1,
   TaxDomainEventV1,
+  UaeEinvoicingOnboardingEventV1,
+  UaeEinvoicingOnboardingRunV1,
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
@@ -49,6 +51,7 @@ import { assertCatalogueSafeProfile } from './profile-validation';
 import {
   accountantMandateScopeForFacturaEEvent,
   createArcaOnboardingTaxDomainEvent,
+  createUaeEinvoicingOnboardingTaxDomainEvent,
   createConsentRevokedTaxDomainEvent,
   createFacturaEAgentTaxDomainEvents,
   createSnapshotTaxDomainEvents,
@@ -348,6 +351,24 @@ export class TaxProfileStore {
       );
       CREATE INDEX IF NOT EXISTS arca_onboarding_workspace
         ON arca_onboarding_revisions (workspace_id, onboarding_id, revision);
+      CREATE TABLE IF NOT EXISTS uae_einvoicing_onboarding_revisions (
+        onboarding_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        state_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (onboarding_id, revision),
+        UNIQUE (onboarding_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS uae_einvoicing_onboarding_workspace
+        ON uae_einvoicing_onboarding_revisions (
+          workspace_id,
+          onboarding_id,
+          revision
+        );
       CREATE TABLE IF NOT EXISTS reclaim_session_bindings (
         session_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -2199,6 +2220,157 @@ export class TaxProfileStore {
       'SELECT event_json FROM arca_onboarding_revisions WHERE onboarding_id = ? AND idempotency_key = ?'
     ).get(onboardingId, idempotencyKey);
     return row ? JSON.parse(row.event_json) as ArcaOnboardingEventV1 : null;
+  }
+
+  appendUaeEinvoicingOnboardingRevision(input: Readonly<{
+    run: UaeEinvoicingOnboardingRunV1;
+    event: UaeEinvoicingOnboardingEventV1;
+    stateHash: string;
+    appendedAt: string;
+  }>): UaeEinvoicingOnboardingRunV1 {
+    if (
+      input.event.onboardingId !== input.run.onboardingId
+      || input.event.workspaceId !== input.run.workspaceId
+    ) {
+      throw new Error('UAE_EINVOICING_ONBOARDING_EVENT_RUN_MISMATCH');
+    }
+    const transaction = this.#db.transaction(() => {
+      const existing = this.#db
+        .query<{ state_json: string }, [string, string]>(`
+          SELECT state_json
+          FROM uae_einvoicing_onboarding_revisions
+          WHERE onboarding_id = ? AND idempotency_key = ?
+        `)
+        .get(input.run.onboardingId, input.event.idempotencyKey);
+      if (existing) {
+        return JSON.parse(existing.state_json) as UaeEinvoicingOnboardingRunV1;
+      }
+
+      const latest = this.#db
+        .query<{ revision: number }, [string]>(`
+          SELECT COALESCE(MAX(revision), 0) AS revision
+          FROM uae_einvoicing_onboarding_revisions
+          WHERE onboarding_id = ?
+        `)
+        .get(input.run.onboardingId);
+      if ((latest?.revision ?? 0) !== input.run.revision - 1) {
+        throw new Error('UAE_EINVOICING_ONBOARDING_REVISION_CONFLICT');
+      }
+      this.#db
+        .query(`
+          INSERT INTO uae_einvoicing_onboarding_revisions (
+            onboarding_id,
+            workspace_id,
+            revision,
+            idempotency_key,
+            state_json,
+            state_hash,
+            event_json,
+            appended_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.run.onboardingId,
+          input.run.workspaceId,
+          input.run.revision,
+          input.event.idempotencyKey,
+          JSON.stringify(input.run),
+          input.stateHash,
+          JSON.stringify(input.event),
+          input.appendedAt
+        );
+      const consent = this.#db.query<{
+        version: string;
+        scope_hash: string;
+      }, [string]>(`
+        SELECT version, scope_hash
+        FROM evidence_consent_grants
+        WHERE workspace_id = ? AND revoked_at IS NULL
+        ORDER BY granted_at DESC, version DESC
+        LIMIT 1
+      `).get(input.run.workspaceId);
+      if (consent) {
+        const domainEvent = createUaeEinvoicingOnboardingTaxDomainEvent({
+          run: input.run,
+          event: input.event,
+          consent: { version: consent.version, scopeHash: consent.scope_hash },
+          commitmentSecret: this.#domainEventCommitmentSecret,
+        });
+        if (domainEvent) {
+          this.#appendTaxDomainEventInTransaction(domainEvent, input.appendedAt);
+        }
+      }
+      return input.run;
+    });
+    return transaction();
+  }
+
+  getUaeEinvoicingOnboardingRun(
+    onboardingId: string
+  ): UaeEinvoicingOnboardingRunV1 | null {
+    const row = this.#db
+      .query<{ state_json: string }, [string]>(`
+        SELECT state_json
+        FROM uae_einvoicing_onboarding_revisions
+        WHERE onboarding_id = ?
+        ORDER BY revision DESC
+        LIMIT 1
+      `)
+      .get(onboardingId);
+    return row ? (JSON.parse(row.state_json) as UaeEinvoicingOnboardingRunV1) : null;
+  }
+
+  getUaeEinvoicingOnboardingRunByIdempotency(
+    onboardingId: string,
+    idempotencyKey: string
+  ): UaeEinvoicingOnboardingRunV1 | null {
+    const row = this.#db
+      .query<{ state_json: string }, [string, string]>(`
+        SELECT state_json
+        FROM uae_einvoicing_onboarding_revisions
+        WHERE onboarding_id = ? AND idempotency_key = ?
+      `)
+      .get(onboardingId, idempotencyKey);
+    return row ? (JSON.parse(row.state_json) as UaeEinvoicingOnboardingRunV1) : null;
+  }
+
+  listUaeEinvoicingOnboardingRuns(
+    workspaceId: string
+  ): readonly UaeEinvoicingOnboardingRunV1[] {
+    const rows = this.#db
+      .query<{ state_json: string }, [string]>(`
+        SELECT revisions.state_json
+        FROM uae_einvoicing_onboarding_revisions AS revisions
+        INNER JOIN (
+          SELECT onboarding_id, MAX(revision) AS revision
+          FROM uae_einvoicing_onboarding_revisions
+          WHERE workspace_id = ?
+          GROUP BY onboarding_id
+        ) AS latest
+          ON latest.onboarding_id = revisions.onboarding_id
+          AND latest.revision = revisions.revision
+        ORDER BY revisions.appended_at DESC
+      `)
+      .all(workspaceId);
+    return rows.map(
+      row => JSON.parse(row.state_json) as UaeEinvoicingOnboardingRunV1
+    );
+  }
+
+  listUaeEinvoicingOnboardingEvents(
+    onboardingId: string
+  ): readonly UaeEinvoicingOnboardingEventV1[] {
+    const rows = this.#db
+      .query<{ event_json: string }, [string]>(`
+        SELECT event_json
+        FROM uae_einvoicing_onboarding_revisions
+        WHERE onboarding_id = ?
+        ORDER BY revision ASC
+      `)
+      .all(onboardingId);
+    return rows.map(
+      row => JSON.parse(row.event_json) as UaeEinvoicingOnboardingEventV1
+    );
   }
 
   bindArcaOnboardingReclaimSession(onboardingId: string, session: ArcaOnboardingReclaimSessionV1, boundAt: string): void {

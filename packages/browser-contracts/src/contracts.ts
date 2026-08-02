@@ -28,7 +28,7 @@ export const taxEvidenceScopeV1Schema = z.discriminatedUnion('mode', [
 const taxProfileSummaryV1Schema = z.object({
   profileRef: safeReferenceSchema,
   profileVersion: safeReferenceSchema,
-  jurisdiction: z.enum(['AR', 'US']),
+  jurisdiction: z.enum(['AR', 'US', 'AE']),
   entityType: z.string().min(1).max(100),
   regimeId: z.string().min(1).max(100),
   confirmationState: z.enum(['user_confirmed', 'accountant_confirmed']),
@@ -75,7 +75,7 @@ export const taxCaseV1Schema = z.object({
   revision: z.number().int().positive(),
   state: z.enum(['setup_required', 'active', 'needs_review', 'blocked', 'complete']),
   selection: z.object({
-    jurisdiction: z.enum(['AR', 'US', 'unsupported']),
+    jurisdiction: z.enum(['AR', 'US', 'AE', 'unsupported']),
     entityType: z.string().min(1).max(100).nullable(),
     regimeId: z.string().min(1).max(100).nullable(),
     confirmationState: z.enum(['suggested', 'user_confirmed', 'accountant_confirmed']),
