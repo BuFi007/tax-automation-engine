@@ -4,6 +4,45 @@ Manual-first, evidence-backed tax readiness for Motora/BUFI. Argentina is the la
 
 This repository intentionally separates tax preparation from accountant review, user-approved submission, authority receipt, acceptance, and final satisfaction. Payments and unapproved autonomous authority actions are disabled; delegated WSFEX submission is available only for a frozen, human-approved document through the isolated signer.
 
+## Verified end-to-end workflow
+
+The July 2026 delivery connected BUFI's accounting workspace to this engine with real development data. A provider-synced document moved through Magic Inbox extraction, became an approved payable bill, crossed the consented evidence boundary, and produced a browser-safe Argentine tax snapshot. The verified snapshot reported exactly `1580.9 ARS` of purchase input tax from one document for a `responsable_inscripto` profile.
+
+```mermaid
+flowchart LR
+  I["Magic Inbox email + attachment"] --> X["OCR and structured invoice extraction"]
+  X --> B["Payable bill + source proof"]
+  B --> A["Human approval"]
+  A --> E["Consent-scoped TaxEvidenceBatchV1"]
+  S["Stripe Tax normalized report"] --> R["Jurisdiction routing + idempotent evidence"]
+  R --> E
+  E --> G["Canonical evidence graph"]
+  G --> F["Exact-decimal safe tax facts"]
+  F --> W["Tax widget / accountant review"]
+```
+
+That run stayed `manual_only`: it did not file a return, pay a tax authority, or infer that evidenced IVA was accountant-confirmed crédito fiscal. The tax-preparation export and widget used the same approved bill and stored tax amount; there was no parallel VAT calculation.
+
+## New: Stripe and reimbursement-aware evidence
+
+### Stripe Tax
+
+The [Stripe Tax adapter](packages/core/src/stripe-tax.ts) turns a normalized Stripe report or webhook projection into the same canonical evidence corridor used by the rest of the engine:
+
+- routes the transaction against a pinned country/product support matrix;
+- binds eligible calculation evidence to the exact seller jurisdiction;
+- uses decimal money, provider hashes, revisions, deterministic idempotency keys, and explicit supersession for corrections;
+- accepts no Stripe secret or raw customer payload; and
+- never treats a Stripe document as an ARCA fiscal invoice or Stripe as an Argentine filing authority.
+
+For Argentina, Stripe remains payment evidence only. For supported non-Argentine routes, Stripe Tax can contribute indirect-tax calculation evidence while filing and remittance responsibility remain explicit. See the [routing and batch tests](packages/core/src/stripe-tax.test.ts).
+
+### Workspace reimbursements
+
+The companion BUFI workspace now creates reimbursement requests from five existing sources: transactions, payable bills, Magic Inbox documents, BUFI invoices, and payroll runs. The integration is draft-first and uses one canonical economic identity per source, so an Inbox document promoted to a bill cannot be reimbursed twice. A database uniqueness guard closes the concurrent double-submit race, and proof is retained for bill and Inbox sources.
+
+This repository's boundary is deliberately narrower: reimbursement drafts and payment intent are not tax facts. Only accepted invoice/bill evidence enters the consented graph, and the [evidence resolver](packages/core/src/evidence/resolver.ts) projects accepted, outward `bufi_bill` tax lines into exact `purchase_input_tax` and `purchase_input_tax_document_count` safe facts. Settlement or reimbursement execution remains outside this engine and must provide its own confirmed, idempotent evidence.
+
 ## What is implemented
 
 - One shared exact-decimal core with versioned Argentina and United States jurisdiction catalogues.
@@ -16,6 +55,26 @@ This repository intentionally separates tax preparation from accountant review, 
 - SQLite persistence for confirmed profiles, append-only safe evidence records, audit events, and workflow revisions.
 - A browser-safe API, compact Tax Widget, and full tax cockpit with jurisdiction/persona selection, evidence coverage, obligations, and execution gates.
 - An agent-ready Factura E backend with discoverable tools, append-only case revisions, Reclaim proof sessions, a separate trusted human-approval channel, an encrypted WSAA/payload authority boundary, and an isolated WSFEX signer for documents 19/20/21.
+
+## How Codex and GPT-5.6 were used
+
+Codex with GPT-5.6 acted as an implementation and verification agent across one long-running task, not as a README-only assistant. The model inspected the worker, API, database, browser contracts, and this deterministic tax core; ran the local services; followed records through development infrastructure; wrote focused regressions; and kept unrelated dirty-worktree changes out of scoped commits.
+
+Concrete work from that task included:
+
+| Area | GPT-5.6/Codex contribution | Verified outcome |
+| --- | --- | --- |
+| Magic Inbox | Traced a silent status-gate no-op and an invalid BullMQ job identifier, then repaired and re-drove the provider pipeline. | A real attachment was extracted into structured invoice data, promoted to a payable bill, and processed by matching. |
+| Tax from accounting | Added the accepted-bill input-VAT projection and traced it through consent, batch ingestion, profile confirmation, snapshot configuration, and browser-safe output. | `1580.9 ARS`, one source document, 17/17 resolver tests, and core typecheck passing. |
+| Reimbursements | Audited source mapping, implemented canonical identities and the uniqueness guard, applied the scoped dev migration, and exercised every source type. | All five sources persisted; deliberate duplicate submission failed closed; 53 focused tests passed. |
+| Safety | Continuously separated preparation, evidence, approval, authority submission, settlement, and finality. | No tax payment, treasury spend, or autonomous filing occurred during validation. |
+| Web performance | Audited the companion BUFI web app's server/client boundaries, LCP path, assets, fonts, CSS, and telemetry before forward-porting the verified slice. | Production build passed 15 static routes and 13 focused PageSpeed gates; no unmeasured score was claimed. |
+
+The user supplied the product requirements, financial invariants, and acceptance decisions. Codex/GPT-5.6 performed root-cause analysis, implementation, testing, migration checks, and browser QA; sensitive credentials and production authority remained outside the model boundary. The work is traceable to Codex task `019f82b3-e1e7-7c33-913d-265e884d8175` and these scoped development commits:
+
+- Tax Automation Engine: `b2d3ac4` (`feat(tax): project approved bill input vat`)
+- BUFI workspace: `59c20cce3` (Magic Inbox recovery), `cca8bc69c` (approved-bill IVA projection), and `0d7ea8cbb` (workspace-sourced reimbursements)
+- BUFI Web: `52d3e7629` and `73d1593d3` (PageSpeed critical path and development prerequisites)
 
 ## Safety boundary
 
