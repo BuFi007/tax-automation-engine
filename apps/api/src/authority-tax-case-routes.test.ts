@@ -393,7 +393,7 @@ describe('signed Workspace Factura E TaxCase corridor', () => {
       expect(firstReceipt).toEqual({
         version: 'factura-e-authority-execution-receipt-v1',
         executionId: firstReceipt.executionId, workspaceId,
-        state: 'intent_persisted', replayed: false, nextAction: 'register_oa_approval',
+        state: 'intent_persisted', replayed: false, nextAction: 'register_human_approval',
         preparationBinding: {
           version: 'factura-e-authority-preparation-binding-v1', ledgerInvoiceId,
           taxpayerReferenceHash: intent.taxpayerReferenceHash,

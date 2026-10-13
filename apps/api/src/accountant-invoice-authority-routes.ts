@@ -54,7 +54,7 @@ export async function handleAccountantInvoiceAuthorityRoute(request: Request, ur
   if (!decision) throw new Error('ACCOUNTANT_INVOICE_SEMANTIC_APPROVAL_REQUIRED');
   const approvalRef = `tax_accountant_approval_${createHmac('sha256', options.principalSecret!)
     .update(JSON.stringify({ purpose: 'tax-beta-accountant-one-use-approval-v1', command, accountantActorId: principal.actorId, decisionId: decision.eventId })).digest('hex')}`;
-  const authorityReceipt = options.authority.registerApproval({ executionId: command.authorityExecutionId,
+  const authorityReceipt = options.authority.registerAccountantApproval({ executionId: command.authorityExecutionId, runId: command.runId,
     workspaceId: command.workspaceId, intentHash: command.intentHash, approvalRef, actorId: principal.actorId,
     idempotencyKey: command.idempotencyKey, occurredAt: at });
   return Response.json({ data: { version: 'factura-e-accountant-authority-approval-receipt-v1',

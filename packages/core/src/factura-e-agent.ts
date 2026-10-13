@@ -271,6 +271,7 @@ export type FacturaEAgentRunV1 = Readonly<{
   workspaceId: string;
   issuancePath: FacturaEIssuancePath;
   accountantReviewRequired: boolean;
+  approvalMode?: 'owner_manual';
   revision: number;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
@@ -322,6 +323,7 @@ export function createFacturaEAgentRun(input: Readonly<{
   runId?: string;
   workspaceId: string;
   issuancePath: FacturaEIssuancePath;
+  approvalMode?: 'owner_manual';
   actorId: string;
   occurredAt: IsoDateTime;
   idempotencyKey: string;
@@ -329,6 +331,7 @@ export function createFacturaEAgentRun(input: Readonly<{
   const runId = input.runId ?? randomUUID();
   const event = eventFor(runId, input.workspaceId, input.actorId, 'tax_agent', 'factura_e_run_created', input.occurredAt, input.idempotencyKey, {
     issuancePath: input.issuancePath,
+    ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
   });
   return {
     run: {
@@ -336,7 +339,8 @@ export function createFacturaEAgentRun(input: Readonly<{
       runId,
       workspaceId: input.workspaceId,
       issuancePath: input.issuancePath,
-      accountantReviewRequired: input.issuancePath === 'wsfex_delegated',
+      accountantReviewRequired: input.issuancePath === 'wsfex_delegated' && input.approvalMode !== 'owner_manual',
+      ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
       revision: 1,
       createdAt: input.occurredAt,
       updatedAt: input.occurredAt,

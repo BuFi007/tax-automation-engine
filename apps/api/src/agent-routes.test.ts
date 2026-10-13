@@ -78,10 +78,7 @@ describe('Factura E agent HTTP tools', () => {
       'arca_taxpayer_readiness', 'arca_cae_constatement', 'arca_adjustment_constatement',
     ]);
     expect(reclaimTool.function.parameters.properties.subjectId).toBeDefined();
-    const settlementTool = manifestJson.data.tools.find((candidate: any) => candidate.function.name === 'tax_ar_factura_e_record_settlement');
-    expect(settlementTool.function.parameters.properties.settlement.properties.evidence.anyOf).toEqual(expect.arrayContaining([
-      expect.objectContaining({ properties: expect.objectContaining({ version: expect.objectContaining({ const: 'factura-e-settlement-evidence-v1' }) }) }),
-    ]));
+    expect(manifestJson.data.tools.some((candidate: any) => candidate.function.name === 'tax_ar_factura_e_record_settlement')).toBe(false);
     const preflight = await invoke(service, options, 'tax_ar_homologation_get_preflight', 'read-homologation-preflight-1', {});
     expect(preflight.data).toEqual(expect.objectContaining({ state: 'blocked', productionActivationAllowed: false }));
     expect(JSON.stringify(preflight.data)).not.toContain('user-token-kept-outside-agent');
@@ -90,6 +87,10 @@ describe('Factura E agent HTTP tools', () => {
       runId, workspaceId, issuancePath: 'reclaim_copilot',
     });
     expect(created.data.run.issuanceState).toBe('not_ready');
+    const bound = await invoke(service, options, 'tax_ar_factura_e_bind_ledger_invoice', 'bind-ledger-invoice-1', {
+      runId, ledgerInvoiceId: '50000000-0000-4000-8000-000000000001',
+    });
+    expect(bound.data).toMatchObject({ run: { runId, workspaceId }, replayed: false });
 
     const readiness = await invoke(service, options, 'tax_ar_reclaim_start', 'start-readiness-1', {
       runId, purpose: 'arca_taxpayer_readiness',
@@ -236,6 +237,24 @@ describe('Factura E agent HTTP tools', () => {
     service.approveIntent({ ...base, runId: pathARunId, intentHash: pending.intentHash!, idempotencyKey: 'path-a-approve-user-1' });
     expect(service.getRun(pathARunId).issuanceState).toBe('not_ready');
     service.approveIntentByAccountant({ ...base, actorId: 'accountant:1', runId: pathARunId, intentHash: pending.intentHash!, idempotencyKey: 'path-a-approve-accountant-1' });
+    const ledgerInvoiceId = '50000000-0000-4000-8000-000000000002';
+    service.bindLedgerInvoice({
+      runId: pathARunId,
+      ledgerInvoiceId,
+      idempotencyKey: 'path-a-ledger-binding-1',
+      occurredAt: base.occurredAt,
+    });
+    expect(service.authorityPreparationBinding({
+      workspaceId,
+      runId: pathARunId,
+      ledgerInvoiceId,
+      intentHash: pending.intentHash!,
+    })).toEqual({
+      version: 'factura-e-authority-preparation-binding-v1',
+      ledgerInvoiceId,
+      taxpayerReferenceHash: pending.intent!.taxpayerReferenceHash,
+      foreignCustomerReferenceHash: pending.intent!.foreignCustomerReferenceHash,
+    });
 
     const authorityInput = {
       actorId: 'agent:tax', idempotencyKey: 'path-a-trusted-payload-1', requestId: '9001', invoiceNumber: '51',
@@ -321,31 +340,6 @@ describe('Factura E agent HTTP tools', () => {
       }, validHeaders),
     ).rejects.toThrow('TAX_AGENT_PRINCIPAL_SCOPE_UNAUTHORIZED');
 
-    const settlementToolId = 'tax_ar_factura_e_record_settlement';
-    const settlementPath = `/v1/agent/tools/${settlementToolId}/invoke`;
-    const unauthorizedSettlement = {
-      actorId: 'agent:tax',
-      idempotencyKey: 'principal-settlement-authority-1',
-      input: { runId },
-    };
-    const unauthorizedSettlementHeaders = createTaxAgentPrincipalHeaders({
-      secret: agentPrincipalSecret,
-      workspaceId,
-      actorId: unauthorizedSettlement.actorId,
-      toolId: settlementToolId,
-      path: settlementPath,
-      rawBody: JSON.stringify(unauthorizedSettlement),
-      idempotencyKey: unauthorizedSettlement.idempotencyKey,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    expect(route(
-      service,
-      options,
-      'POST',
-      settlementPath,
-      unauthorizedSettlement,
-      unauthorizedSettlementHeaders,
-    )).rejects.toThrow('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
   });
 
   test('rejects oversized public Reclaim callbacks before parsing them', async () => {

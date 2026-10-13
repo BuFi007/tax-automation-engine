@@ -9,6 +9,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { applyCors } from './cors';
 import { handleAgentRoute } from './agent-routes';
+import { handleInvoiceSettlementAdapterRoute } from './invoice-settlement-adapter-routes';
 import { FacturaEAgentService } from './factura-e-agent';
 import { HttpReclaimProofVault } from './proof-vault';
 import { ReclaimProtocolGateway } from './reclaim';
@@ -18,6 +19,7 @@ import { HttpWsfexGateway } from './wsfex';
 import { HttpWsfePointOfSaleGateway } from './wsfe';
 import { HttpAuthorityPayloadWriter } from './authority-payload';
 import { ArcaOnboardingService } from './arca-onboarding';
+import { HttpArcaWorkbenchPublisher } from './arca-workbench';
 import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
 import { HttpArcaBoundaryStatusReader, issuerAcceptanceForPrincipal, latestArcaConnectionProjectionForPrincipal, latestPrivateArcaConnectionProjection, privateArcaConnectionProjection, revokeArcaConnectionForPrincipal } from './arca-connection-projection';
@@ -136,6 +138,10 @@ const evidencePublisherPrincipalSecret = process.env.TAX_ENGINE_EVIDENCE_PUBLISH
 const consentAuthorityPrincipalSecret = process.env.TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null;
 const openAgentsAgentPrincipalSecret =
   process.env.TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
+const deskAgentPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_AGENT_PRINCIPAL_HMAC_SECRET ?? null;
+const deskInvoiceSettlementPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET ?? null;
 const taxDomainEventDeliveryEnabled =
   process.env.TAX_DOMAIN_EVENT_DELIVERY_ENABLED === 'true';
 const taxDomainEventIngressToken =
@@ -155,8 +161,6 @@ const authorityPreparationSecret =
   process.env.TAX_ENGINE_ARCA_PREPARATION_HMAC_SECRET ?? null;
 const authorityPrincipalSecrets: TaxAuthorityPrincipalSecrets = {
   motora: process.env.TAX_ENGINE_MOTORA_AUTHORITY_PRINCIPAL_HMAC_SECRET ?? null,
-  openAgentsApproval:
-    process.env.TAX_ENGINE_OPEN_AGENTS_APPROVAL_PRINCIPAL_HMAC_SECRET ?? null,
 };
 const facturaEFeatureEnabled = process.env.TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED === 'true';
 const argentinaLaunchPolicy = resolveArgentinaLaunchPolicyReadiness();
@@ -214,8 +218,8 @@ if (process.env.NODE_ENV === 'production' && (!userApprovalToken
   || !snapshotProjectorPrincipalSecret
   || !evidencePublisherPrincipalSecret
   || !consentAuthorityPrincipalSecret
-  || !openAgentsAgentPrincipalSecret)) {
-  throw new Error('TAX_ENGINE_USER_APPROVAL_TOKEN, TAX_ENGINE_ACCOUNTANT_APPROVAL_TOKEN, TAX_ENGINE_EVIDENCE_INGEST_TOKEN, TAX_ENGINE_CONSENT_EVENT_TOKEN, TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN, TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_SNAPSHOT_PROJECTOR_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_EVIDENCE_PUBLISHER_PRINCIPAL_HMAC_SECRET, TAX_ENGINE_CONSENT_AUTHORITY_PRINCIPAL_HMAC_SECRET, and TAX_ENGINE_OPEN_AGENTS_AGENT_PRINCIPAL_HMAC_SECRET are required in production');
+  || !deskAgentPrincipalSecret || !deskInvoiceSettlementPrincipalSecret)) {
+  throw new Error('Required Tax Engine production credentials are missing, including TAX_ENGINE_DESK_AGENT_PRINCIPAL_HMAC_SECRET and TAX_ENGINE_DESK_INVOICE_SETTLEMENT_PRINCIPAL_HMAC_SECRET');
 }
 if (
   accountantDecisionIngressEnabled
@@ -230,7 +234,7 @@ if (process.env.NODE_ENV === 'production') {
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
-    openAgentsAgentPrincipalSecret,
+    deskAgentPrincipalSecret,
     browserReferenceSecret,
   ].filter((value): value is string => Boolean(value));
   if (new Set(tenantSecrets).size !== tenantSecrets.length) {
@@ -241,7 +245,8 @@ if (taxDomainEventDeliveryEnabled) {
   const domainEventSecrets = [
     taxDomainEventIngressToken,
     taxDomainEventHmacSecret,
-    openAgentsAgentPrincipalSecret,
+    deskAgentPrincipalSecret,
+    deskInvoiceSettlementPrincipalSecret,
     accountantDecisionIngressEnabled ? accountantDecisionPrincipalSecret : null,
     evidencePublisherPrincipalSecret,
     consentAuthorityPrincipalSecret,
@@ -292,7 +297,6 @@ if (facturaEFeatureEnabled) {
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
     authorityPrincipalSecrets.motora,
-    authorityPrincipalSecrets.openAgentsApproval,
     facturaEFeatureCommitmentSecret,
     facturaEFeatureSignerSecret,
     facturaEFeatureEventSecret,
@@ -311,7 +315,6 @@ if (facturaEFeatureEnabled) {
     openAgentsAgentPrincipalSecret,
     browserReferenceSecret,
     authorityPrincipalSecrets.motora,
-    authorityPrincipalSecrets.openAgentsApproval,
     facturaEFeaturePrincipalSecrets.deskConsent,
     facturaEFeaturePrincipalSecrets.projector,
     facturaEFeaturePrincipalSecrets.creReader,
@@ -446,6 +449,7 @@ const facturaEAuthorityExecution = new FacturaEAuthorityExecutionService(
       intentState: run.intentState,
       approvalState: run.approvalState,
       accountantReviewRequired: run.accountantReviewRequired,
+      ...(run.approvalMode ? { approvalMode: run.approvalMode } : {}),
     };
   },
   facturaEAuthorityRemoteEffect,
@@ -453,7 +457,8 @@ const facturaEAuthorityExecution = new FacturaEAuthorityExecutionService(
   {
     environment: arcaAuthorityEnvironment,
     providerId: wsfexGateway?.providerId ?? 'unconfigured',
-    approvalPolicy: fiscalBeta.enabled ? 'mandated_accountant_beta' : 'oa',
+    approvalPolicy: fiscalBeta.enabled ? 'mandated_accountant_beta' : 'human',
+    ...(fiscalBeta.enabled ? { beta: fiscalBeta } : {}),
   }
 );
 const facturaEFeatureSigner = facturaEFeatureEnabled
@@ -490,8 +495,9 @@ const arcaOnboarding = new ArcaOnboardingService(
   proofCustodyRequired,
   wsfexGateway,
   wsfePointOfSaleGateway,
+  HttpArcaWorkbenchPublisher.fromEnvironment(),
 );
-const jurisdictionSchema = z.enum(['AR', 'US']);
+const jurisdictionSchema = z.enum(['AR', 'US', 'AE']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
   profileId: z.string().min(1),
@@ -548,17 +554,17 @@ export const server = Bun.serve({
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (url.pathname === '/v1/reclaim/callback') {
-        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
+        const callbackResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (request.method === 'POST'
-        && (url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/evidence/consent-events')) {
+        && (url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/evidence/consent-events' || url.pathname === '/v1/digital-assets/events')) {
         const scopedPrincipal = verifyTaxTenantPrincipal(
           request,
-          url.pathname === '/v1/evidence/batches'
+          url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/digital-assets/events'
             ? evidencePublisherPrincipalSecret
             : consentAuthorityPrincipalSecret,
-          url.pathname === '/v1/evidence/batches' ? 'evidence:publish' : 'consent:publish',
+          url.pathname === '/v1/evidence/batches' || url.pathname === '/v1/digital-assets/events' ? 'evidence:publish' : 'consent:publish',
         );
         const scopedResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal: scopedPrincipal });
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
@@ -705,6 +711,7 @@ export const server = Bun.serve({
           ...(deskFacturaEPrivateData ? { commercialGateway: deskFacturaEPrivateData } : {}),
           ...(issuerProfileRegistry ? { issuerProfiles: issuerProfileRegistry } : {}),
           environment: arcaAuthorityEnvironment,
+          taxCases: facturaEAgent,
         }
       );
       if (authorityCorridorResponse)
@@ -779,7 +786,9 @@ export const server = Bun.serve({
       if (factoringBrowserResponse) return applyCors(factoringBrowserResponse, request);
       const evidenceResponse = await handleTaxEvidenceRoute(request, url, taxEvidenceWorkspace, { evidenceIngestToken, consentEventToken, snapshotProjectorToken, tenantPrincipal });
       if (evidenceResponse) return applyCors(evidenceResponse, request);
-      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: openAgentsAgentPrincipalSecret, accountantMandates: store, legacyEvidenceAppendEnabled });
+      const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, store, deskInvoiceSettlementPrincipalSecret);
+      if (settlementResponse) return applyCors(settlementResponse, request);
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
         return applyCors(json({

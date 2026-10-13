@@ -36,10 +36,11 @@ function fixture(actorId=reviewer) {
 
 test('genuine delegated accountant approves frozen owner intent with server-held reference consumed exactly once',async()=>{
   const f=fixture();try{
-    expect(f.authority.readiness().oaApproval).toBe('delegated_accountant_required');
+    expect(f.authority.readiness().humanApproval).toBe('delegated_accountant_required');
     expect(f.execution.nextAction).toBe('request_accountant_authority_approval');
     const before=f.executionStore.get(f.execution.executionId)!;expect(before.createdByActorHash).toBe(hashCanonical(owner));
-    expect(()=>f.authority.registerApproval({executionId:f.execution.executionId,workspaceId,intentHash:f.command.intentHash,actorId:owner,approvalRef:'oa_approval_owner_self_attempt',idempotencyKey:'owner-selfapproval-123456',occurredAt:now.toISOString()})).toThrow('TAX_AUTHORITY_SELF_APPROVAL_FORBIDDEN');
+    expect(()=>f.authority.registerApproval({executionId:f.execution.executionId,workspaceId,intentHash:f.command.intentHash,actorId:owner,approvalRef:'oa_approval_owner_self_attempt',idempotencyKey:'owner-selfapproval-123456',occurredAt:now.toISOString()})).toThrow('TAX_AUTHORITY_BETA_LEGACY_APPROVAL_UNAUTHORIZED');
+    expect(()=>f.authority.registerApproval({executionId:f.execution.executionId,workspaceId,intentHash:f.command.intentHash,actorId:reviewer,approvalRef:'human_approval_unmandated_real_reviewer',idempotencyKey:'unmandated-real-reviewer-12345',occurredAt:now.toISOString()})).toThrow('TAX_AUTHORITY_BETA_LEGACY_APPROVAL_UNAUTHORIZED');
     const response=await f.approve();const json=await response!.json();expect(json.data).toMatchObject({version:'factura-e-accountant-authority-approval-receipt-v1',approvalState:'accountant_approved',authorityExecutionId:f.execution.executionId,authorityReceipt:{state:'approved',nextAction:'execute_with_one_use_approval'}});
     expect(JSON.stringify(json)).not.toContain('tax_accountant_approval_');expect(JSON.stringify(json)).not.toContain('approvalRef');
     expect(f.executionStore.get(f.execution.executionId)?.approvalActorHash).toBe(hashCanonical(reviewer));
@@ -86,5 +87,29 @@ test('genuine queue exposes exact final target, live mandate and actual creator,
     const otherQueue=await handleAccountantInvoiceRoute(new Request(url),url,f.store,f.agent,{...principal,actorId:otherReviewer},now,undefined,{authority:f.authority,beta:f.options.beta});
     expect((await otherQueue!.json()).data.items).toEqual([]);
     await f.approve();expect((await(await list())!.json()).data.items).toEqual([]);
+  }finally{f.close();}
+});
+
+test('beta rejects imported legacy approvals and both legacy signed principals before any effect',async()=>{
+  const {handleFacturaEAuthorityCorridorRoute}=await import('./authority-corridor-routes');
+  const {createTaxAuthorityPrincipalHeaders}=await import('./authority-principal');
+  const f=fixture();try{
+    const legacyPath=`/v1/authority/factura-e/intents/${f.execution.executionId}/approvals`;
+    const body={version:'factura-e-authority-approval-register-v1',workspaceId,intentHash:f.command.intentHash,approvalRef:'human_approval_existing_genuine_review',idempotencyKey:'legacy-approval-attempt-12345'};
+    const rawBody=JSON.stringify(body);
+    for(const actorId of [owner,reviewer]){
+      const headers=createTaxAuthorityPrincipalHeaders({secret,workspaceId,actorId,capability:'factura-e:approval:register',method:'POST',path:legacyPath,rawBody,expiresAt:new Date(Date.now()+60_000).toISOString()});
+      const request=new Request(`http://tax.test${legacyPath}`,{method:'POST',headers,body:rawBody});
+      const response=await handleFacturaEAuthorityCorridorRoute(request,new URL(request.url),f.authority,{corridorEnabled:true,secrets:{motora:secret},beta:f.options.beta,agent:f.agent,store:f.store});
+      expect(response?.status).toBe(403);
+    }
+    const apiKeyOnly=new Request(`http://tax.test${legacyPath}`,{method:'POST',headers:{authorization:'Bearer generic-api-key'},body:rawBody});
+    expect((await handleFacturaEAuthorityCorridorRoute(apiKeyOnly,new URL(apiKeyOnly.url),f.authority,{corridorEnabled:true,secrets:{motora:secret},beta:f.options.beta}))?.status).toBe(403);
+    // A pre-beta human approval can remain readable, but cannot be consumed as
+    // a new mandated beta approval just by being present in the durable store.
+    f.executionStore.approve({executionId:f.execution.executionId,workspaceId,intentHash:f.command.intentHash,actorId:reviewer,approvalRef:body.approvalRef,idempotencyKey:'existing-human-approval-12345',occurredAt:now.toISOString()});
+    expect(f.executionStore.get(f.execution.executionId)?.approvalSource).toBeNull();
+    await expect(f.authority.execute({executionId:f.execution.executionId,workspaceId,actorId:owner,idempotencyKey:'consume-old-human-approval-12345',occurredAt:now.toISOString()})).rejects.toThrow('TAX_AUTHORITY_ACCOUNTANT_APPROVAL_REQUIRED');
+    expect(f.effects()).toBe(0);
   }finally{f.close();}
 });

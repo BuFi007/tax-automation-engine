@@ -108,3 +108,11 @@ Package `0.11.0` adds the required `domesticPointOfSale` field to ARCA onboardin
 runs so WSFE (Factura C) and WSFEX (Factura E) can report different verified
 points. Consumers of `./arca-onboarding` must upgrade before Tax emits the new
 run shape; an absent domestic point is represented as `{ number: null, active: false }`.
+
+
+Package `0.11.1` combines the `0.11.0` domestic-point contract with the current
+development branch's additive UAE profile limitations and obligation kinds.
+The browser-safe export boundary is unchanged; consumers must refresh their
+compiled tarball/provenance instead of relabeling an older archive.
+The delegated accountant final-approval queue is a server API read model and
+does not add authority credentials or capabilities to this package.

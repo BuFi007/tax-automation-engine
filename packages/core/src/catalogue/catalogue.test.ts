@@ -4,6 +4,7 @@ import { argentinaProfile, unitedStatesProfile } from '../fixtures';
 import type { TaxProfile } from '../types';
 import { ArgentinaJurisdictionProvider, assessMonotributoServiceCategory2026 } from './argentina';
 import { UnitedStatesJurisdictionProvider } from './united-states';
+import { assessUaeVatRegistrationThreshold, UnitedArabEmiratesJurisdictionProvider } from './united-arab-emirates';
 
 const TAX_YEAR_2025 = { start: '2025-01-01', end: '2025-12-31' } as const;
 
@@ -213,6 +214,76 @@ describe('Argentina deterministic obligation catalogue', () => {
   });
 });
 
+describe('United Arab Emirates deterministic obligation catalogue', () => {
+  test('derives VAT threshold routing from exact AED ledger windows', () => {
+    const base = {
+      isResidentInUae: true, makesTaxableSuppliesInUae: true, anotherUaePartyResponsibleForVat: false,
+      taxableSuppliesAndImportsPast12MonthsAed: '375000.01', taxableSuppliesAndImportsNext30DaysAed: '0',
+      taxableExpensesPast12MonthsAed: '0', taxableExpensesNext30DaysAed: '0',
+    } as const;
+    expect(assessUaeVatRegistrationThreshold(base)).toMatchObject({ state: 'mandatory', basis: 'resident_turnover', thresholdAed: '375000' });
+    expect(assessUaeVatRegistrationThreshold({ ...base, taxableSuppliesAndImportsPast12MonthsAed: '375000' })).toMatchObject({ state: 'voluntary', thresholdAed: '187500' });
+    expect(assessUaeVatRegistrationThreshold({ ...base, taxableSuppliesAndImportsPast12MonthsAed: '187500' })).toMatchObject({ state: 'below' });
+    expect(assessUaeVatRegistrationThreshold({ ...base, taxableSuppliesAndImportsPast12MonthsAed: '0', taxableExpensesPast12MonthsAed: '187500.01' })).toMatchObject({ state: 'voluntary', basis: 'resident_expenses' });
+  });
+
+  test('routes a non-resident UAE taxable supply without inventing a threshold', () => {
+    const result = assessUaeVatRegistrationThreshold({
+      isResidentInUae: false, makesTaxableSuppliesInUae: true, anotherUaePartyResponsibleForVat: false,
+      taxableSuppliesAndImportsPast12MonthsAed: null, taxableSuppliesAndImportsNext30DaysAed: null,
+      taxableExpensesPast12MonthsAed: null, taxableExpensesNext30DaysAed: null,
+    });
+    expect(result).toEqual({ state: 'nonresident_taxable_supplies', basis: 'nonresident_supply', thresholdAed: '0', ruleVersionId: 'ae-fta-vat-registration-2026-v1', limitationCodes: [] });
+  });
+
+  test('fails closed on incomplete or non-canonical ledger amounts', () => {
+    const base = {
+      isResidentInUae: true, makesTaxableSuppliesInUae: true, anotherUaePartyResponsibleForVat: false,
+      taxableSuppliesAndImportsPast12MonthsAed: '100', taxableSuppliesAndImportsNext30DaysAed: '0',
+      taxableExpensesPast12MonthsAed: '0', taxableExpensesNext30DaysAed: '0',
+    } as const;
+    expect(assessUaeVatRegistrationThreshold({ ...base, taxableExpensesNext30DaysAed: null }).state).toBe('needs_review');
+    expect(assessUaeVatRegistrationThreshold({ ...base, taxableExpensesNext30DaysAed: '1e6' }).limitationCodes).toContain('UAE_VAT_LEDGER_AMOUNT_INVALID');
+  });
+
+  test('keeps Free Zone treatment under professional review and preserves authority-pending registration', () => {
+    const provider = new UnitedArabEmiratesJurisdictionProvider();
+    const profile = uaeProfile();
+    const obligations = provider.buildObligations({ profile, period: TAX_YEAR_2025 });
+
+    expect(provider.validateProfile(profile)).toEqual([]);
+    expect(find(obligations, 'ae:corporate-tax-registration')).toMatchObject({
+      submissionState: 'authority_receipt_pending',
+      satisfactionState: 'outstanding',
+    });
+    expect(find(obligations, 'ae:free-zone-qualifying-status-review')).toMatchObject({
+      applicability: 'needs_professional_review',
+      dueAt: null,
+    });
+  });
+
+  test('does not create a VAT return before verified VAT registration', () => {
+    const obligations = new UnitedArabEmiratesJurisdictionProvider().buildObligations({
+      profile: withAnswer(withAnswer(uaeProfile(), 'vat_threshold_state', 'below'), 'vat_registration', 'not_registered'),
+      period: TAX_YEAR_2025,
+    });
+    expect(find(obligations, 'ae:vat-registration')).toMatchObject({ applicability: 'not_applicable', satisfactionState: 'not_due' });
+    expect(find(obligations, 'ae:vat-return')).toMatchObject({ applicability: 'not_applicable' });
+  });
+
+  test('treats certificate availability as evidence pending verification, never authority acceptance', () => {
+    const profile = withAnswer(withAnswer(uaeProfile(), 'corporate_tax_registration', 'certificate_available'), 'vat_registration', 'certificate_available');
+    const obligations = new UnitedArabEmiratesJurisdictionProvider().buildObligations({ profile, period: TAX_YEAR_2025 });
+    expect(find(obligations, 'ae:corporate-tax-registration')).toMatchObject({
+      submissionState: 'authority_receipt_pending', satisfactionState: 'outstanding', actionId: 'action:verify-ae-corporate-tax-certificate',
+    });
+    expect(find(obligations, 'ae:vat-registration')).toMatchObject({
+      submissionState: 'authority_receipt_pending', satisfactionState: 'outstanding', actionId: 'action:verify-ae-vat-registration-evidence',
+    });
+  });
+});
+
+
 describe('United States deterministic obligation catalogue', () => {
   test('routes a foreign-owned disregarded entity to the special 5472 path', () => {
     const obligations = new UnitedStatesJurisdictionProvider().buildObligations({
@@ -338,6 +409,31 @@ function find(obligations: readonly { id: string }[], id: string) {
   const obligation = obligations.find(candidate => candidate.id === id);
   if (!obligation) throw new Error(`Missing obligation: ${id}`);
   return obligation as (typeof obligations)[number] & Record<string, unknown>;
+}
+
+function uaeProfile(): TaxProfile {
+  return {
+    profileId: 'profile:ae-free-zone', workspaceId: 'workspace:ae', jurisdiction: 'AE', entityType: 'fzco', regimeId: 'uae_free_zone_person',
+    ownerDomicileCountries: ['AR'], ownerTaxResidenceCountries: ['AR'], formationSubdivision: 'AE-DU', operatingSubdivisions: ['AE-DU'],
+    answers: [
+      { questionId: 'formation_emirate', value: 'AE-DU', confirmationState: 'user_confirmed' },
+      { questionId: 'licensing_authority', value: 'dubai_free_zone_authority', confirmationState: 'user_confirmed' },
+      { questionId: 'tax_period_end_month', value: 12, confirmationState: 'accountant_confirmed' },
+      { questionId: 'corporate_tax_registration', value: 'submitted', confirmationState: 'user_confirmed' },
+      { questionId: 'vat_threshold_state', value: 'mandatory', confirmationState: 'accountant_confirmed' },
+      { questionId: 'vat_registration', value: 'submitted', confirmationState: 'user_confirmed' },
+      { questionId: 'adequate_substance', value: 'yes', confirmationState: 'accountant_confirmed' },
+      { questionId: 'qualifying_income', value: 'yes', confirmationState: 'accountant_confirmed' },
+      { questionId: 'excluded_activities', value: 'no', confirmationState: 'accountant_confirmed' },
+      { questionId: 'de_minimis_condition', value: 'yes', confirmationState: 'accountant_confirmed' },
+      { questionId: 'audited_financial_statements', value: 'yes', confirmationState: 'accountant_confirmed' },
+    ],
+    catalogueVersion: 'ae-catalogue-2026-07-17', version: 'profile-v1', confirmationState: 'accountant_confirmed',
+  };
+}
+
+function withAnswer(profile: TaxProfile, questionId: string, value: string): TaxProfile {
+  return { ...profile, answers: profile.answers.map(answer => answer.questionId === questionId ? { ...answer, value } : answer) };
 }
 
 function withUsRegime(regimeId: string, classification: string, residency: 'local' | 'foreign', memberCount?: number): TaxProfile {

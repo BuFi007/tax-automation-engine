@@ -23,9 +23,9 @@ Tax reads `ARCA_WSFE_SIGNER_URL`/`ARCA_WSFE_SIGNER_TOKEN`,
 the same `ARCA_BOUNDARY_URL` with `ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN`.
 Signed C effects use `TAX_ENGINE_DESK_ARCA_ISSUE_PRINCIPAL_HMAC_SECRET` (32+ bytes,
 distinct from projection, onboarding and generic user secrets).
-E retains separate Motora and Open Agents signed authority principals,
-`TAX_ENGINE_MOTORA_AUTHORITY_PRINCIPAL_HMAC_SECRET` and
-`TAX_ENGINE_OPEN_AGENTS_APPROVAL_PRINCIPAL_HMAC_SECRET`.
+E retains the current development Motora signed human authority principal
+`TAX_ENGINE_MOTORA_AUTHORITY_PRINCIPAL_HMAC_SECRET`. Beta final approval uses either the genuine mandated accountant ingress or
+an explicitly frozen owner-manual mode. Neither uses an Open Agents identity.
 Enable `TAX_ENGINE_ARCA_AUTHORITY_CORRIDOR_ENABLED=true` and
 `TAX_ENGINE_ARCA_REMOTE_EFFECTS_ENABLED=true` for E.
 Configure the existing private Desk commercial source and issuer registry.
@@ -97,8 +97,7 @@ protected process configuration.
 
 ## Genuine accountant approval for the beta
 
-Personal has one owner, so it cannot satisfy authority self-approval protection by
-acting as both creator and final reviewer. In beta, persist the owner's genuinely
+The accountant workflow keeps distinct creator and final reviewer identities. In beta, persist the owner's genuinely
 approved frozen intent first, including manual-quote cases still awaiting the
 accountant. The receipt says `request_accountant_authority_approval`; readiness
 reports `delegated_accountant_required`. Persistence alone never dispatches ARCA.
@@ -131,8 +130,30 @@ reference. The safe response contains `authorityReceipt` and correlated IDs;
 the owner then executes with the existing signed execute endpoint. Same-body
 replay cannot create another effect; revoked/expired mandates and self-approval
 fail closed. No generic API key, fabricated `oa:owner` actor, or browser-supplied
-approval reference can grant this path. Legacy OA remains separate.
+approval reference can grant this path. The current development Motora human-approval flow remains separate outside the beta.
 
 Local Tax binds to loopback by default; set `TAX_ENGINE_HOST` explicitly for an
 approved deployment. The isolated live setup uses a task-local loopback TLS
 proxy for signer→boundary traffic and trusts its CA only in child processes.
+
+## Explicit owner-manual homologation beta
+
+The human owner may select `approvalMode: "owner_manual"` at
+`POST /v1/authority/factura-e/cases` for a new delegated case. This freezes the
+mode on the durable run and subsequent authority execution; existing accountant
+cases cannot switch modes on replay. Tax records actual `user_approved` state,
+never an accountant approval or mandate. All evidence and official readback
+requirements remain in place.
+
+After reviewing the frozen invoice, the same real creator sends
+`POST /v1/authority/factura-e/intents/:executionId/owner-confirmation`, using
+canonical Motora `factura-e:approval:register` authentication bound to the exact
+body, method and path. The body contains `version:
+"factura-e-owner-manual-confirmation-v1"`, workspaceId, runId, intentHash,
+`confirmation: "issue_exact_frozen_invoice_homologation"`, and idempotencyKey.
+Tax derives and retains the one-use approval reference privately. The receipt
+reports `approvalMode: "owner_manual"`; execution, recovery and reconciliation
+require the same creator UUID, the persisted owner-manual source, and the exact
+development/homologation/enrollment gates. Generic legacy `/approvals` remains
+closed for every beta mode. Owner-manual records cannot authorize effects in
+production, staging, or outside the beta. No accountant identity is inferred.

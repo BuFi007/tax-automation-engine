@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import { assertArcaFiscalBeta, assertFiscalHumanActor, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
 import { ARGENTINA_FACTURA_E_RULE_IDS, hashCanonical, validateFacturaEIntent, type FacturaEIntentV1 } from '@tax-engine/core';
@@ -29,7 +30,7 @@ const approvalRefSchema = z
   .string()
   .min(24)
   .max(240)
-  .regex(/^oa_approval_[A-Za-z0-9_-]+$/);
+  .regex(/^(?:human|oa)_approval_[A-Za-z0-9_-]+$/);
 
 const createIntentSchema = z
   .object({
@@ -48,6 +49,7 @@ const createTaxCaseSchema = z.object({
   runId: z.uuid(),
   ledgerInvoiceId: z.uuid(),
   issuancePath: z.enum(['reclaim_copilot', 'wsfex_delegated']),
+  approvalMode: z.literal('owner_manual').optional(),
   idempotencyKey: idempotencyKeySchema,
 }).strict();
 
@@ -117,6 +119,13 @@ const registerApprovalSchema = z
   })
   .strict();
 
+const ownerConfirmationSchema = z.object({
+  version: z.literal('factura-e-owner-manual-confirmation-v1'),
+  workspaceId: workspaceIdSchema, runId: z.uuid(), intentHash: sha256Schema,
+  confirmation: z.literal('issue_exact_frozen_invoice_homologation'),
+  idempotencyKey: idempotencyKeySchema,
+}).strict();
+
 const executeSchema = z
   .object({
     version: z.literal('factura-e-authority-execute-v1'),
@@ -150,6 +159,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
     beta?: ArcaFiscalBetaConfig;
     secrets: TaxAuthorityPrincipalSecrets;
     agent?: FacturaEAgentService;
+    taxCases?: FacturaEAgentService;
     store?: TaxProfileStore;
     commercialGateway?: Readonly<{
       getFrozenCommercialRequest(input: Readonly<{
@@ -171,6 +181,11 @@ export async function handleFacturaEAuthorityCorridorRoute(
         request, rawBody: '', capability: route.capability, secrets: options.secrets,
       });
       if (options.beta) assertArcaFiscalBeta(principal.workspaceId, options.beta);
+      if (options.taxCases && (!options.agent || !options.store)) {
+        const run = options.taxCases.invoiceTaxCaseStatus({ workspaceId: principal.workspaceId, runId });
+        return privateJson({ data: { version: 'factura-e-tax-case-status-v1', ...run,
+          nextAction: run.intentState === 'missing' ? 'collect_verified_evidence' : run.approvalState === 'pending' ? 'await_separate_human_approval' : run.issuanceState === 'ready_for_wsfex' ? 'persist_authority_intent' : 'wait_for_tax_update' } }, 200);
+      }
       if (!options.agent || !options.store)
         throw new Error('FACTURA_E_TAX_CASE_CONFIGURATION_REQUIRED');
       const binding = options.store.getFacturaETaxCaseBinding(runId);
@@ -184,7 +199,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
       const nextAction = run.readinessState !== 'verified'
         ? 'collect_verified_evidence'
         : run.approvalState === 'pending'
-          ? 'await_separate_human_approval'
+          ? run.approvalMode === 'owner_manual' ? 'confirm_owner_manual_intent' : 'await_separate_human_approval'
           : run.approvalState === 'user_approved' && run.accountantReviewRequired
             ? 'await_accountant_approval'
           : run.intentState === 'frozen' && run.issuanceState === 'ready_for_wsfex'
@@ -195,6 +210,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
         runId, workspaceId: binding.workspaceId, ledgerInvoiceId: binding.ledgerInvoiceId,
         intentHash: run.intentHash, revision: run.revision, readinessState: run.readinessState,
         intentState: run.intentState, approvalState: run.approvalState,
+        ...(run.approvalMode ? { approvalMode: run.approvalMode } : {}),
         issuanceState: run.issuanceState, nextAction,
         review: run.intent && ['validated', 'frozen'].includes(run.intentState) ? {
           customer: run.intent.foreignCustomerSafeLabel,
@@ -206,6 +222,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
           serviceDescription: run.intent.serviceDescription,
           amount: run.intent.total.decimal,
           currency: run.intent.total.currency,
+          currencyQuote: run.intent.exchangeRate?.decimal ?? null,
           sameCurrencyPayment: run.intent.sameCurrencyPayment,
         } : null,
       } }, 200);
@@ -255,6 +272,17 @@ export async function handleFacturaEAuthorityCorridorRoute(
     if (route.operation === 'case_create') {
       const body = createTaxCaseSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      if (body.approvalMode && (!options.beta || !options.agent || !options.store))
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      if (options.taxCases && (!options.agent || !options.store)) {
+        const created = options.taxCases.createRun({ runId: body.runId, workspaceId: body.workspaceId,
+          issuancePath: body.issuancePath, actorId: `motora:${principal.actorId}`, idempotencyKey: body.idempotencyKey, occurredAt });
+        const binding = options.taxCases.bindLedgerInvoice({ runId: body.runId, ledgerInvoiceId: body.ledgerInvoiceId,
+          idempotencyKey: `${body.idempotencyKey}:ledger-binding`, occurredAt });
+        return privateJson({ data: { version: 'factura-e-tax-case-receipt-v1', runId: created.run.runId,
+          workspaceId: body.workspaceId, ledgerInvoiceId: body.ledgerInvoiceId, state: 'case_created',
+          replayed: created.replayed && binding.replayed, nextAction: 'collect_verified_evidence' } }, 200);
+      }
       const { agent, store } = options;
       if (!agent || !store)
         throw new Error('FACTURA_E_TAX_CASE_CONFIGURATION_REQUIRED');
@@ -263,13 +291,15 @@ export async function handleFacturaEAuthorityCorridorRoute(
       }, () => agent.createRun({
         runId: body.runId, workspaceId: body.workspaceId,
         issuancePath: body.issuancePath, actorId: principal.actorId,
+        ...(body.approvalMode ? { approvalMode: body.approvalMode } : {}),
         idempotencyKey: body.idempotencyKey, occurredAt,
-      }).run);
+      }, options.beta).run);
       return privateJson({ data: {
         version: 'factura-e-tax-case-receipt-v1',
         runId: created.run.runId, workspaceId: body.workspaceId,
         ledgerInvoiceId: body.ledgerInvoiceId, state: 'case_created',
         replayed: created.replayed, nextAction: 'collect_verified_evidence',
+        ...(created.run.approvalMode ? { approvalMode: created.run.approvalMode } : {}),
       } }, 200);
     }
 
@@ -364,8 +394,10 @@ export async function handleFacturaEAuthorityCorridorRoute(
         workspaceId: body.workspaceId, runId, ledgerInvoiceId: body.ledgerInvoiceId,
         intentHash: validation.intentHash,
         approvalState: current.approvalState,
+        ...(current.approvalMode ? { approvalMode: current.approvalMode } : {}),
         commercialRequestEvidenceHash: commercial.evidenceHash,
-        quoteStatus: 'manual_homologation_accountant_review_required',
+        quoteStatus: current.approvalMode === 'owner_manual'
+          ? 'manual_homologation_owner_confirmation_required' : 'manual_homologation_accountant_review_required',
       } }, 200);
     }
 
@@ -373,6 +405,16 @@ export async function handleFacturaEAuthorityCorridorRoute(
       const runId = z.uuid().parse(decodeURIComponent(route.runId ?? ''));
       const body = authorityAttestationRequestSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      if (options.taxCases && (!options.agent || !options.store)) {
+        const run = options.taxCases.getRun(runId);
+        assertPrincipalWorkspace(principal.workspaceId, run.workspaceId);
+        if (run.intentHash !== body.intentHash) throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+        const official = service.officialAttestationBinding({ workspaceId: body.workspaceId, runId, intentHash: body.intentHash });
+        return privateJson({ data: options.taxCases.invoiceAuthorityAttestation({ workspaceId: body.workspaceId,
+          runId, ledgerInvoiceId: body.ledgerInvoiceId, intentHash: body.intentHash,
+          authorityReceiptHash: official.receiptHash, authorityExecutionId: official.executionId,
+          authorityEnvironment: official.authorityEnvironment, authorityProviderId: official.authorityProviderId }) }, 200);
+      }
       const { agent, store } = options;
       if (!agent || !store)
         throw new Error('FACTURA_E_TAX_CASE_CONFIGURATION_REQUIRED');
@@ -437,6 +479,14 @@ export async function handleFacturaEAuthorityCorridorRoute(
       const runId = z.uuid().parse(decodeURIComponent(route.runId ?? ''));
       const body = approveTaxIntentSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      if (options.taxCases && (!options.agent || !options.store)) {
+        const current = options.taxCases.getRun(runId); assertPrincipalWorkspace(principal.workspaceId, current.workspaceId);
+        const approved = options.taxCases.approveIntent({ runId, actorId: principal.actorId,
+          intentHash: body.intentHash, idempotencyKey: body.idempotencyKey, occurredAt });
+        return privateJson({ data: { version: 'factura-e-intent-approval-receipt-v1', runId,
+          workspaceId: body.workspaceId, intentHash: body.intentHash, approvalState: approved.run.approvalState,
+          issuanceState: approved.run.issuanceState, replayed: approved.replayed } }, 200);
+      }
       const { agent, store } = options;
       if (!agent || !store)
         throw new Error('FACTURA_E_TAX_CASE_CONFIGURATION_REQUIRED');
@@ -466,6 +516,13 @@ export async function handleFacturaEAuthorityCorridorRoute(
     if (route.operation === 'create') {
       const body = createIntentSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      if (options.taxCases && (!options.agent || !options.store)) {
+        const preparationBinding = options.taxCases.authorityPreparationBinding({ workspaceId: body.workspaceId,
+          runId: body.runId, ledgerInvoiceId: body.ledgerInvoiceId, intentHash: body.intentHash });
+        return privateJson({ data: { ...service.createIntent({ workspaceId: body.workspaceId, runId: body.runId,
+          intentHash: body.intentHash, idempotencyKey: body.idempotencyKey, actorId: principal.actorId, occurredAt }),
+          preparationBinding } }, 200);
+      }
       const { agent, store } = options;
       if (!agent || !store)
         throw new Error('FACTURA_E_TAX_CASE_CONFIGURATION_REQUIRED');
@@ -482,6 +539,9 @@ export async function handleFacturaEAuthorityCorridorRoute(
         || !run.intent || run.intent.workspaceId !== binding.workspaceId
         || run.intentHash !== body.intentHash || hashCanonical(run.intent) !== body.intentHash)
         throw new Error('TAX_AUTHORITY_FROZEN_APPROVED_INTENT_REQUIRED');
+      if (run.approvalMode === 'owner_manual'
+        && agent.listEvents(body.runId).find(event => event.action === 'factura_e_run_created')?.actorId !== principal.actorId)
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
       const taxpayerReferenceHash = sha256Schema.parse(run.intent.taxpayerReferenceHash);
       const foreignCustomerReferenceHash = sha256Schema.parse(run.intent.foreignCustomerReferenceHash);
       return privateJson({
@@ -505,7 +565,25 @@ export async function handleFacturaEAuthorityCorridorRoute(
       }, 200);
     }
     const executionId = z.uuid().parse(decodeURIComponent(route.executionId ?? ''));
+    if (route.operation === 'owner_confirm') {
+      if (!options.beta || !options.agent || !options.store || options.environment !== 'homologation')
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      const body = ownerConfirmationSchema.parse(JSON.parse(rawBody) as unknown);
+      assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
+      const binding = options.store.getFacturaETaxCaseBinding(body.runId);
+      const run = options.agent.getRun(body.runId);
+      const ownerEvent = options.agent.listEvents(body.runId).find(event => event.action === 'factura_e_run_created');
+      if (!binding || binding.workspaceId !== body.workspaceId || binding.issuancePath !== 'wsfex_delegated'
+        || ownerEvent?.actorId !== principal.actorId || run.approvalMode !== 'owner_manual'
+        || !run.intent || hashCanonical(run.intent) !== body.intentHash)
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      const approvalRef = `tax_owner_manual_approval_${createHmac('sha256', options.secrets.motora!)
+        .update(JSON.stringify({ domain: 'owner-manual-beta-v1', executionId, ...body, actorId: principal.actorId })).digest('hex')}`;
+      return privateJson({ data: service.registerOwnerManualApproval({ ...body, executionId,
+        approvalRef, actorId: principal.actorId, occurredAt }) }, 200);
+    }
     if (route.operation === 'approve') {
+      if (options.beta) throw new Error('TAX_AUTHORITY_BETA_LEGACY_APPROVAL_UNAUTHORIZED');
       const body = registerApprovalSchema.parse(JSON.parse(rawBody) as unknown);
       assertPrincipalWorkspace(principal.workspaceId, body.workspaceId);
       return privateJson({
@@ -598,7 +676,7 @@ function intentFromCommercialRequest(
 }
 
 function matchRoute(method: string, pathname: string): Readonly<{
-  operation: 'case_create' | 'case_read' | 'case_prepare' | 'case_attest' | 'intent_approve' | 'readiness' | 'status' | 'status_exact' | 'create' | 'approve' | 'execute' | 'recover' | 'reconcile';
+  operation: 'case_create' | 'case_read' | 'case_prepare' | 'case_attest' | 'intent_approve' | 'readiness' | 'status' | 'status_exact' | 'create' | 'approve' | 'owner_confirm' | 'execute' | 'recover' | 'reconcile';
   capability: TaxAuthorityCapability;
   workspaceId?: string;
   executionId?: string;
@@ -640,10 +718,12 @@ function matchRoute(method: string, pathname: string): Readonly<{
       workspaceId: status[1]!,
     };
   const mutation = pathname.match(
-    /^\/v1\/authority\/factura-e\/intents\/([^/]+)\/(approvals|execute|recover|reconcile)$/
+    /^\/v1\/authority\/factura-e\/intents\/([^/]+)\/(approvals|owner-confirmation|execute|recover|reconcile)$/
   );
   if (method !== 'POST' || !mutation) return null;
   const operation = mutation[2];
+  if (operation === 'owner-confirmation')
+    return { operation: 'owner_confirm', capability: 'factura-e:approval:register', executionId: mutation[1]! };
   if (operation === 'approvals')
     return {
       operation: 'approve',

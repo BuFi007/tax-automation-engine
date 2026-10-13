@@ -13,7 +13,7 @@ import {
 } from './scenario-fixtures';
 
 describe('complete Tax browser scenario catalogue', () => {
-  test('covers the frozen AR and US entity stories', () => {
+  test('covers the frozen AR, US, and Dubai Free Zone entity stories', () => {
     const cases = TAX_BROWSER_SCENARIO_FIXTURES_V1.cases;
     expect(Object.values(cases).every(value => taxCaseV1Schema.safeParse(value).success)).toBe(true);
     expect(cases.argentinaMonotributistaExporter.profile?.regimeId).toBe('monotributo_exportador');
@@ -21,6 +21,7 @@ describe('complete Tax browser scenario catalogue', () => {
     expect(cases.usDomesticLlc.profile?.regimeId).toBe('llc_single_member_domestic');
     expect(cases.usForeignOwnedLlc.profile?.regimeId).toBe('llc_single_member_foreign_owned');
     expect(cases.usCCorp.profile?.regimeId).toBe('c_corp');
+    expect(cases.uaeDubaiFreeZone.profile?.regimeId).toBe('uae_free_zone_person');
   });
 
   test('covers stale, offline, partial, and failed providers without optimistic health', () => {

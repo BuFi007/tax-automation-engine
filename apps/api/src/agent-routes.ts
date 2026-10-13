@@ -125,7 +125,7 @@ const settlementEvidenceSchema = z.object({
   }).strict(),
 }).strict();
 
-const settlementSchema = z.object({
+export const facturaESettlementSchema = z.object({
   settlementReferenceHash: sha256Schema,
   asset: z.string().min(1).max(32),
   network: z.string().min(1).max(64),
@@ -137,7 +137,6 @@ const settlementSchema = z.object({
   evidence: settlementEvidenceSchema.nullable().optional(),
 }).strict();
 const intentJsonSchema = z.toJSONSchema(intentSchema);
-const settlementJsonSchema = z.toJSONSchema(settlementSchema);
 const evidenceProposalJsonSchema = z.toJSONSchema(evidenceProposalSchema);
 
 const invocationSchema = z.object({
@@ -156,7 +155,7 @@ const evidenceRecordSchema = z.object({
   externalReferenceHash: z.string().min(1),
   sourceEventHash: z.string().min(1),
   artifactHash: z.string().min(1),
-  jurisdiction: z.enum(['AR', 'US']).nullable(),
+  jurisdiction: z.enum(['AR', 'US', 'AE']).nullable(),
   period: z.object({ start: z.iso.date(), end: z.iso.date() }).strict(),
   observedAt: z.iso.datetime({ offset: true }),
   expiresAt: z.iso.datetime({ offset: true }).nullable(),
@@ -197,6 +196,10 @@ export const FACTURA_E_AGENT_TOOLS = [
     type: 'object', required: ['runId', 'workspaceId', 'issuancePath'], additionalProperties: false,
     properties: { runId: { type: 'string', format: 'uuid' }, workspaceId: { type: 'string' }, issuancePath: { enum: ['reclaim_copilot', 'wsfex_delegated'] } },
   }, 'automatic'),
+  tool('tax_ar_factura_e_bind_ledger_invoice', 'Bind one existing Factura E case to one BUFI Invoice 2.0 ledger invoice. This only links immutable identifiers; it never records settlement or issues an invoice.', {
+    type: 'object', required: ['runId', 'ledgerInvoiceId'], additionalProperties: false,
+    properties: { runId: { type: 'string', format: 'uuid' }, ledgerInvoiceId: { type: 'string', format: 'uuid' } },
+  }, 'automatic'),
   tool('tax_ar_factura_e_get_case', 'Read the case, its independent compliance states, and deterministic next actions.', {
     type: 'object', required: ['runId'], additionalProperties: false, properties: { runId: { type: 'string', format: 'uuid' } },
   }, 'read_only'),
@@ -225,10 +228,6 @@ export const FACTURA_E_AGENT_TOOLS = [
   tool('tax_ar_factura_e_request_approval', 'Freeze the validated intent candidate and request a separate human approval. This tool cannot approve it.', {
     type: 'object', required: ['runId'], additionalProperties: false, properties: { runId: { type: 'string', format: 'uuid' } },
   }, 'user_interaction_required'),
-  tool('tax_ar_factura_e_record_settlement', 'Record immutable stablecoin or bank settlement evidence, including an optional privacy-safe source/fee/FX proof envelope. This does not mark FX ingress or tax declaration verified.', {
-    type: 'object', required: ['runId', 'settlement'], additionalProperties: false,
-    properties: { runId: { type: 'string', format: 'uuid' }, settlement: settlementJsonSchema },
-  }, 'automatic'),
   tool('tax_ar_factura_e_prepare_adjustment', 'Prepare an immutable associated export debit note (20) or credit note (21). The adjustment freezes financing and requires a new human approval.', z.toJSONSchema(adjustmentSchema), 'automatic'),
   tool('tax_ar_factura_e_get_adjustment_copilot_packet', 'Return the approved Path B adjustment packet, including the mandatory original Factura E association.', {
     type: 'object', required: ['runId', 'adjustmentId'], additionalProperties: false,
@@ -244,7 +243,7 @@ export async function handleAgentRoute(
     userApprovalToken: string | null;
     accountantApprovalToken: string | null;
     evidenceIngestToken: string | null;
-    agentPrincipalSecret: string | null;
+    agentPrincipalSecret: string | null | readonly (string | null)[];
     accountantMandates?: AccountantMandateAuthorizer | null;
     /** Retired compatibility input; never authorizes an ARCA effect. */
     authorityPayloadToken?: string | null;
@@ -491,6 +490,10 @@ async function invokeTool(
       const input = z.object({ runId: z.uuid(), workspaceId: z.string().min(1), issuancePath: z.enum(['reclaim_copilot', 'wsfex_delegated']) }).strict().parse(body.input);
       return service.createRun({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });
     }
+    case 'tax_ar_factura_e_bind_ledger_invoice': {
+      const input = z.object({ runId: z.uuid(), ledgerInvoiceId: z.uuid() }).strict().parse(body.input);
+      return service.bindLedgerInvoice({ ...input, idempotencyKey: body.idempotencyKey, occurredAt });
+    }
     case 'tax_ar_factura_e_get_case': {
       const input = z.object({ runId: z.uuid() }).strict().parse(body.input);
       const run = service.getRun(input.runId);
@@ -535,13 +538,6 @@ async function invokeTool(
     case 'tax_ar_factura_e_submit_adjustment_wsfex':
     case 'tax_ar_factura_e_recover_adjustment_wsfex': {
       throw new Error('TAX_AUTHORITY_CORRIDOR_REQUIRED');
-    }
-    case 'tax_ar_factura_e_record_settlement': {
-      if (body.actorId !== 'agent:tax-settlement') {
-        throw new Error('INVOICE_SETTLEMENT_AUTHORITY_REQUIRED');
-      }
-      const input = z.object({ runId: z.uuid(), settlement: settlementSchema }).strict().parse(body.input);
-      return service.recordSettlement({ ...input, actorId: body.actorId, idempotencyKey: body.idempotencyKey, occurredAt });
     }
     case 'tax_ar_factura_e_prepare_adjustment': {
       const input = adjustmentSchema.parse(body.input);

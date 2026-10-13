@@ -1,3 +1,4 @@
+import { assertArcaFiscalBeta, assertFiscalHumanActor, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
 import {
   addReclaimSession,
   approveFacturaEAdjustment,
@@ -92,18 +93,42 @@ export class FacturaEAgentService {
     runId: string;
     workspaceId: string;
     issuancePath: FacturaEIssuancePath;
+    approvalMode?: 'owner_manual';
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
-  }>): AgentMutationResult {
+  }>, ownerManualBeta?: ArcaFiscalBetaConfig): AgentMutationResult {
+    if (input.approvalMode === 'owner_manual') {
+      assertArcaFiscalBeta(input.workspaceId, ownerManualBeta);
+      assertFiscalHumanActor(input.workspaceId, input.actorId);
+      if (input.issuancePath !== 'wsfex_delegated') throw new Error('TAX_OWNER_MANUAL_ISSUANCE_PATH_UNAUTHORIZED');
+    }
     const commandHash = facturaEAgentCommandHash('create_run', input);
     const replay = this.store.getFacturaEAgentRunByIdempotency(input.runId, input.idempotencyKey, commandHash);
     if (replay) return result(replay, true, undefined);
     const existing = this.store.getFacturaEAgentRun(input.runId);
     if (existing) throw new Error('AGENT_RUN_ALREADY_EXISTS');
     const created = createFacturaEAgentRun(input);
-    const run = this.persist(created.run, created.event, input.occurredAt, commandHash);
-    return result(run, false, undefined);
+    return result(this.persist(created.run, created.event, input.occurredAt, commandHash), false, undefined);
+  }
+
+  bindLedgerInvoice(input: Readonly<{
+    runId: string;
+    ledgerInvoiceId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): { run: FacturaEAgentRunV1; replayed: boolean } {
+    const run = this.getRun(input.runId);
+    return {
+      run,
+      ...this.store.bindInvoiceTaxCase({
+        workspaceId: run.workspaceId,
+        invoiceId: input.ledgerInvoiceId,
+        runId: run.runId,
+        idempotencyKey: input.idempotencyKey,
+        boundAt: input.occurredAt,
+      }),
+    };
   }
 
   getRun(runId: string): FacturaEAgentRunV1 {
@@ -323,6 +348,109 @@ export class FacturaEAgentService {
         paymentOutcomeOnly: true,
         limitation: 'This packet is consented evidence for review; it is not a TaxScore, credit decision, legal opinion, or factoring approval.',
       },
+    };
+  }
+
+  invoiceTaxCaseStatus(input: Readonly<{ workspaceId: string; runId: string }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (run.workspaceId !== input.workspaceId || !binding)
+      throw new Error('TAX_INVOICE_CASE_BINDING_CONFLICT');
+    return {
+      runId: run.runId,
+      workspaceId: run.workspaceId,
+      ledgerInvoiceId: binding.invoiceId,
+      intentHash: run.intentHash,
+      revision: run.revision,
+      readinessState: run.readinessState,
+      intentState: run.intentState,
+      approvalState: run.approvalState,
+      issuanceState: run.issuanceState,
+    };
+  }
+
+  invoiceAuthorityAttestation(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    ledgerInvoiceId: string;
+    intentHash: string;
+    authorityReceiptHash: string;
+    authorityExecutionId: string;
+    authorityEnvironment: 'homologation' | 'production';
+    authorityProviderId: string;
+  }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (
+      run.workspaceId !== input.workspaceId ||
+      run.intentHash !== input.intentHash ||
+      run.issuanceState !== 'arca_authorized' ||
+      !run.intent ||
+      run.intent.documentType !== 19 ||
+      !binding ||
+      binding.invoiceId !== input.ledgerInvoiceId
+    )
+      throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+    if (
+      !run.authority.invoiceNumber ||
+      !run.authority.cae ||
+      !run.authority.caeExpiry ||
+      !run.authority.currencyId ||
+      !run.authority.currencyQuote ||
+      !run.authority.authorizedAt ||
+      !run.authority.receiptHash ||
+      run.authority.receiptHash !== input.authorityReceiptHash
+    )
+      throw new Error('TAX_AUTHORITY_OFFICIAL_ATTESTATION_STATE_CONFLICT');
+    return {
+      version: 'factura-e-invoice-authority-attestation-v1' as const,
+      authorityExecutionId: input.authorityExecutionId,
+      workspaceId: run.workspaceId,
+      ledgerInvoiceId: binding.invoiceId,
+      runId: run.runId,
+      intentHash: run.intentHash,
+      revision: run.revision,
+      authorityState: 'officially_reconciled' as const,
+      authorityEnvironment: input.authorityEnvironment,
+      authorityProviderId: input.authorityProviderId,
+      invoice: {
+        documentType: 19 as const,
+        pointOfSale: run.intent.pointOfSale,
+        invoiceNumber: run.authority.invoiceNumber,
+        cae: run.authority.cae,
+        caeExpiry: run.authority.caeExpiry,
+        currencyId: run.authority.currencyId,
+        currencyQuote: run.authority.currencyQuote,
+        authorizedAt: run.authority.authorizedAt,
+        authorityReceiptHash: run.authority.receiptHash,
+        issueDate: run.intent.issueDate,
+      },
+    };
+  }
+
+  authorityPreparationBinding(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    ledgerInvoiceId: string;
+    intentHash: string;
+  }>) {
+    const run = this.getRun(input.runId);
+    const binding = this.store.getInvoiceTaxCaseBindingByRun(run.workspaceId, run.runId);
+    if (
+      run.workspaceId !== input.workspaceId ||
+      run.intentHash !== input.intentHash ||
+      run.intentState !== 'frozen' ||
+      run.issuanceState !== 'ready_for_wsfex' ||
+      !run.intent ||
+      !binding ||
+      binding.invoiceId !== input.ledgerInvoiceId
+    )
+      throw new Error('TAX_INVOICE_AUTHORITY_BINDING_CONFLICT');
+    return {
+      version: 'factura-e-authority-preparation-binding-v1' as const,
+      ledgerInvoiceId: binding.invoiceId,
+      taxpayerReferenceHash: run.intent.taxpayerReferenceHash,
+      foreignCustomerReferenceHash: run.intent.foreignCustomerReferenceHash,
     };
   }
 

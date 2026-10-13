@@ -11,7 +11,7 @@ const period = { start: '2026-01-01', end: '2026-12-31' } as const;
 
 function taxCase(input: Readonly<{
   suffix: string;
-  jurisdiction: 'AR' | 'US';
+  jurisdiction: 'AR' | 'US' | 'AE';
   entityType: string;
   regimeId: string;
 }>) {
@@ -59,6 +59,9 @@ export const usForeignOwnedLlcCaseV1Fixture = taxCase({
 });
 export const usCCorpCaseV1Fixture = taxCase({
   suffix: 'us-c-corp', jurisdiction: 'US', entityType: 'c_corporation', regimeId: 'c_corp',
+});
+export const uaeDubaiFreeZoneCaseV1Fixture = taxCase({
+  suffix: 'ae-dubai-free-zone', jurisdiction: 'AE', entityType: 'fzco', regimeId: 'uae_free_zone_person',
 });
 
 function arcaCase(
@@ -205,6 +208,7 @@ export const TAX_BROWSER_SCENARIO_FIXTURES_V1 = {
     usDomesticLlc: usDomesticLlcCaseV1Fixture,
     usForeignOwnedLlc: usForeignOwnedLlcCaseV1Fixture,
     usCCorp: usCCorpCaseV1Fixture,
+    uaeDubaiFreeZone: uaeDubaiFreeZoneCaseV1Fixture,
     accountantChangesRequested: accountantChangesRequestedCaseV1Fixture,
     arcaRejected: arcaRejectedCaseV1Fixture,
     arcaAmbiguous: arcaAmbiguousCaseV1Fixture,
@@ -226,4 +230,4 @@ export const TAX_BROWSER_SCENARIO_FIXTURES_V1 = {
 } as const;
 
 /** SHA-256 of JSON.stringify(TAX_BROWSER_SCENARIO_FIXTURES_V1). */
-export const TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 = '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415';
+export const TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 = 'eeaa0f4e868d5ca4a4f91aa11c10e48844347256b668a6b1a2f6ebc710c9b917';

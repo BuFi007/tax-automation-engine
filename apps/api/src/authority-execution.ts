@@ -1,3 +1,4 @@
+import { assertArcaFiscalBeta, assertFiscalHumanActor, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
 import { Database } from 'bun:sqlite';
 
 import { hashCanonical } from '@tax-engine/core';
@@ -30,6 +31,8 @@ export type FacturaEAuthorityExecutionRecord = Readonly<{
   state: FacturaEAuthorityExecutionState;
   createdByActorHash: string;
   approvalActorHash: string | null;
+  approvalSource: 'mandated_accountant_beta' | 'owner_manual_beta' | null;
+  approvalMode: 'owner_manual' | null;
   approvalRefHash: string | null;
   requestId: string | null;
   authorityPayloadRef: string | null;
@@ -59,9 +62,11 @@ export type SafeFacturaEAuthorityExecutionReceipt = Readonly<{
     | 'officially_reconciled'
     | 'rejected';
   replayed: boolean;
+  approvalMode?: 'owner_manual';
   nextAction:
-    | 'register_oa_approval'
+    | 'request_owner_manual_confirmation'
     | 'request_accountant_authority_approval'
+    | 'register_human_approval'
     | 'execute_with_one_use_approval'
     | 'wait'
     | 'recover_exactly'
@@ -132,6 +137,7 @@ export type FacturaERunAuthorityState = Readonly<{
   intentState?: string;
   approvalState?: string;
   accountantReviewRequired?: boolean;
+  approvalMode?: 'owner_manual';
 }>;
 
 export class FacturaEAuthorityExecutionStore {
@@ -157,6 +163,8 @@ export class FacturaEAuthorityExecutionStore {
         state TEXT NOT NULL,
         created_by_actor_hash TEXT NOT NULL,
         approval_actor_hash TEXT,
+        approval_source TEXT,
+        approval_mode TEXT,
         approval_ref_hash TEXT UNIQUE,
         request_id TEXT,
         authority_payload_ref TEXT,
@@ -217,6 +225,8 @@ export class FacturaEAuthorityExecutionStore {
         FOREIGN KEY (execution_id) REFERENCES factura_e_authority_executions(execution_id)
       );
     `);
+    this.ensureExecutionColumn('approval_source', 'TEXT');
+    this.ensureExecutionColumn('approval_mode', 'TEXT');
     this.ensureExecutionColumn('authority_identity_hash', 'TEXT');
     this.ensureExecutionColumn('authority_environment', 'TEXT');
     this.ensureExecutionColumn('authority_provider_id', 'TEXT');
@@ -343,12 +353,32 @@ export class FacturaEAuthorityExecutionStore {
     } : null;
   }
 
+  officiallyReconciledForRun(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    intentHash: string;
+  }>): FacturaEAuthorityExecutionRecord | null {
+    const rows = this.#db
+      .query<AuthorityExecutionRow, [string, string, string]>(`
+        SELECT * FROM factura_e_authority_executions
+        WHERE workspace_id = ? AND run_id = ? AND intent_hash = ?
+          AND state = 'officially_reconciled'
+        ORDER BY updated_at DESC, execution_id DESC
+        LIMIT 2
+      `)
+      .all(input.workspaceId, input.runId, input.intentHash);
+    if (rows.length > 1)
+      throw new Error('TAX_AUTHORITY_MULTIPLE_OFFICIAL_RESULTS_CONFLICT');
+    return rows[0] ? recordFromRow(rows[0]) : null;
+  }
+
   create(input: Readonly<{
     workspaceId: string;
     runId: string;
     intentHash: string;
     authorityEnvironment: 'homologation' | 'production';
     authorityProviderId: string;
+    approvalMode?: 'owner_manual';
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
@@ -360,6 +390,7 @@ export class FacturaEAuthorityExecutionStore {
       authorityEnvironment: input.authorityEnvironment,
       authorityProviderId: input.authorityProviderId,
       actorId: input.actorId,
+      ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
     });
     const existing = this.#db
       .query<AuthorityExecutionRow, [string, string]>(
@@ -379,8 +410,8 @@ export class FacturaEAuthorityExecutionStore {
           execution_id, workspace_id, run_id, intent_hash,
           authority_environment, authority_provider_id, state,
           created_by_actor_hash, create_idempotency_key, create_command_hash,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'intent_persisted', ?, ?, ?, ?, ?)
+          created_at, updated_at, approval_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, 'intent_persisted', ?, ?, ?, ?, ?, ?)
       `).run(
         executionId,
         input.workspaceId,
@@ -392,7 +423,8 @@ export class FacturaEAuthorityExecutionStore {
         input.idempotencyKey,
         commandHash,
         input.occurredAt,
-        input.occurredAt
+        input.occurredAt,
+        input.approvalMode ?? null
       );
       this.audit(executionId, input.workspaceId, actorHash, 'persist_intent', 'intent_persisted', commandHash, input.occurredAt);
     })();
@@ -407,6 +439,7 @@ export class FacturaEAuthorityExecutionStore {
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
+    approvalSource?: 'mandated_accountant_beta' | 'owner_manual_beta';
   }>): Readonly<{ record: FacturaEAuthorityExecutionRecord; replayed: boolean }> {
     const approvalRefHash = hashCanonical(input.approvalRef);
     const actorHash = hashCanonical(input.actorId);
@@ -416,6 +449,7 @@ export class FacturaEAuthorityExecutionStore {
       intentHash: input.intentHash,
       approvalRefHash,
       actorId: input.actorId,
+      ...(input.approvalSource ? { approvalSource: input.approvalSource } : {}),
     });
     return this.#db.transaction(() => {
       const current = this.required(input.executionId);
@@ -431,7 +465,10 @@ export class FacturaEAuthorityExecutionStore {
       }
       if (current.state !== 'intent_persisted')
         throw new Error('TAX_AUTHORITY_APPROVAL_STATE_CONFLICT');
-      if (current.createdByActorHash === actorHash)
+      if (input.approvalSource === 'owner_manual_beta') {
+        if (current.approvalMode !== 'owner_manual' || current.authorityEnvironment !== 'homologation' || current.createdByActorHash !== actorHash)
+          throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      } else if (current.createdByActorHash === actorHash || current.approvalMode === 'owner_manual')
         throw new Error('TAX_AUTHORITY_SELF_APPROVAL_FORBIDDEN');
       const reused = this.#db
         .query<{ execution_id: string }, [string]>(
@@ -442,18 +479,19 @@ export class FacturaEAuthorityExecutionStore {
         throw new Error('TAX_AUTHORITY_APPROVAL_REF_REPLAY');
       this.#db.query(`
         UPDATE factura_e_authority_executions
-        SET state = 'approved', approval_actor_hash = ?, approval_ref_hash = ?,
+        SET state = 'approved', approval_actor_hash = ?, approval_ref_hash = ?, approval_source = ?,
             approval_idempotency_key = ?, approval_command_hash = ?, updated_at = ?
         WHERE execution_id = ? AND state = 'intent_persisted'
       `).run(
         actorHash,
         approvalRefHash,
+        input.approvalSource ?? null,
         input.idempotencyKey,
         commandHash,
         input.occurredAt,
         input.executionId
       );
-      this.audit(input.executionId, input.workspaceId, actorHash, 'register_oa_approval', 'approved', commandHash, input.occurredAt);
+      this.audit(input.executionId, input.workspaceId, actorHash, 'register_human_approval', 'approved', commandHash, input.occurredAt);
       return { record: this.required(input.executionId), replayed: false };
     })();
   }
@@ -1006,7 +1044,8 @@ export class FacturaEAuthorityExecutionService {
     private readonly authorityContext: Readonly<{
       environment: 'homologation' | 'production';
       providerId: string;
-      approvalPolicy?: 'oa' | 'mandated_accountant_beta';
+      approvalPolicy?: 'human' | 'mandated_accountant_beta';
+      beta?: ArcaFiscalBetaConfig;
     }> = { environment: 'homologation', providerId: 'unconfigured' }
   ) {
     if (!/^[A-Za-z0-9._:/-]{1,200}$/.test(authorityContext.providerId)) {
@@ -1021,7 +1060,7 @@ export class FacturaEAuthorityExecutionService {
       authorityEnvironment: this.authorityContext.environment,
       authorityProviderId: this.authorityContext.providerId,
       intentPersistence: 'available' as const,
-      oaApproval: this.authorityContext.approvalPolicy === 'mandated_accountant_beta'
+      humanApproval: this.authorityContext.approvalPolicy === 'mandated_accountant_beta'
         ? 'delegated_accountant_required' as const : 'required' as const,
       remoteEffects: this.effectsEnabled && this.effect ? ('armed' as const) : ('dark' as const),
       pointOfSaleCreation: 'user_portal_handoff' as const,
@@ -1045,6 +1084,33 @@ export class FacturaEAuthorityExecutionService {
     return this.store.reconciledForRun(workspaceId, runId);
   }
 
+  officialAttestationBinding(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    intentHash: string;
+  }>): Readonly<{
+    executionId: string;
+    receiptHash: string;
+    authorityEnvironment: 'homologation' | 'production';
+    authorityProviderId: string;
+  }> {
+    const record = this.store.officiallyReconciledForRun(input);
+    if (
+      !record ||
+      !record.receiptHash ||
+      record.authorityEnvironment === 'unbound' ||
+      record.authorityEnvironment !== this.authorityContext.environment ||
+      record.authorityProviderId !== this.authorityContext.providerId
+    )
+      throw new Error('TAX_AUTHORITY_OFFICIAL_ATTESTATION_STATE_CONFLICT');
+    return {
+      executionId: record.executionId,
+      receiptHash: record.receiptHash,
+      authorityEnvironment: record.authorityEnvironment,
+      authorityProviderId: record.authorityProviderId,
+    };
+  }
+
   createIntent(input: Readonly<{
     workspaceId: string;
     runId: string;
@@ -1062,10 +1128,16 @@ export class FacturaEAuthorityExecutionService {
       && run.issuanceState === 'not_ready' && run.intentState === 'frozen'
       && run.approvalState === 'user_approved' && run.accountantReviewRequired === true))
       throw new Error('TAX_AUTHORITY_FROZEN_APPROVED_INTENT_REQUIRED');
+    if (run.approvalMode === 'owner_manual') {
+      if (!this.authorityContext.beta) throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      assertArcaFiscalBeta(input.workspaceId, this.authorityContext.beta);
+      assertFiscalHumanActor(input.workspaceId, input.actorId);
+    }
     const created = this.store.create({
       ...input,
       authorityEnvironment: this.authorityContext.environment,
       authorityProviderId: this.authorityContext.providerId,
+      ...(run.approvalMode === 'owner_manual' ? { approvalMode: run.approvalMode } : {}),
     });
     return this.safeReceipt(created.record, created.replayed);
   }
@@ -1097,8 +1169,51 @@ export class FacturaEAuthorityExecutionService {
     idempotencyKey: string;
     occurredAt: string;
   }>): SafeFacturaEAuthorityExecutionReceipt {
+    if (this.authorityContext.approvalPolicy === 'mandated_accountant_beta')
+      throw new Error('TAX_AUTHORITY_BETA_LEGACY_APPROVAL_UNAUTHORIZED');
     this.assertCurrentAuthorityContext(input.executionId);
     const approved = this.store.approve(input);
+    return this.safeReceipt(approved.record, approved.replayed);
+  }
+
+  registerAccountantApproval(input: Readonly<{
+    executionId: string; workspaceId: string; runId: string; intentHash: string;
+    approvalRef: string; actorId: string; idempotencyKey: string; occurredAt: string;
+  }>): SafeFacturaEAuthorityExecutionReceipt {
+    if (this.authorityContext.approvalPolicy !== 'mandated_accountant_beta'
+      || !/^tax_accountant_approval_[a-f0-9]{64}$/.test(input.approvalRef))
+      throw new Error('TAX_AUTHORITY_ACCOUNTANT_APPROVAL_UNAUTHORIZED');
+    this.assertAccountantApprovalTarget(input);
+    const run = this.readRun(input.runId);
+    if (run.workspaceId !== input.workspaceId || run.intentHash !== input.intentHash
+      || run.intentState !== 'frozen' || run.approvalState !== 'accountant_approved'
+      || (run.issuanceState !== 'ready_for_wsfex' && run.issuanceState !== 'arca_authorized'))
+      throw new Error('TAX_AUTHORITY_ACCOUNTANT_SEMANTIC_APPROVAL_REQUIRED');
+    const approved = this.store.approve({ ...input, approvalSource: 'mandated_accountant_beta' });
+    return this.safeReceipt(approved.record, approved.replayed);
+  }
+
+  registerOwnerManualApproval(input: Readonly<{
+    executionId: string; workspaceId: string; runId: string; intentHash: string;
+    approvalRef: string; actorId: string; idempotencyKey: string; occurredAt: string;
+  }>): SafeFacturaEAuthorityExecutionReceipt {
+    if (!this.authorityContext.beta || this.authorityContext.environment !== 'homologation'
+      || !/^tax_owner_manual_approval_[a-f0-9]{64}$/.test(input.approvalRef))
+      throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+    assertArcaFiscalBeta(input.workspaceId, this.authorityContext.beta);
+    assertFiscalHumanActor(input.workspaceId, input.actorId);
+    this.assertCurrentAuthorityContext(input.executionId);
+    const record = this.store.get(input.executionId);
+    const run = this.readRun(input.runId);
+    if (!record || record.workspaceId !== input.workspaceId || record.runId !== input.runId
+      || record.intentHash !== input.intentHash || record.approvalMode !== 'owner_manual'
+      || record.createdByActorHash !== hashCanonical(input.actorId)
+      || run.workspaceId !== input.workspaceId || run.intentHash !== input.intentHash
+      || run.approvalMode !== 'owner_manual' || run.accountantReviewRequired !== false
+      || run.intentState !== 'frozen' || run.approvalState !== 'user_approved'
+      || !['ready_for_wsfex', 'arca_authorized'].includes(run.issuanceState))
+      throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+    const approved = this.store.approve({ ...input, approvalSource: 'owner_manual_beta' });
     return this.safeReceipt(approved.record, approved.replayed);
   }
 
@@ -1111,6 +1226,7 @@ export class FacturaEAuthorityExecutionService {
   }>): Promise<SafeFacturaEAuthorityExecutionReceipt> {
     if (!this.effectsEnabled || !this.effect)
       throw new Error('TAX_ARCA_REMOTE_EFFECTS_CONFIGURATION_REQUIRED');
+    this.assertBetaAccountantApprovalSource(input.executionId, input.actorId);
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginExecution(input);
     let record = begun.record;
@@ -1165,6 +1281,7 @@ export class FacturaEAuthorityExecutionService {
   }>): Promise<SafeFacturaEAuthorityExecutionReceipt> {
     if (!this.effectsEnabled || !this.effect)
       throw new Error('TAX_ARCA_REMOTE_EFFECTS_CONFIGURATION_REQUIRED');
+    this.assertBetaAccountantApprovalSource(input.executionId, input.actorId);
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginRecovery(input);
     const record = begun.record;
@@ -1212,6 +1329,7 @@ export class FacturaEAuthorityExecutionService {
   }>): Promise<SafeFacturaEAuthorityExecutionReceipt> {
     if (!this.effectsEnabled || !this.effect)
       throw new Error('TAX_ARCA_REMOTE_EFFECTS_CONFIGURATION_REQUIRED');
+    this.assertBetaAccountantApprovalSource(input.executionId, input.actorId);
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginReconciliation(input);
     const record = begun.record;
@@ -1240,9 +1358,30 @@ export class FacturaEAuthorityExecutionService {
     );
   }
 
+  private assertBetaAccountantApprovalSource(executionId: string, actorId: string): void {
+    const ownerRecord = this.store.get(executionId);
+    if (ownerRecord?.approvalMode === 'owner_manual') {
+      if (!this.authorityContext.beta || this.authorityContext.environment !== 'homologation')
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      assertArcaFiscalBeta(ownerRecord.workspaceId, this.authorityContext.beta);
+      assertFiscalHumanActor(ownerRecord.workspaceId, actorId);
+      if (ownerRecord.approvalSource !== 'owner_manual_beta' || ownerRecord.approvalActorHash !== hashCanonical(actorId)
+        || ownerRecord.createdByActorHash !== hashCanonical(actorId))
+        throw new Error('TAX_AUTHORITY_OWNER_MANUAL_APPROVAL_UNAUTHORIZED');
+      return;
+    }
+    if (this.authorityContext.approvalPolicy !== 'mandated_accountant_beta') return;
+    const record = this.store.get(executionId);
+    if (!record || record.approvalSource !== 'mandated_accountant_beta'
+      || !record.approvalActorHash || record.approvalActorHash === record.createdByActorHash)
+      throw new Error('TAX_AUTHORITY_ACCOUNTANT_APPROVAL_REQUIRED');
+  }
+
   private safeReceipt(record: FacturaEAuthorityExecutionRecord, replayed: boolean, nowMs = Date.now()): SafeFacturaEAuthorityExecutionReceipt {
     const receipt = safeReceipt(record, replayed, nowMs);
-    return this.authorityContext.approvalPolicy === 'mandated_accountant_beta' && receipt.state === 'intent_persisted'
+    if (record.approvalMode === 'owner_manual')
+      return { ...receipt, approvalMode: 'owner_manual', ...(receipt.state === 'intent_persisted' ? { nextAction: 'request_owner_manual_confirmation' as const } : {}) };
+    return record.approvalMode !== 'owner_manual' && this.authorityContext.approvalPolicy === 'mandated_accountant_beta' && receipt.state === 'intent_persisted'
       ? { ...receipt, nextAction: 'request_accountant_authority_approval' } : receipt;
   }
 
@@ -1286,7 +1425,7 @@ function safeReceipt(
     replayed,
     nextAction:
       state === 'intent_persisted'
-        ? 'register_oa_approval'
+        ? 'register_human_approval'
         : state === 'approved'
           ? 'execute_with_one_use_approval'
           : state === 'recovery_required'
@@ -1350,6 +1489,8 @@ function recordFromRow(row: AuthorityExecutionRow): FacturaEAuthorityExecutionRe
     state: executionState(row.state),
     createdByActorHash: row.created_by_actor_hash,
     approvalActorHash: row.approval_actor_hash,
+    approvalSource: row.approval_source === 'mandated_accountant_beta' || row.approval_source === 'owner_manual_beta' ? row.approval_source : null,
+    approvalMode: row.approval_mode === 'owner_manual' ? row.approval_mode : null,
     approvalRefHash: row.approval_ref_hash,
     requestId: row.request_id,
     authorityPayloadRef: row.authority_payload_ref,
@@ -1404,6 +1545,8 @@ type AuthorityExecutionRow = {
   state: string;
   created_by_actor_hash: string;
   approval_actor_hash: string | null;
+  approval_source: string | null;
+  approval_mode: string | null;
   approval_ref_hash: string | null;
   request_id: string | null;
   authority_payload_ref: string | null;

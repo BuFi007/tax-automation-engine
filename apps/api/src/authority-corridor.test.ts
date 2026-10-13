@@ -19,7 +19,7 @@ const runId = '22222222-2222-4222-8222-222222222222';
 const intentHash = 'a'.repeat(64);
 const motoraSecret = 'motora-authority-secret-1111111111111111';
 const approvalSecret = 'open-agents-approval-secret-2222222222';
-const approvalRef = 'oa_approval_abcdefghijklmnopqrstuvwx';
+const approvalRef = 'human_approval_abcdefghijklmnopqrstuvwx';
 
 function fixture(
   recoverOutcomes: ReadonlyArray<'authority_accepted_unverified' | 'ambiguous'> = [
@@ -80,6 +80,9 @@ function signedRequest(
   body: unknown,
   input: Readonly<{
     capability:
+      | 'factura-e:case:create'
+      | 'factura-e:authority:attest'
+      | 'factura-e:intent:approve'
       | 'factura-e:intent:create'
       | 'factura-e:approval:register'
       | 'factura-e:execute'
@@ -129,6 +132,26 @@ function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:use
   };
 }
 
+function signedCaseStatusRequest(candidateWorkspaceId = workspaceId) {
+  const path = `/v1/authority/factura-e/cases/${runId}`;
+  return {
+    path,
+    request: new Request(`https://tax.test${path}`, {
+      method: 'GET',
+      headers: createTaxAuthorityPrincipalHeaders({
+        secret: motoraSecret,
+        workspaceId: candidateWorkspaceId,
+        actorId: 'motora:desk-case-status',
+        capability: 'factura-e:case:read',
+        method: 'GET',
+        path,
+        rawBody: '',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+  };
+}
+
 describe('Tax-owned Factura E authority corridor', () => {
   test('reads one exact execution without switching to another invoice in the workspace', async () => {
     const { store, service } = fixture();
@@ -159,6 +182,312 @@ describe('Tax-owned Factura E authority corridor', () => {
     } finally {
       store.close();
     }
+  });
+
+  test('returns the invoice-bound intent hash in the browser-safe TaxCase status', async () => {
+    const { store, service } = fixture();
+    const ledgerInvoiceId = '33333333-3333-4333-8333-333333333333';
+    const calls: Record<string, unknown>[] = [];
+    const taxCases = {
+      invoiceTaxCaseStatus: (input: Record<string, unknown>) => {
+        calls.push(input);
+        if (input.workspaceId !== workspaceId) throw new Error('TAX_INVOICE_CASE_BINDING_CONFLICT');
+        return {
+          runId,
+          workspaceId,
+          ledgerInvoiceId,
+          intentHash,
+          revision: 7,
+          readinessState: 'verified',
+          intentState: 'frozen',
+          approvalState: 'user_approved',
+          issuanceState: 'ready_for_wsfex',
+        };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    try {
+      const signed = signedCaseStatusRequest();
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signed.request,
+        new URL(`https://tax.test${signed.path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({
+        data: expect.objectContaining({
+          version: 'factura-e-tax-case-status-v1',
+          runId,
+          workspaceId,
+          ledgerInvoiceId,
+          intentHash,
+          nextAction: 'persist_authority_intent',
+        }),
+      });
+      expect(calls).toEqual([{ workspaceId, runId }]);
+
+      const denied = signedCaseStatusRequest('99999999-9999-4999-8999-999999999999');
+      const deniedResponse = await handleFacturaEAuthorityCorridorRoute(
+        denied.request,
+        new URL(`https://tax.test${denied.path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(deniedResponse?.status).toBe(409);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('releases an invoice-bound authority tuple only after official reconciliation', async () => {
+    const { store, service } = fixture();
+    const ledgerInvoiceId = '33333333-3333-4333-8333-333333333333';
+    let attestationCalls = 0;
+    const taxCases = {
+      getRun: () => ({ runId, workspaceId, intentHash }),
+      invoiceAuthorityAttestation: (input: Record<string, unknown>) => {
+        attestationCalls += 1;
+        return {
+          version: 'factura-e-invoice-authority-attestation-v1',
+          authorityExecutionId: input.authorityExecutionId,
+          workspaceId,
+          ledgerInvoiceId,
+          runId,
+          intentHash,
+          revision: 12,
+          authorityState: 'officially_reconciled',
+          authorityEnvironment: input.authorityEnvironment,
+          authorityProviderId: input.authorityProviderId,
+          invoice: {
+            documentType: 19,
+            pointOfSale: 4,
+            invoiceNumber: '51',
+            cae: '98765432109876',
+            caeExpiry: '2026-07-21',
+            currencyId: 'DOL',
+            currencyQuote: '1200.25',
+            authorizedAt: '2026-07-15T16:05:00.000Z',
+            authorityReceiptHash: input.authorityReceiptHash,
+            issueDate: '2026-07-15',
+          },
+        };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    const path = `/v1/authority/factura-e/cases/${runId}/authority-attestation`;
+    const body = {
+      version: 'factura-e-invoice-authority-attestation-request-v1',
+      workspaceId,
+      ledgerInvoiceId,
+      intentHash,
+    } as const;
+    const request = () => signedRequest(path, body, {
+      capability: 'factura-e:authority:attest',
+      actorId: 'motora:desk-authority-sync',
+      secret: motoraSecret,
+    });
+    try {
+      const beforeOfficial = await handleFacturaEAuthorityCorridorRoute(
+        request(),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(beforeOfficial?.status).toBe(409);
+      expect(await beforeOfficial?.json()).toEqual({
+        error: 'TAX_AUTHORITY_OFFICIAL_ATTESTATION_STATE_CONFLICT',
+      });
+      expect(attestationCalls).toBe(0);
+
+      const intent = service.createIntent({
+        workspaceId,
+        runId,
+        intentHash,
+        actorId: 'user:creator',
+        idempotencyKey: 'create-authority-attestation-1',
+        occurredAt: '2026-07-15T16:00:00.000Z',
+      });
+      service.registerApproval({
+        executionId: intent.executionId,
+        workspaceId,
+        intentHash,
+        approvalRef: 'human_approval_authority_attestation_abcdefghijkl',
+        actorId: 'user:approver',
+        idempotencyKey: 'register-authority-attestation-1',
+        occurredAt: '2026-07-15T16:01:00.000Z',
+      });
+      await service.execute({
+        executionId: intent.executionId,
+        workspaceId,
+        actorId: 'motora:authority-corridor',
+        idempotencyKey: 'execute-authority-attestation-1',
+        occurredAt: '2026-07-15T16:02:00.000Z',
+      });
+      await service.recover({
+        executionId: intent.executionId,
+        workspaceId,
+        actorId: 'motora:authority-corridor',
+        idempotencyKey: 'recover-authority-attestation-1',
+        occurredAt: '2026-07-15T16:03:00.000Z',
+      });
+      await service.reconcile({
+        executionId: intent.executionId,
+        workspaceId,
+        actorId: 'motora:authority-corridor',
+        idempotencyKey: 'reconcile-authority-attestation-1',
+        occurredAt: '2026-07-15T16:05:00.000Z',
+      });
+
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        request(),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get('cache-control')).toBe('private, no-store');
+      expect(await response?.json()).toEqual({ data: expect.objectContaining({
+        version: 'factura-e-invoice-authority-attestation-v1',
+        authorityExecutionId: intent.executionId,
+        workspaceId,
+        ledgerInvoiceId,
+        runId,
+        intentHash,
+        authorityState: 'officially_reconciled',
+        authorityEnvironment: 'homologation',
+        invoice: expect.objectContaining({
+          cae: '98765432109876',
+          authorityReceiptHash: 'f'.repeat(64),
+        }),
+      }) });
+      expect(attestationCalls).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('approves a frozen intent through Motora and rejects cross-tenant run access', async () => {
+    const { store, service } = fixture();
+    const calls: Record<string, unknown>[] = [];
+    const run = {
+      runId,
+      workspaceId,
+      approvalState: 'user_approved',
+      issuanceState: 'ready_for_wsfex',
+    };
+    const taxCases = {
+      getRun: (candidateRunId: string) => {
+        calls.push({ kind: 'read', runId: candidateRunId });
+        return run;
+      },
+      approveIntent: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'approve', ...input });
+        return { run, replayed: false };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    const path = `/v1/authority/factura-e/cases/${runId}/intent-approval`;
+    const body = {
+      version: 'factura-e-intent-approve-v1',
+      workspaceId,
+      intentHash,
+      idempotencyKey: 'motora-approve-intent-1',
+    } as const;
+    try {
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, {
+          capability: 'factura-e:intent:approve',
+          actorId: 'user:human-approver-1',
+          secret: motoraSecret,
+        }),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({ data: {
+        version: 'factura-e-intent-approval-receipt-v1',
+        runId,
+        workspaceId,
+        intentHash,
+        approvalState: 'user_approved',
+        issuanceState: 'ready_for_wsfex',
+        replayed: false,
+      } });
+      expect(calls).toEqual([
+        { kind: 'read', runId },
+        expect.objectContaining({
+          kind: 'approve',
+          runId,
+          actorId: 'user:human-approver-1',
+          intentHash,
+        }),
+      ]);
+
+      const otherWorkspaceId = '99999999-9999-4999-8999-999999999999';
+      const crossTenantRun = {
+        ...run,
+        workspaceId: otherWorkspaceId,
+      };
+      const crossTenantCases = {
+        getRun: () => crossTenantRun,
+        approveIntent: () => {
+          throw new Error('CROSS_TENANT_APPROVAL_MUST_NOT_RUN');
+        },
+      } as unknown as import('./factura-e-agent').FacturaEAgentService;
+      const denied = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, {
+          capability: 'factura-e:intent:approve',
+          actorId: 'user:human-approver-1',
+          secret: motoraSecret,
+        }),
+        new URL(`https://tax.test${path}`),
+        service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases: crossTenantCases },
+      );
+      expect(denied?.status).toBe(403);
+      expect(await denied?.json()).toEqual({
+        error: 'TAX_AUTHORITY_PRINCIPAL_SCOPE_UNAUTHORIZED',
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  test('creates and binds a manual TaxCase without drafting, approving, or issuing', async () => {
+    const { store, service } = fixture();
+    const calls: Record<string, unknown>[] = [];
+    const taxCases = {
+      createRun: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'create', ...input });
+        return { run: { runId: input.runId, workspaceId: input.workspaceId }, replayed: false };
+      },
+      bindLedgerInvoice: (input: Record<string, unknown>) => {
+        calls.push({ kind: 'bind', ...input });
+        return { run: { runId: input.runId, workspaceId }, replayed: false };
+      },
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
+    const path = '/v1/authority/factura-e/cases';
+    const body = {
+      version: 'factura-e-tax-case-create-v1', workspaceId, runId,
+      ledgerInvoiceId: '33333333-3333-4333-8333-333333333333',
+      issuancePath: 'reclaim_copilot', idempotencyKey: 'motora-create-case-1',
+    } as const;
+    try {
+      const response = await handleFacturaEAuthorityCorridorRoute(
+        signedRequest(path, body, { capability: 'factura-e:case:create', actorId: 'motora:user-1', secret: motoraSecret }),
+        new URL(`https://tax.test${path}`), service,
+        { corridorEnabled: true, secrets: { motora: motoraSecret }, taxCases },
+      );
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({ data: {
+        version: 'factura-e-tax-case-receipt-v1', runId, workspaceId,
+        ledgerInvoiceId: body.ledgerInvoiceId, state: 'case_created', replayed: false,
+        nextAction: 'collect_verified_evidence',
+      } });
+      expect(calls).toEqual([
+        expect.objectContaining({ kind: 'create', runId, workspaceId, issuancePath: 'reclaim_copilot' }),
+        expect.objectContaining({ kind: 'bind', runId, ledgerInvoiceId: body.ledgerInvoiceId }),
+      ]);
+    } finally { store.close(); }
   });
 
   test('persists intent, consumes a distinct one-use approval, and recovers exactly', async () => {
@@ -417,7 +746,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         request,
         rawBody: body,
         capability: 'factura-e:intent:create',
-        secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+        secrets: { motora: motoraSecret },
         now: new Date('2026-07-15T16:00:00.000Z'),
       })
     ).toMatchObject({ workspaceId, actorId: 'motora:desk-user' });
@@ -426,7 +755,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         request,
         rawBody: JSON.stringify({ value: 'tampered' }),
         capability: 'factura-e:intent:create',
-        secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+        secrets: { motora: motoraSecret },
         now: new Date('2026-07-15T16:00:00.000Z'),
       })
     ).toThrow('TAX_AUTHORITY_PRINCIPAL_SCOPE_UNAUTHORIZED');
@@ -513,7 +842,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         executionId: intent.executionId,
         workspaceId,
         intentHash,
-        approvalRef: 'oa_approval_recovery_restart_abcdefghijkl',
+        approvalRef: 'human_approval_recovery_restart_abcdefghijkl',
         actorId: 'oa:approval:recovery-restart',
         idempotencyKey: 'register-authority-recovery-restart',
         occurredAt: '2026-07-15T16:01:00.000Z',
@@ -647,7 +976,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         executionId: intent.executionId,
         workspaceId,
         intentHash,
-        approvalRef: 'oa_approval_restart_abcdefghijklmnop',
+        approvalRef: 'human_approval_restart_abcdefghijklmnop',
         actorId: 'oa:approval:restart',
         idempotencyKey: 'register-authority-restart-1',
         occurredAt: '2026-07-15T16:01:00.000Z',
@@ -752,18 +1081,28 @@ describe('Tax-owned Factura E authority corridor', () => {
     }
   });
 
-  test('exposes only safe receipts through distinct Motora and OA principals', async () => {
+  test('exposes only safe receipts through the Motora human-authority principal', async () => {
     const { store, service } = fixture();
+    const ledgerInvoiceId = '33333333-3333-4333-8333-333333333333';
+    const taxCases = {
+      authorityPreparationBinding: () => ({
+        version: 'factura-e-authority-preparation-binding-v1',
+        ledgerInvoiceId,
+        taxpayerReferenceHash: '2'.repeat(64),
+        foreignCustomerReferenceHash: '3'.repeat(64),
+      }),
+    } as unknown as import('./factura-e-agent').FacturaEAgentService;
     const options = {
       corridorEnabled: true,
-      secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+      secrets: { motora: motoraSecret },
+      taxCases,
     };
     try {
       const createBody = {
         version: 'factura-e-authority-intent-create-v1',
         workspaceId,
         runId,
-        ledgerInvoiceId: '44444444-4444-4444-8444-444444444444',
+        ledgerInvoiceId,
         intentHash,
         idempotencyKey: 'motora-create-authority-1',
       } as const;
@@ -783,12 +1122,12 @@ describe('Tax-owned Factura E authority corridor', () => {
             workspaceId,
             intentHash,
             approvalRef,
-            idempotencyKey: 'oa-register-approval-1',
+            idempotencyKey: 'motora-register-human-approval-1',
           },
           {
             capability: 'factura-e:approval:register',
-            actorId: 'oa:approval:run-1',
-            secret: approvalSecret,
+            actorId: 'motora:human-approver-1',
+            secret: motoraSecret,
           }
         ),
         new URL(`https://tax.test${approvePath}`),
@@ -902,7 +1241,7 @@ describe('Tax-owned Factura E authority corridor', () => {
         service,
         {
           corridorEnabled: true,
-          secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+          secrets: { motora: motoraSecret },
         },
       );
       expect(response?.status).toBe(413);

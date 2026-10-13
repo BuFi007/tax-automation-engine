@@ -35,7 +35,8 @@ export type TaxAuthorityCapability = z.infer<typeof taxAuthorityCapabilitySchema
 export type TaxAuthorityPrincipalV1 = z.infer<typeof authorityPrincipalSchema>;
 export type TaxAuthorityPrincipalSecrets = Readonly<{
   motora: string | null;
-  openAgentsApproval: string | null;
+  /** Deprecated compatibility input; never grants approval authority. */
+  openAgentsApproval?: string | null;
 }>;
 
 const MAX_TTL_MS = 120_000;
@@ -145,14 +146,12 @@ export function assertTaxAuthoritySecretsDistinct(
   secrets: TaxAuthorityPrincipalSecrets,
   otherSecrets: readonly (string | null)[] = []
 ): void {
-  const configured = [secrets.motora, secrets.openAgentsApproval, ...otherSecrets].filter(
+  const configured = [secrets.motora, ...otherSecrets].filter(
     (value): value is string => Boolean(value)
   );
   if (
     !secrets.motora ||
     secrets.motora.length < 32 ||
-    !secrets.openAgentsApproval ||
-    secrets.openAgentsApproval.length < 32 ||
     new Set(configured).size !== configured.length
   )
     throw new Error('TAX_AUTHORITY_PRINCIPAL_SECRETS_MUST_BE_DISTINCT');
@@ -162,9 +161,10 @@ function secretFor(
   capability: TaxAuthorityCapability,
   secrets: TaxAuthorityPrincipalSecrets
 ): string | null {
-  return capability === 'factura-e:approval:register'
-    ? secrets.openAgentsApproval
-    : secrets.motora;
+  // Motora is the only authority-corridor caller. Capability, request path and
+  // body hash remain independently signed and verified, so a user-facing
+  // approval never transits Open Agents.
+  return secrets.motora;
 }
 
 function sha256Hex(value: string): string {

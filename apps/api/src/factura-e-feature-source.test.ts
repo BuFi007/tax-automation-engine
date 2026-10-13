@@ -20,6 +20,8 @@ function authority(
     state: 'authority_accepted_unverified',
     createdByActorHash: hash('actor'),
     approvalActorHash: null,
+    approvalSource: null,
+    approvalMode: null,
     approvalRefHash: null,
     requestId: null,
     authorityPayloadRef: null,

@@ -37,6 +37,8 @@ import type {
   TaxWidgetSnapshotReceiptV1,
   TaxWidgetSnapshotV1,
   TaxDomainEventV1,
+  DigitalAssetEventV1,
+  DigitalAssetLedgerV1,
 } from '@tax-engine/core';
 import {
   assertTaxEvidenceBatchV1,
@@ -51,6 +53,7 @@ import {
   hashTaxEvidenceBatch,
   normalizeTaxSnapshotProjectionKey,
   resolveActiveEvidenceRecords,
+  buildDigitalAssetLedger,
 } from '@tax-engine/core';
 
 import { assertCatalogueSafeProfile } from './profile-validation';
@@ -63,6 +66,7 @@ import {
   createSnapshotTaxDomainEvents,
   resolveTaxDomainEventCommitmentSecret,
 } from './tax-domain-event-factory';
+import type { InvoiceSettlementInboxEvent } from './invoice-settlement-adapter-routes';
 
 export function resolveTaxEngineDatabasePath(
   configuredPath: string | null | undefined = process.env.TAX_ENGINE_DB_PATH,
@@ -190,6 +194,47 @@ export class TaxProfileStore {
         record_json TEXT NOT NULL,
         appended_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, idempotency_key)
+      );
+      -- Tax owns the derived crypto-lot ledger, but only stores opaque event
+      -- references. Wallet addresses and provider payloads remain at the
+      -- verifier/evidence boundary.
+      CREATE TABLE IF NOT EXISTS digital_asset_events (
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS digital_asset_events_workspace_appended
+        ON digital_asset_events (workspace_id, appended_at, event_id);
+      -- Desk is the authoritative Invoice 2.0 outbox publisher. Keep the
+      -- signed event durably before any TaxCase projection/binding occurs.
+      CREATE TABLE IF NOT EXISTS invoice_settlement_inbox (
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        invoice_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        appended_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, event_id),
+        UNIQUE (workspace_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS invoice_settlement_inbox_invoice
+        ON invoice_settlement_inbox (workspace_id, invoice_id, recorded_at);
+      -- A TaxCase can be explicitly bound to a BUFI ledger invoice. The
+      -- binding lives beside the durable inbox, never in an agent workspace.
+      CREATE TABLE IF NOT EXISTS invoice_tax_case_bindings (
+        workspace_id TEXT NOT NULL,
+        invoice_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        bound_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, invoice_id),
+        UNIQUE (workspace_id, run_id),
+        UNIQUE (workspace_id, idempotency_key)
       );
       CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
         event_id TEXT PRIMARY KEY,
@@ -1202,6 +1247,76 @@ export class TaxProfileStore {
     })();
   }
 
+  appendInvoiceSettlementEvent(input: InvoiceSettlementInboxEvent): { replayed: boolean } {
+    const eventHash = hashCanonical(input);
+    const existing = this.#db.query<{ event_hash: string }, [string, string]>(
+      'SELECT event_hash FROM invoice_settlement_inbox WHERE workspace_id = ? AND event_id = ?',
+    ).get(input.workspaceId, input.eventId);
+    if (existing) {
+      if (existing.event_hash !== eventHash) throw new Error('INVOICE_SETTLEMENT_EVENT_CONFLICT');
+      return { replayed: true };
+    }
+    const duplicate = this.#db.query<{ event_hash: string }, [string, string]>(
+      'SELECT event_hash FROM invoice_settlement_inbox WHERE workspace_id = ? AND idempotency_key = ?',
+    ).get(input.workspaceId, input.idempotencyKey);
+    if (duplicate) {
+      if (duplicate.event_hash !== eventHash) throw new Error('INVOICE_SETTLEMENT_IDEMPOTENCY_CONFLICT');
+      return { replayed: true };
+    }
+    this.#db.query(`
+      INSERT INTO invoice_settlement_inbox (
+        workspace_id, event_id, invoice_id, idempotency_key, event_hash, event_json, recorded_at, appended_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(input.workspaceId, input.eventId, input.invoiceId, input.idempotencyKey, eventHash, JSON.stringify(input), input.recordedAt, new Date().toISOString());
+    return { replayed: false };
+  }
+
+  bindInvoiceTaxCase(input: Readonly<{
+    workspaceId: string;
+    invoiceId: string;
+    runId: string;
+    idempotencyKey: string;
+    boundAt: string;
+  }>): { replayed: boolean } {
+    const existing = this.#db.query<{
+      invoice_id: string; run_id: string; idempotency_key: string;
+    }, [string, string]>(`
+      SELECT invoice_id, run_id, idempotency_key
+      FROM invoice_tax_case_bindings WHERE workspace_id = ? AND invoice_id = ?
+    `).get(input.workspaceId, input.invoiceId);
+    if (existing) {
+      if (existing.run_id !== input.runId || existing.idempotency_key !== input.idempotencyKey) {
+        throw new Error('INVOICE_TAX_CASE_BINDING_CONFLICT');
+      }
+      return { replayed: true };
+    }
+    const runBinding = this.#db.query<{ invoice_id: string }, [string, string]>(`
+      SELECT invoice_id FROM invoice_tax_case_bindings WHERE workspace_id = ? AND run_id = ?
+    `).get(input.workspaceId, input.runId);
+    if (runBinding) throw new Error('TAX_CASE_ALREADY_BOUND_TO_ANOTHER_INVOICE');
+    this.#db.query(`
+      INSERT INTO invoice_tax_case_bindings (
+        workspace_id, invoice_id, run_id, idempotency_key, bound_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(input.workspaceId, input.invoiceId, input.runId, input.idempotencyKey, input.boundAt);
+    return { replayed: false };
+  }
+
+  getInvoiceTaxCaseBindingByRun(
+    workspaceId: string,
+    runId: string
+  ): Readonly<{ invoiceId: string; boundAt: string }> | null {
+    const row = this.#db.query<{
+      invoice_id: string;
+      bound_at: string;
+    }, [string, string]>(`
+      SELECT invoice_id, bound_at
+      FROM invoice_tax_case_bindings
+      WHERE workspace_id = ? AND run_id = ?
+    `).get(workspaceId, runId);
+    return row ? { invoiceId: row.invoice_id, boundAt: row.bound_at } : null;
+  }
+
   #appendEvidenceRecords(
     records: readonly TaxEvidenceRecord[],
     appendedAt: string,
@@ -1411,6 +1526,47 @@ export class TaxProfileStore {
       this.#advanceEvidenceGeneration(batch.workspaceId, appendedAt);
       return batchReceipt(batch, batchHash, appendedRecords, false);
     })();
+  }
+
+  appendDigitalAssetEvent(event: DigitalAssetEventV1, appendedAt: string): Readonly<{
+    workspaceId: string;
+    eventId: string;
+    ledgerHash: string;
+    replayed: boolean;
+  }> {
+    const eventHash = hashCanonical(event);
+    return this.#db.transaction(() => {
+      const existing = this.#db.query<{ event_hash: string }, [string, string]>(
+        'SELECT event_hash FROM digital_asset_events WHERE workspace_id = ? AND event_id = ?',
+      ).get(event.workspaceId, event.eventId);
+      if (existing) {
+        if (existing.event_hash !== eventHash) throw new Error('DIGITAL_ASSET_EVENT_IDEMPOTENCY_CONFLICT');
+        return { workspaceId: event.workspaceId, eventId: event.eventId, ledgerHash: hashCanonical(this.getDigitalAssetLedger(event.workspaceId)), replayed: true };
+      }
+      const activeEvidenceIds = new Set(this.listEvidence(event.workspaceId)
+        .filter(record => record.validityState === 'active')
+        .map(record => record.evidenceId));
+      const references = event.kind === 'disposal_reversal'
+        ? event.provenance.sourceEvidenceIds
+        : [...event.provenance.sourceEvidenceIds, event.valuation.evidenceId];
+      if (references.some(reference => !activeEvidenceIds.has(reference))) {
+        throw new Error('DIGITAL_ASSET_EVIDENCE_REFERENCE_UNAVAILABLE');
+      }
+      const prior = this.#db.query<{ event_json: string }, [string]>(
+        'SELECT event_json FROM digital_asset_events WHERE workspace_id = ? ORDER BY appended_at ASC, event_id ASC',
+      ).all(event.workspaceId).map(row => JSON.parse(row.event_json) as DigitalAssetEventV1);
+      const ledger = buildDigitalAssetLedger([...prior, event]);
+      this.#db.query('INSERT INTO digital_asset_events (workspace_id, event_id, event_hash, event_json, appended_at) VALUES (?, ?, ?, ?, ?)')
+        .run(event.workspaceId, event.eventId, eventHash, JSON.stringify(event), appendedAt);
+      return { workspaceId: event.workspaceId, eventId: event.eventId, ledgerHash: hashCanonical(ledger), replayed: false };
+    })();
+  }
+
+  getDigitalAssetLedger(workspaceId: string): DigitalAssetLedgerV1 | null {
+    const rows = this.#db.query<{ event_json: string }, [string]>(
+      'SELECT event_json FROM digital_asset_events WHERE workspace_id = ? ORDER BY appended_at ASC, event_id ASC',
+    ).all(workspaceId);
+    return rows.length === 0 ? null : buildDigitalAssetLedger(rows.map(row => JSON.parse(row.event_json) as DigitalAssetEventV1));
   }
 
   listEvidenceSourceManifests(workspaceId: string): readonly TaxEvidenceSourceManifestV1[] {
@@ -2349,6 +2505,7 @@ export class TaxProfileStore {
     workspaceId: string;
     ledgerInvoiceId: string;
     issuancePath: FacturaEIssuancePath;
+    approvalMode?: 'owner_manual' | undefined;
     actorId: string;
     idempotencyKey: string;
     createdAt: string;
@@ -2363,7 +2520,8 @@ export class TaxProfileStore {
           || existing.idempotencyKey !== input.idempotencyKey)
           throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
         const run = this.getFacturaEAgentRun(input.runId);
-        if (!run || run.workspaceId !== input.workspaceId || run.issuancePath !== input.issuancePath)
+        if (!run || run.workspaceId !== input.workspaceId || run.issuancePath !== input.issuancePath
+          || run.approvalMode !== input.approvalMode)
           throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
         return { run, replayed: true };
       }
@@ -2381,7 +2539,7 @@ export class TaxProfileStore {
         input.issuancePath, input.actorId, input.idempotencyKey, input.createdAt);
       const run = createRun();
       if (run.runId !== input.runId || run.workspaceId !== input.workspaceId
-        || run.issuancePath !== input.issuancePath)
+        || run.issuancePath !== input.issuancePath || run.approvalMode !== input.approvalMode)
         throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
       return { run, replayed: false };
     })();

@@ -10,6 +10,7 @@ import {
 
 import { ArcaOnboardingService } from './arca-onboarding';
 import { HttpArcaBoundaryStatusReader } from './arca-connection-projection';
+import type { ArcaWorkbenchPublisher } from './arca-workbench';
 import type {
   ArcaOnboardingReclaimGateway,
   ArcaOnboardingReclaimRequest,
@@ -123,6 +124,40 @@ describe('ARCA onboarding API service', () => {
     expect(result.run.domesticPointOfSale).toEqual({ number: 4, active: true });
     expect(result.output?.verificationSource).toBe('point_of_sale_discovery');
   });
+  test('retains canonical state when Workbench delivery fails', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const failingPublisher: ArcaWorkbenchPublisher = {
+      publish: async () => {
+        throw new Error('workbench unavailable');
+      },
+    };
+    const service = new ArcaOnboardingService(
+      store,
+      null,
+      null,
+      false,
+      null,
+      null,
+      failingPublisher
+    );
+
+    const created = service.createRun({
+      onboardingId,
+      workspaceId: 'workspace-1',
+      taxpayerReferenceHash: hash('taxpayer'),
+      environment: 'homologation',
+      requestedServices: ['wsfex'],
+      actorId: 'user:owner',
+      idempotencyKey: 'create-onboarding',
+      occurredAt: now,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(created.run.revision).toBe(1);
+    expect(service.getRun(onboardingId)).toEqual(created.run);
+  });
+
   test('completes WSFEX API verification only with an active, authority-bound FEEWS point', async () => {
     const store = new TaxProfileStore(':memory:');
     grantTaxWorkspaceConsent(store);

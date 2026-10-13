@@ -61,4 +61,12 @@ describe('Tax API production composition contract', () => {
       /handleAccountantMandateRoute\([\s\S]*?handleAccountantReviewRoute\([\s\S]*?handleArcaOnboardingRoute\(/,
     );
   });
+
+  test('keeps domain-event and settlement-mutation credentials distinct', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(
+      /const domainEventSecrets = \[[\s\S]*?deskInvoiceSettlementPrincipalSecret,[\s\S]*?\]/,
+    );
+    expect(source).toContain('TAX_DOMAIN_EVENT_DELIVERY_SECRETS_MUST_BE_DISTINCT');
+  });
 });

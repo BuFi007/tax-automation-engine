@@ -18,7 +18,7 @@ const packageJson = JSON.parse(
 
 describe('published browser-contract package', () => {
   test('exposes the frozen root and bounded feature entrypoints from dist', () => {
-    expect(packageJson.version).toBe('0.11.0');
+    expect(packageJson.version).toBe('0.11.1');
     expect(packageJson.main).toBe('./dist/index.js');
     expect(packageJson.types).toBe('./dist/index.d.ts');
     expect(packageJson.files).toEqual(['dist', 'README.md', 'COMPATIBILITY.md']);
@@ -93,7 +93,7 @@ describe('published browser-contract package', () => {
     expect(rootModule.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256).toBeUndefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1).toBeDefined();
     expect(scenariosModule.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256).toBe(
-      '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415',
+      'eeaa0f4e868d5ca4a4f91aa11c10e48844347256b668a6b1a2f6ebc710c9b917',
     );
     expect(goldenDigest).toBe(
       '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976',
@@ -108,7 +108,7 @@ describe('published browser-contract package', () => {
         'node',
         '--input-type=module',
         '--eval',
-        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !root.accountantReviewQueueEnvelopeV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== '68f1038903de240f96f0034bbe9103d978fc84a22afde4615c2814e6bcf5a415' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976') process.exit(1);`,
+        `const root = await import(${JSON.stringify(rootUrl)}); const fixtures = await import(${JSON.stringify(fixturesUrl)}); const scenarios = await import(${JSON.stringify(scenariosUrl)}); if (!root.taxWidgetSnapshotReceiptV1Schema || !root.facturaEFactoringProjectionReceiptV1Schema || !root.accountantReviewQueueEnvelopeV1Schema || !scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1 || scenarios.TAX_BROWSER_SCENARIO_FIXTURES_V1_SHA256 !== 'eeaa0f4e868d5ca4a4f91aa11c10e48844347256b668a6b1a2f6ebc710c9b917' || fixtures.TAX_BROWSER_GOLDEN_FIXTURES_V1_SHA256 !== '703e681ee2e1bc76a6589f3f2e0bc865f07ac3855be4efc358e0c2ae0c5c9976') process.exit(1);`,
       ],
       cwd: packageRoot,
       stdout: 'pipe',

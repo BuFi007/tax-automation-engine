@@ -31,6 +31,20 @@ import {
 } from './tax-domain-event-factory';
 
 describe('tax storage durability configuration', () => {
+  test('refuses a digital-asset lot until its referenced evidence is durable and active', () => {
+    const store = new TaxProfileStore(':memory:', 'test-domain-event-secret');
+    expect(() => store.appendDigitalAssetEvent({
+      version: 'digital-asset-event-v1', kind: 'acquisition', eventId: 'asset-event:1',
+      workspaceId: 'workspace:crypto', occurredAt: '2026-07-10T00:00:00.000Z',
+      asset: 'USDC', assetId: 'eip155:1/erc20:usdc', quantity: '1',
+      costBasis: { decimal: '1', currency: 'USD' },
+      valuation: { provider: 'provider:price', pair: 'USDC/USD', observedAt: '2026-07-10T00:00:00.000Z', rate: '1', confidence: 'verified', evidenceId: 'evidence:price' },
+      purpose: 'invoice_settlement',
+      provenance: { economicEventId: 'invoice:1', sourceEvidenceIds: ['evidence:settlement'] },
+    }, '2026-07-10T00:00:01.000Z')).toThrow('DIGITAL_ASSET_EVIDENCE_REFERENCE_UNAVAILABLE');
+    store.close();
+  });
+
   test('keeps the in-memory default for local development and tests', () => {
     expect(resolveTaxEngineDatabasePath(null, 'development')).toBe(':memory:');
     expect(resolveTaxEngineDatabasePath('', 'test')).toBe(':memory:');

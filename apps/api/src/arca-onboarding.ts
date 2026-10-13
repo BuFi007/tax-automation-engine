@@ -14,6 +14,7 @@ import { pointOfSaleReadbackSchema as wsfePointOfSaleReadbackSchema } from '@tax
 
 import type { ArcaOnboardingReclaimGateway, ArcaOnboardingReclaimRequest } from './arca-onboarding-reclaim';
 import type { HttpArcaBoundaryStatusReader } from './arca-connection-projection';
+import type { ArcaWorkbenchPublisher } from './arca-workbench';
 import type { ReclaimProofVault } from './proof-vault';
 import type { TaxProfileStore } from './store';
 import type { WsfexPointOfSaleGateway } from './wsfex';
@@ -30,6 +31,8 @@ export type ManualArcaOnboardingCommand = Exclude<ArcaOnboardingCommand,
   Readonly<{ kind: 'start_zk_evidence' }> | Readonly<{ kind: 'record_zk_evidence' }>>;
 
 export class ArcaOnboardingService {
+  private workbenchPublishTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly store: TaxProfileStore,
     private readonly reclaim: ArcaOnboardingReclaimGateway | null,
@@ -37,6 +40,7 @@ export class ArcaOnboardingService {
     private readonly proofCustodyRequired: boolean,
     private readonly wsfexPointOfSale: WsfexPointOfSaleGateway | null = null,
     private readonly wsfePointOfSale: WsfePointOfSaleGateway | null = null,
+    private readonly workbench: ArcaWorkbenchPublisher | null = null,
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -409,7 +413,19 @@ export class ArcaOnboardingService {
   }
 
   private persist(run: ArcaOnboardingRunV1, event: ArcaOnboardingEventV1, appendedAt: string): ArcaOnboardingRunV1 {
-    return this.store.appendArcaOnboardingRevision({ run, event, stateHash: hashCanonical(run), appendedAt });
+    const persisted = this.store.appendArcaOnboardingRevision({
+      run,
+      event,
+      stateHash: hashCanonical(run),
+      appendedAt,
+    });
+    if (this.workbench) {
+      this.workbenchPublishTail = this.workbenchPublishTail
+        .then(() => this.workbench?.publish(persisted))
+        .then(() => undefined)
+        .catch(() => undefined);
+    }
+    return persisted;
   }
 }
 

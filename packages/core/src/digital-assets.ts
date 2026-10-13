@@ -441,7 +441,11 @@ function sha256(value: string): string {
 function validateEvent(event: DigitalAssetEventV1, workspaceId: string): void {
   if (event.version !== 'digital-asset-event-v1') throw new Error('DIGITAL_ASSET_EVENT_VERSION_UNSUPPORTED');
   if (event.workspaceId !== workspaceId) throw new Error('DIGITAL_ASSET_WORKSPACE_MISMATCH');
-  if (!event.eventId || !event.provenance.economicEventId || event.provenance.sourceEvidenceIds.length === 0 || event.provenance.sourceEvidenceIds.some(id => !id)) throw new Error('DIGITAL_ASSET_PROVENANCE_REQUIRED');
+  if (!isSafeReference(event.eventId) || !isSafeReference(event.provenance.economicEventId)
+    || event.provenance.sourceEvidenceIds.length === 0
+    || event.provenance.sourceEvidenceIds.some(id => !isSafeReference(id))) {
+    throw new Error('DIGITAL_ASSET_PROVENANCE_REQUIRED');
+  }
   if (new Set(event.provenance.sourceEvidenceIds).size !== event.provenance.sourceEvidenceIds.length) throw new Error('DIGITAL_ASSET_PROVENANCE_DUPLICATED');
   if (event.kind !== 'disposal_reversal') {
     if (!/^[A-Z][A-Z0-9._-]{1,15}$/.test(event.asset)) throw new Error('DIGITAL_ASSET_SYMBOL_INVALID');
@@ -457,11 +461,25 @@ function validateEvent(event: DigitalAssetEventV1, workspaceId: string): void {
 }
 
 function validateValuation(valuation: AssetValuationV1, occurredAt: string, asset: string, quoteCurrency: string): void {
-  if (!valuation.provider || !valuation.pair || !valuation.evidenceId) throw new Error('DIGITAL_ASSET_VALUATION_PROVENANCE_REQUIRED');
+  if (!isSafeReference(valuation.provider) || !valuation.pair || !isSafeReference(valuation.evidenceId)) {
+    throw new Error('DIGITAL_ASSET_VALUATION_PROVENANCE_REQUIRED');
+  }
+  // A deterministic lot cannot be built from an unaudited quote. `reviewed`
+  // is the explicit accountant/provider-review path; `verified` is a native
+  // provider fact. A model proposal must stay an evidence gap, never a lot.
+  if (valuation.confidence === 'unreviewed') throw new Error('DIGITAL_ASSET_VALUATION_VERIFICATION_REQUIRED');
   if (valuation.pair !== `${asset}/${quoteCurrency}`) throw new Error('DIGITAL_ASSET_VALUATION_PAIR_MISMATCH');
   if (!Number.isFinite(Date.parse(valuation.observedAt)) || !/[zZ]|[+-]\d\d:\d\d$/.test(valuation.observedAt)) throw new Error('DIGITAL_ASSET_VALUATION_TIMESTAMP_INVALID');
   if (Date.parse(valuation.observedAt) > Date.parse(occurredAt)) throw new Error('DIGITAL_ASSET_VALUATION_FROM_FUTURE');
   positive(valuation.rate, 'DIGITAL_ASSET_VALUATION_RATE_INVALID');
+}
+
+function isSafeReference(value: string): boolean {
+  // A raw EVM address is recognizable even when it otherwise fits the opaque
+  // reference grammar. It belongs in the external verifier, never in Tax's
+  // ledger provenance or accountant packet.
+  return /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,191}$/.test(value)
+    && !/^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
 function compareEvents(left: DigitalAssetEventV1, right: DigitalAssetEventV1): number {
