@@ -61,6 +61,7 @@ export type SafeFacturaEAuthorityExecutionReceipt = Readonly<{
   replayed: boolean;
   nextAction:
     | 'register_oa_approval'
+    | 'request_accountant_authority_approval'
     | 'execute_with_one_use_approval'
     | 'wait'
     | 'recover_exactly'
@@ -128,6 +129,9 @@ export type FacturaERunAuthorityState = Readonly<{
   workspaceId: string;
   intentHash: string | null;
   issuanceState: string;
+  intentState?: string;
+  approvalState?: string;
+  accountantReviewRequired?: boolean;
 }>;
 
 export class FacturaEAuthorityExecutionStore {
@@ -296,6 +300,14 @@ export class FacturaEAuthorityExecutionStore {
       `)
       .get(workspaceId);
     return row ? recordFromRow(row) : null;
+  }
+
+  approvalTargetForRun(workspaceId: string, runId: string, intentHash: string): FacturaEAuthorityExecutionRecord | null {
+    const rows = this.#db.query<AuthorityExecutionRow, [string, string, string]>(`
+      SELECT * FROM factura_e_authority_executions WHERE workspace_id = ? AND run_id = ? AND intent_hash = ? LIMIT 2
+    `).all(workspaceId, runId, intentHash);
+    if (rows.length > 1) throw new Error('TAX_AUTHORITY_ACCOUNTANT_TARGET_AMBIGUOUS');
+    return rows[0] ? recordFromRow(rows[0]) : null;
   }
 
   reconciledForRun(workspaceId: string, runId: string): ReconciledFacturaEExecution | null {
@@ -994,6 +1006,7 @@ export class FacturaEAuthorityExecutionService {
     private readonly authorityContext: Readonly<{
       environment: 'homologation' | 'production';
       providerId: string;
+      approvalPolicy?: 'oa' | 'mandated_accountant_beta';
     }> = { environment: 'homologation', providerId: 'unconfigured' }
   ) {
     if (!/^[A-Za-z0-9._:/-]{1,200}$/.test(authorityContext.providerId)) {
@@ -1008,7 +1021,8 @@ export class FacturaEAuthorityExecutionService {
       authorityEnvironment: this.authorityContext.environment,
       authorityProviderId: this.authorityContext.providerId,
       intentPersistence: 'available' as const,
-      oaApproval: 'required' as const,
+      oaApproval: this.authorityContext.approvalPolicy === 'mandated_accountant_beta'
+        ? 'delegated_accountant_required' as const : 'required' as const,
       remoteEffects: this.effectsEnabled && this.effect ? ('armed' as const) : ('dark' as const),
       pointOfSaleCreation: 'user_portal_handoff' as const,
       officialAuthorityReconciliation:
@@ -1019,12 +1033,12 @@ export class FacturaEAuthorityExecutionService {
 
   current(workspaceId: string): SafeFacturaEAuthorityExecutionReceipt | null {
     const record = this.store.latestForWorkspace(workspaceId);
-    return record ? safeReceipt(record, false) : null;
+    return record ? this.safeReceipt(record, false) : null;
   }
 
   exactStatus(workspaceId: string, executionId: string): SafeFacturaEAuthorityExecutionReceipt | null {
     const record = this.store.get(executionId);
-    return record?.workspaceId === workspaceId ? safeReceipt(record, false) : null;
+    return record?.workspaceId === workspaceId ? this.safeReceipt(record, false) : null;
   }
 
   reconciledForRun(workspaceId: string, runId: string): ReconciledFacturaEExecution | null {
@@ -1038,18 +1052,40 @@ export class FacturaEAuthorityExecutionService {
     actorId: string;
     idempotencyKey: string;
     occurredAt: string;
+    allowAwaitingAccountantReview?: boolean;
   }>): SafeFacturaEAuthorityExecutionReceipt {
     const run = this.readRun(input.runId);
     if (run.workspaceId !== input.workspaceId || run.intentHash !== input.intentHash)
       throw new Error('TAX_AUTHORITY_RUN_SCOPE_CONFLICT');
-    if (run.issuanceState !== 'ready_for_wsfex')
+    if (run.issuanceState !== 'ready_for_wsfex' && !(input.allowAwaitingAccountantReview
+      && this.authorityContext.environment === 'homologation'
+      && run.issuanceState === 'not_ready' && run.intentState === 'frozen'
+      && run.approvalState === 'user_approved' && run.accountantReviewRequired === true))
       throw new Error('TAX_AUTHORITY_FROZEN_APPROVED_INTENT_REQUIRED');
     const created = this.store.create({
       ...input,
       authorityEnvironment: this.authorityContext.environment,
       authorityProviderId: this.authorityContext.providerId,
     });
-    return safeReceipt(created.record, created.replayed);
+    return this.safeReceipt(created.record, created.replayed);
+  }
+
+  accountantApprovalTargetForRun(workspaceId: string, runId: string, intentHash: string) {
+    const record = this.store.approvalTargetForRun(workspaceId, runId, intentHash);
+    return record ? { executionId: record.executionId, createdByActorHash: record.createdByActorHash,
+      approvalState: record.approvalActorHash ? 'approved' as const : 'pending' as const } : null;
+  }
+
+  assertAccountantApprovalTarget(input: Readonly<{ executionId: string; workspaceId: string; runId: string; intentHash: string; actorId: string }>): void {
+    this.assertCurrentAuthorityContext(input.executionId);
+    const record = this.store.get(input.executionId);
+    if (!record || record.workspaceId !== input.workspaceId || record.runId !== input.runId
+      || record.intentHash !== input.intentHash || record.authorityEnvironment !== 'homologation')
+      throw new Error('TAX_AUTHORITY_ACCOUNTANT_TARGET_CONFLICT');
+    if (record.createdByActorHash === hashCanonical(input.actorId))
+      throw new Error('TAX_AUTHORITY_SELF_APPROVAL_FORBIDDEN');
+    if (record.approvalActorHash && record.approvalActorHash !== hashCanonical(input.actorId))
+      throw new Error('TAX_AUTHORITY_ACCOUNTANT_REVIEWER_CONFLICT');
   }
 
   registerApproval(input: Readonly<{
@@ -1063,7 +1099,7 @@ export class FacturaEAuthorityExecutionService {
   }>): SafeFacturaEAuthorityExecutionReceipt {
     this.assertCurrentAuthorityContext(input.executionId);
     const approved = this.store.approve(input);
-    return safeReceipt(approved.record, approved.replayed);
+    return this.safeReceipt(approved.record, approved.replayed);
   }
 
   async execute(input: Readonly<{
@@ -1085,15 +1121,15 @@ export class FacturaEAuthorityExecutionService {
       (record.state === 'preparing' || record.state === 'prepared') &&
       !canResumePreparation(record, Date.parse(input.occurredAt))
     )
-      return safeReceipt(record, true, Date.parse(input.occurredAt));
+      return this.safeReceipt(record, true, Date.parse(input.occurredAt));
     if (
       record.state === 'authority_accepted_unverified' ||
       record.state === 'rejected' ||
       record.state === 'ambiguous'
     )
-      return safeReceipt(record, true);
+      return this.safeReceipt(record, true);
     if (record.state === 'dispatching' || record.state === 'recovering')
-      return safeReceipt(record, true);
+      return this.safeReceipt(record, true);
     if (record.state === 'preparing' || (record.state === 'prepared' && begun.replayed)) {
       const prepared = await this.effect.prepare({
         executionId: record.executionId,
@@ -1109,14 +1145,14 @@ export class FacturaEAuthorityExecutionService {
     record = this.store.markDispatching(record.executionId, input.occurredAt);
     try {
       const outcome = await this.effect.execute(privatePreparation(record));
-      return safeReceipt(this.store.complete(record.executionId, outcome, input.occurredAt), begun.replayed);
+      return this.safeReceipt(this.store.complete(record.executionId, outcome, input.occurredAt), begun.replayed);
     } catch (error) {
       const receiptHash = hashCanonical({
         executionId: record.executionId,
         state: 'ambiguous',
         errorType: error instanceof Error ? error.name : 'unknown',
       });
-      return safeReceipt(this.store.markAmbiguous(record.executionId, receiptHash, input.occurredAt), begun.replayed);
+      return this.safeReceipt(this.store.markAmbiguous(record.executionId, receiptHash, input.occurredAt), begun.replayed);
     }
   }
 
@@ -1132,14 +1168,14 @@ export class FacturaEAuthorityExecutionService {
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginRecovery(input);
     const record = begun.record;
-    if (begun.replayed) return safeReceipt(record, true);
+    if (begun.replayed) return this.safeReceipt(record, true);
     if (record.state === 'authority_accepted_unverified' || record.state === 'rejected')
-      return safeReceipt(record, true);
+      return this.safeReceipt(record, true);
     if (record.state !== 'recovering' || !begun.fenceToken)
       throw new Error('TAX_AUTHORITY_RECOVERY_STATE_CONFLICT');
     try {
       const outcome = await this.effect.recover(privatePreparation(record));
-      return safeReceipt(
+      return this.safeReceipt(
         this.store.complete(
           record.executionId,
           outcome,
@@ -1155,7 +1191,7 @@ export class FacturaEAuthorityExecutionService {
         recovery: true,
         errorType: error instanceof Error ? error.name : 'unknown',
       });
-      return safeReceipt(
+      return this.safeReceipt(
         this.store.markAmbiguous(
           record.executionId,
           receiptHash,
@@ -1179,7 +1215,7 @@ export class FacturaEAuthorityExecutionService {
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginReconciliation(input);
     const record = begun.record;
-    if (begun.replayed) return safeReceipt(record, true);
+    if (begun.replayed) return this.safeReceipt(record, true);
     if (record.state !== 'reconciling' || !begun.fenceToken)
       throw new Error('TAX_AUTHORITY_RECONCILIATION_STATE_CONFLICT');
     let outcome: FacturaEAuthorityReconciliationOutcome;
@@ -1193,7 +1229,7 @@ export class FacturaEAuthorityExecutionService {
       });
       outcome = { status: 'ambiguous', receiptHash };
     }
-    return safeReceipt(
+    return this.safeReceipt(
       this.store.completeReconciliation(
         record.executionId,
         outcome,
@@ -1202,6 +1238,12 @@ export class FacturaEAuthorityExecutionService {
       ),
       false
     );
+  }
+
+  private safeReceipt(record: FacturaEAuthorityExecutionRecord, replayed: boolean, nowMs = Date.now()): SafeFacturaEAuthorityExecutionReceipt {
+    const receipt = safeReceipt(record, replayed, nowMs);
+    return this.authorityContext.approvalPolicy === 'mandated_accountant_beta' && receipt.state === 'intent_persisted'
+      ? { ...receipt, nextAction: 'request_accountant_authority_approval' } : receipt;
   }
 
   private assertCurrentAuthorityContext(executionId: string): void {

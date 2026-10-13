@@ -94,3 +94,45 @@ match; duplicate or mixed aliases fail closed, and production forbids the array.
 These are only coordinates for fresh independent official readback, never proof
 that a new voucher was authorized. Keep represented CUIT and known CAE values in
 protected process configuration.
+
+## Genuine accountant approval for the beta
+
+Personal has one owner, so it cannot satisfy authority self-approval protection by
+acting as both creator and final reviewer. In beta, persist the owner's genuinely
+approved frozen intent first, including manual-quote cases still awaiting the
+accountant. The receipt says `request_accountant_authority_approval`; readiness
+reports `delegated_accountant_required`. Persistence alone never dispatches ARCA.
+
+The existing review queue includes `creatorActorId` only when an actual recorded
+human approval actor matches the durable authority creator, plus nullable exact
+`authorityExecutionId`/`authorityApprovalState`, `approvalState`, and
+`mandateConfirmed` from a live mandate. No reviewer is inferred or created.
+
+A separate authenticated accountant submits
+`POST /v1/accountant-invoice-authority-approvals` with a v3 body-bound
+`accountant:decision` principal from the dedicated ingress secret. Its body is:
+
+```json
+{
+  "version": "factura-e-accountant-authority-approval-v1",
+  "workspaceId": "exact enrolled client scope",
+  "runId": "UUID",
+  "authorityExecutionId": "UUID",
+  "intentHash": "SHA256",
+  "mandateId": "live mandate reference",
+  "idempotencyKey": "exact review decision key"
+}
+```
+
+Tax verifies the real human actor and firm, the live client mandate, exact frozen
+invoice/run/authority tuple, and distinct actual owner/creator. It persists the
+reviewer's semantic approval and an unexposed server-held one-use authority
+reference. The safe response contains `authorityReceipt` and correlated IDs;
+the owner then executes with the existing signed execute endpoint. Same-body
+replay cannot create another effect; revoked/expired mandates and self-approval
+fail closed. No generic API key, fabricated `oa:owner` actor, or browser-supplied
+approval reference can grant this path. Legacy OA remains separate.
+
+Local Tax binds to loopback by default; set `TAX_ENGINE_HOST` explicitly for an
+approved deployment. The isolated live setup uses a task-local loopback TLS
+proxy for signer→boundary traffic and trusts its CA only in child processes.

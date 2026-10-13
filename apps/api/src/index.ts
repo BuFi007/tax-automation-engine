@@ -85,6 +85,7 @@ import { handleAccountantMandateRoute } from './accountant-mandate-routes';
 import { handleExternalAccountantDecisionRoute } from './accountant-decision-routes';
 import { handleAccountantReviewRoute } from './accountant-review-routes';
 import { handleAccountantInvoiceRoute } from './accountant-invoice-routes';
+import { handleAccountantInvoiceAuthorityRoute } from './accountant-invoice-authority-routes';
 import {
   assertNoTaxEngineFundingAuthority,
   resolveArgentinaLaunchPolicyReadiness,
@@ -442,6 +443,9 @@ const facturaEAuthorityExecution = new FacturaEAuthorityExecutionService(
       workspaceId: run.workspaceId,
       intentHash: run.intentHash,
       issuanceState: run.issuanceState,
+      intentState: run.intentState,
+      approvalState: run.approvalState,
+      accountantReviewRequired: run.accountantReviewRequired,
     };
   },
   facturaEAuthorityRemoteEffect,
@@ -449,6 +453,7 @@ const facturaEAuthorityExecution = new FacturaEAuthorityExecutionService(
   {
     environment: arcaAuthorityEnvironment,
     providerId: wsfexGateway?.providerId ?? 'unconfigured',
+    approvalPolicy: fiscalBeta.enabled ? 'mandated_accountant_beta' : 'oa',
   }
 );
 const facturaEFeatureSigner = facturaEFeatureEnabled
@@ -509,6 +514,7 @@ const profileSchema = z.object({
 }).strict();
 
 export const server = Bun.serve({
+  hostname: process.env.TAX_ENGINE_HOST ?? '127.0.0.1',
   port,
   async fetch(request) {
     const url = new URL(request.url);
@@ -666,6 +672,14 @@ export const server = Bun.serve({
         );
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
+      if (url.pathname === '/v1/accountant-invoice-authority-approvals') {
+        if (!accountantDecisionIngressEnabled) throw new Error('ACCOUNTANT_DECISION_CONFIGURATION_REQUIRED');
+        const response = await handleAccountantInvoiceAuthorityRoute(request, url, {
+          store, agent: facturaEAgent, authority: facturaEAuthorityExecution,
+          beta: fiscalBeta, principalSecret: accountantDecisionPrincipalSecret,
+        });
+        return applyCors(response ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
       if (request.method === 'POST' && url.pathname === '/v1/accountant-invoice-approvals') {
         if (!accountantDecisionIngressEnabled) throw new Error('ACCOUNTANT_DECISION_CONFIGURATION_REQUIRED');
         const rawBody = await readBoundedBody(request, 16 * 1024, 'ACCOUNTANT_INVOICE_REQUEST_TOO_LARGE');
@@ -674,6 +688,7 @@ export const server = Bun.serve({
         );
         const response = await handleAccountantInvoiceRoute(
           request, url, store, facturaEAgent, scopedPrincipal, new Date(), rawBody,
+          { authority: facturaEAuthorityExecution, beta: fiscalBeta },
         );
         return applyCors(response ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
@@ -742,7 +757,8 @@ export const server = Bun.serve({
       );
       if (accountantReviewResponse) return applyCors(accountantReviewResponse, request);
       const accountantInvoiceResponse = await handleAccountantInvoiceRoute(
-        request, url, store, facturaEAgent, tenantPrincipal,
+        request, url, store, facturaEAgent, tenantPrincipal, new Date(), undefined,
+        { authority: facturaEAuthorityExecution, beta: fiscalBeta },
       );
       if (accountantInvoiceResponse) return applyCors(accountantInvoiceResponse, request);
       const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, {

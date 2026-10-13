@@ -1,5 +1,7 @@
 import { assertActiveAccountantMandate, hashCanonical } from '@tax-engine/core';
 import { z } from 'zod';
+import { assertArcaFiscalBeta, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
+import type { FacturaEAuthorityExecutionService } from './authority-execution';
 
 import type { FacturaEAgentService } from './factura-e-agent';
 import type { TaxProfileStore } from './store';
@@ -25,6 +27,7 @@ export async function handleAccountantInvoiceRoute(
   principal: TaxTenantPrincipalV2 | TaxTenantPrincipalV3 | null,
   now = new Date(),
   rawBody?: string,
+  options?: Readonly<{ authority: FacturaEAuthorityExecutionService; beta: ArcaFiscalBetaConfig }>,
 ): Promise<Response | null> {
   const listing = request.method === 'GET' && url.pathname === '/v1/accountant-invoice-review-queue';
   const approving = request.method === 'POST' && url.pathname === '/v1/accountant-invoice-approvals';
@@ -36,6 +39,10 @@ export async function handleAccountantInvoiceRoute(
     : null;
   const clientWorkspaceId = approval?.workspaceId
     ?? clientScopeSchema.parse(url.searchParams.get('workspaceId'));
+  if (options) {
+    assertArcaFiscalBeta(clientWorkspaceId, options.beta);
+    if (!z.uuid().safeParse(principal.actorId).success) throw new Error('ACCOUNTANT_INVOICE_ACTOR_UNAUTHORIZED');
+  }
   const at = now.toISOString();
   const mandates = store.listAccountantMandatesForPortfolio(principal.actorId, principal.workspaceId)
     .filter(mandate => {
@@ -53,8 +60,18 @@ export async function handleAccountantInvoiceRoute(
     });
   const items = mandates.length === 0 ? [] : agent.listRuns(clientWorkspaceId).flatMap(run => {
     if (run.issuancePath !== 'wsfex_delegated' || !run.accountantReviewRequired
-      || run.approvalState !== 'user_approved' || run.intentState !== 'frozen'
+      || !['user_approved','accountant_approved'].includes(run.approvalState) || run.intentState !== 'frozen'
       || !run.intent || !run.intentHash || run.intentHash !== hashCanonical(run.intent)) return [];
+    const authorityTarget = options?.authority.accountantApprovalTargetForRun(clientWorkspaceId, run.runId, run.intentHash);
+    if (run.approvalState === 'accountant_approved' && authorityTarget?.approvalState !== 'pending') return [];
+    if (authorityTarget?.approvalState === 'approved') return [];
+    if (run.approvalState === 'accountant_approved' && !agent.listEvents(run.runId).some(event =>
+      event.action === 'factura_e_intent_accountant_approved' && event.actorId === principal.actorId
+      && event.safeMetadata.intentHash === run.intentHash)) return [];
+    const ownerEvent = agent.listEvents(run.runId).find(event => event.action === 'factura_e_intent_approved'
+      && event.safeMetadata.intentHash === run.intentHash);
+    const creatorActorId = ownerEvent && z.uuid().safeParse(ownerEvent.actorId).success
+      && (!authorityTarget || hashCanonical(ownerEvent.actorId) === authorityTarget.createdByActorHash) ? ownerEvent.actorId : null;
     if (agent.listEvents(run.runId).some(event => event.action === 'factura_e_intent_approved'
       && event.actorId === principal.actorId)) return [];
     const binding = store.getFacturaETaxCaseBinding(run.runId);
@@ -67,6 +84,11 @@ export async function handleAccountantInvoiceRoute(
       runId: run.runId,
       intentHash: run.intentHash,
       mandateId: mandates[0]!.mandateId,
+      mandateConfirmed: true,
+      approvalState: run.approvalState as 'user_approved' | 'accountant_approved',
+      authorityExecutionId: authorityTarget?.executionId ?? null,
+      authorityApprovalState: authorityTarget?.approvalState ?? null,
+      creatorActorId,
       review: {
         customer: run.intent.foreignCustomerSafeLabel,
         destinationCountry: run.intent.destinationCountry,

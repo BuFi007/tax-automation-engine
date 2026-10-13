@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertArcaFiscalBeta, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
+import { assertArcaFiscalBeta, assertFiscalHumanActor, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
 import { ARGENTINA_FACTURA_E_RULE_IDS, hashCanonical, validateFacturaEIntent, type FacturaEIntentV1 } from '@tax-engine/core';
 
 import { classifyApiError } from './api-errors';
@@ -246,7 +246,10 @@ export async function handleFacturaEAuthorityCorridorRoute(
       capability: route.capability,
       secrets: options.secrets,
     });
-    if (options.beta) assertArcaFiscalBeta(principal.workspaceId, options.beta);
+    if (options.beta) {
+      assertArcaFiscalBeta(principal.workspaceId, options.beta);
+      assertFiscalHumanActor(principal.workspaceId, principal.actorId);
+    }
     const occurredAt = new Date().toISOString();
 
     if (route.operation === 'case_create') {
@@ -472,8 +475,10 @@ export async function handleFacturaEAuthorityCorridorRoute(
         || binding.issuancePath !== 'wsfex_delegated')
         throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
       const run = agent.getRun(body.runId);
+      const awaitingAccountant = Boolean(options.beta && run.accountantReviewRequired
+        && run.approvalState === 'user_approved' && run.issuanceState === 'not_ready');
       if (run.workspaceId !== binding.workspaceId || run.issuancePath !== binding.issuancePath
-        || run.intentState !== 'frozen' || run.issuanceState !== 'ready_for_wsfex'
+        || run.intentState !== 'frozen' || (run.issuanceState !== 'ready_for_wsfex' && !awaitingAccountant)
         || !run.intent || run.intent.workspaceId !== binding.workspaceId
         || run.intentHash !== body.intentHash || hashCanonical(run.intent) !== body.intentHash)
         throw new Error('TAX_AUTHORITY_FROZEN_APPROVED_INTENT_REQUIRED');
@@ -488,6 +493,7 @@ export async function handleFacturaEAuthorityCorridorRoute(
           idempotencyKey: body.idempotencyKey,
           actorId: principal.actorId,
           occurredAt,
+          allowAwaitingAccountantReview: awaitingAccountant,
           }),
           preparationBinding: {
             version: 'factura-e-authority-preparation-binding-v1',
