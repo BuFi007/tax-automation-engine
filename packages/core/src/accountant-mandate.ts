@@ -87,17 +87,18 @@ export function buildAccountantPortfolioProjection(input: Readonly<{
   const authorizedWorkspaceIds = new Set<string>();
   for (const mandate of input.mandates) {
     if (mandate.accountantOrganizationId !== input.accountantOrganizationId) continue;
-    try {
-      assertActiveAccountantMandate(mandate, {
-        workspaceId: mandate.workspaceId,
-        accountantActorId: input.accountantActorId,
-        scope: 'review_tax_obligation',
-        at: input.at,
-      });
-      authorizedWorkspaceIds.add(mandate.workspaceId);
-    } catch {
-      // An invalid, expired, revoked, differently scoped, or differently bound
-      // mandate cannot add a tenant to the firm projection.
+    for (const scope of ['review_tax_obligation', 'approve_invoice_intent'] as const) {
+      try {
+        assertActiveAccountantMandate(mandate, {
+          workspaceId: mandate.workspaceId,
+          accountantActorId: input.accountantActorId,
+          scope,
+          at: input.at,
+        });
+        authorizedWorkspaceIds.add(mandate.workspaceId);
+      } catch {
+        // A differently scoped or inactive mandate grants no portfolio access.
+      }
     }
   }
 

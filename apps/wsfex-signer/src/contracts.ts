@@ -29,6 +29,7 @@ const canonicalInvoiceSchema = z.object({
   operationType: z.literal(2),
   pointOfSale: z.number().int().positive().max(99998),
   issueDate: z.iso.date(),
+  servicePeriod: z.object({ start: z.iso.date(), end: z.iso.date() }).strict().optional(),
   paymentDate: z.iso.date(),
   sameCurrencyPayment: z.boolean(),
   exchangeRate: z.object({
@@ -42,7 +43,9 @@ const canonicalInvoiceSchema = z.object({
   serviceDescription: z.string().min(1).max(4000),
   paymentTerms: z.string().min(1).max(1000),
   ruleVersionIds: z.array(z.string().min(1)).min(1),
-}).strict();
+}).strict().refine(document => !document.servicePeriod || document.servicePeriod.start <= document.servicePeriod.end, {
+  message: 'SERVICE_PERIOD_INVALID',
+});
 const associationSchema = z.object({
   documentType: z.literal(19),
   pointOfSale: z.number().int().positive().max(99998),
@@ -274,10 +277,31 @@ export const pointOfSaleDiscoverySchema = z.object({
   }
 });
 
+export const pointOfSaleReadbackSchema = z.object({
+  version: z.literal('arca-wsfex-point-of-sale-readback-v1'),
+  environment: z.literal('homologation'),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileReferenceHash: sha256Schema,
+  representedCuitCommitment: sha256Schema,
+  pointOfSale: z.literal(2),
+  documentType: z.literal(19),
+  invoiceNumber: z.literal('1'),
+  caeHash: sha256Schema,
+  discoveryResponseHash: sha256Schema,
+  authorityResponseHash: sha256Schema,
+  observedAt: z.iso.datetime({ offset: true }),
+  evidenceHash: sha256Schema,
+}).strict().superRefine((receipt, context) => {
+  const { evidenceHash: _evidenceHash, ...evidence } = receipt;
+  if (receipt.evidenceHash !== hashCanonical(evidence))
+    context.addIssue({ code: 'custom', message: 'WSFEX_POINT_OF_SALE_READBACK_HASH_MISMATCH', path: ['evidenceHash'] });
+});
+
 export type SignerRequest = z.infer<typeof signerRequestSchema>;
 export type AuthorityPayload = z.infer<typeof authorityPayloadSchema>;
 export type SignerResponse = z.infer<typeof signerResponseSchema>;
 export type PointOfSaleDiscovery = z.infer<typeof pointOfSaleDiscoverySchema>;
+export type PointOfSaleReadback = z.infer<typeof pointOfSaleReadbackSchema>;
 export type WsfexReconciliationAttestation = NonNullable<SignerResponse['reconciliation']>;
 
 export function hashWsfexAuthorityIdentity(input: Readonly<{

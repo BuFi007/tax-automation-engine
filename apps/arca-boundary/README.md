@@ -10,13 +10,14 @@ cookie, CAPTCHA answer, or browser session.
 
 ## Scoped interfaces
 
-Four distinct bearer credentials are mandatory:
+Five distinct bearer credentials are mandatory:
 
 | Scope | Endpoint | Caller |
 |---|---|---|
 | Payload write | `POST /v1/authority-payloads`, `/terminal`, and `/revoke` | Trusted Tax payload channel |
 | Payload resolve | `POST /v1/authority-payloads/resolve` | WSFEX signer only |
 | WSAA | `POST /v1/wsaa/tickets` and `GET /health` | WSFEX signer only |
+| Issuer status | `GET /v1/wsaa/issuers/status` | Trusted Tax status projector only |
 | Boundary admin | `POST /v1/wsaa/issuers`, issuer `/revoke`, and payload `/retire-eligible` | Restricted operations console |
 
 The service refuses to start if any two tokens are equal. Payload creation is
@@ -32,7 +33,7 @@ fingerprint, and revocation immediately removes cached tickets.
 - A 32-byte root encryption secret and a separate stable 32-byte
   represented-CUIT commitment key are loaded from mounted files (preferred) or
   base64 environment values.
-- HKDF derives separate payload and issuer-credential keys.
+- HKDF derives separate payload, issuer-credential, and WSAA-ticket keys.
 - Every record uses AES-256-GCM with record-specific authenticated data and a
   random 96-bit nonce.
 - SQLite stores only encrypted raw payload/key bundles plus safe hashes,
@@ -47,10 +48,24 @@ fingerprint, and revocation immediately removes cached tickets.
   CUIT. The raw CUIT is never logged or returned in a provisioning receipt. WSAA
   tickets carry the same commitment, and WSFEX refuses a payload/ticket mismatch.
   Ordinary encryption-key rotation deliberately leaves this commitment stable.
-- LoginCms TRA XML is signed as an encapsulated CMS/PKCS#7 document with SHA-256.
-  The returned token/sign pair is cached only in memory and single-flighted.
+- Direct WSAA signs LoginCms TRA XML as encapsulated CMS/PKCS#7 with SHA-256.
+  An optional AFIP SDK mode sends the selected issuer's certificate and private
+  key only from this boundary to AFIP SDK's HTTPS authentication endpoint; it
+  requires explicit `ARCA_AFIPSDK_KEY_TRANSFER_APPROVED=true` configuration.
+  The returned token/sign pair is single-flighted and cached encrypted in SQLite
+  until expiry, so restarting the on-demand boundary does not request a duplicate
+  WSAA login. Rotation re-encrypts these tickets; issuer rotation/revocation
+  deletes them.
 - `/health` actively obtains or reuses a real `wsfex` ticket; it returns only
   delegation/readiness booleans.
+- `GET /v1/wsaa/issuers/status?workspaceId=...&issuerProfileRef=...&environment=homologation`
+  requires the read-only status token. It reports configured/active state, the declared
+  delegation, certificate dates and validity, a masked represented CUIT, its last four
+  digits and a nonreversible commitment, and
+  separate cached WSAA ticket state for `wsfe`, `wsfex`, and `wsfecred`. Its
+  `authorityStatus: "not_checked"` explicitly does not assert ARCA service or
+  point-of-sale authorization. It never returns a certificate, private key,
+  WSAA token/sign, or unmasked CUIT.
 
 ## Configuration
 
@@ -61,24 +76,34 @@ ARCA_ENVIRONMENT=homologacion | production
 ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN
 ARCA_BOUNDARY_PAYLOAD_RESOLVE_TOKEN
 ARCA_BOUNDARY_WSAA_TOKEN
+ARCA_BOUNDARY_STATUS_TOKEN
 ARCA_BOUNDARY_ADMIN_TOKEN
 ARCA_BOUNDARY_MASTER_KEY_FILE=/run/secrets/arca_boundary_master_key
 ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_FILE=/run/secrets/arca_boundary_cuit_commitment_key
+ARCA_BOUNDARY_TAXPAYER_REFERENCE_KEY_FILE=/run/secrets/arca_boundary_taxpayer_reference_key
 ARCA_BOUNDARY_DB_PATH=/data/arca-boundary.sqlite
 ARCA_BOUNDARY_PAYLOAD_RETENTION_POLICY_ID=arca-authority-terminal-recovery-v1
 ARCA_BOUNDARY_PAYLOAD_TERMINAL_RETENTION_DAYS=30
 ARCA_BOUNDARY_PRODUCTION_APPROVED=false
+ARCA_WSAA_PROVIDER=direct | afipsdk
+ARCA_AFIPSDK_KEY_TRANSFER_APPROVED=false
+AFIPSDK_ACCESS_TOKEN=... # required only for the afipsdk provider
 ```
 
 The process binds to loopback by default. Container images set
 `ARCA_BOUNDARY_HOST=0.0.0.0` explicitly so the container runtime can publish the
-authenticated service.
+authenticated service. A durable `ARCA_BOUNDARY_DB_PATH` is required in both
+homologation and production; the directory must survive process restarts.
 
-Generate both secrets out of band with a cryptographically secure 32-byte
+Generate the three keys out of band with a cryptographically secure 32-byte
 generator and mount their base64 representations as separate secret files. Do
-not commit either value or reuse one as the other. Back up the database and keys
-separately; losing the encryption key makes payloads and issuer credentials
-unrecoverable, while losing the commitment key prevents safe taxpayer binding.
+not commit or reuse a key. Set Desk's
+`ARCA_ONBOARDING_CUIT_REFERENCE_HMAC_KEY` to the same value as the taxpayer
+reference key, never the commitment or encryption key. Its HMAC lets Tax compare
+the CUIT entered in Desk with the represented CUIT in the certificate without
+sending the raw CUIT through Motora. Back up the database and keys separately;
+losing the encryption key makes payloads and issuer credentials unrecoverable,
+while losing either CUIT key prevents safe taxpayer binding.
 
 Master-key rotation is an offline, exclusive, transactional operation. Stop the
 service, back up the database, mount the old and new key files, validate every
@@ -91,12 +116,12 @@ ARCA_BOUNDARY_NEW_MASTER_KEY_FILE=/run/secrets/arca_boundary_new_master_key \
   bun run --filter @tax-engine/arca-boundary rotate-key
 ```
 
-The command opens an exclusive SQLite transaction, authenticates every payload
-and issuer bundle with the old domain key, re-encrypts both domains with the new
+The command opens an exclusive SQLite transaction, authenticates every payload,
+issuer bundle and cached WSAA ticket with the old domain keys, re-encrypts them with the new
 key, and appends a safe rotation audit event. A failed record rolls back the
-whole rotation. Keep `ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_FILE` unchanged during
-this operation. Changing it is an identity migration and requires reprovisioning
-and reconciling all bound issuer/payload/attempt state.
+whole rotation. Keep both CUIT key files unchanged during this operation.
+Changing either is an identity migration and requires reconciling bound
+issuer/onboarding state.
 
 Provisioning `POST /v1/wsaa/issuers` requires:
 

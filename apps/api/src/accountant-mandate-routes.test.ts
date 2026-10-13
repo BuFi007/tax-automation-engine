@@ -30,6 +30,13 @@ describe('accountant mandate routes', () => {
       scopes: ['approve_invoice_intent', 'record_tax_declaration'],
       revokedAt: null,
     });
+    const replay = await call(store, 'POST', '/v1/accountant-mandates', {
+      mandateId: 'mandate:1', accountantActorId: 'accountant:1',
+      accountantOrganizationId: 'firm:1',
+      scopes: ['record_tax_declaration', 'approve_invoice_intent'],
+      expiresAt: '2026-08-15T12:00:00.000Z',
+    });
+    expect(replay.status).toBe(200);
 
     const listed = await call(store, 'GET', '/v1/accountant-mandates');
     expect((await listed.json() as any).data).toHaveLength(1);
@@ -110,13 +117,39 @@ describe('accountant mandate routes', () => {
       ],
     });
   });
+
+  test('lists an invoice-only client before its first tax snapshot', async () => {
+    const store = new TaxProfileStore(':memory:');
+    store.grantAccountantMandate({
+      version: 'accountant-mandate-v1', mandateId: 'mandate:invoice',
+      workspaceId: 'workspace:invoice', accountantActorId: 'accountant:1',
+      accountantOrganizationId: 'firm:1', scopes: ['approve_invoice_intent'],
+      grantedByActorId: 'user:owner', grantedAt: '2026-07-15T11:00:00.000Z',
+      expiresAt: '2026-08-15T12:00:00.000Z', revokedAt: null,
+    });
+    const url = new URL('http://localhost/v1/accountant-portfolio');
+    const response = await handleAccountantMandateRoute(
+      new Request(url), url, store,
+      { ...principal, workspaceId: 'firm:1', actorId: 'accountant:1', capability: 'accountant:portfolio' },
+      NOW,
+    );
+    expect((await response!.json() as any).data).toMatchObject({
+      clients: [{ workspaceId: 'workspace:invoice', outstandingObligationCount: 0 }],
+      mandates: [{ mandateId: 'mandate:invoice' }],
+    });
+    store.close();
+  });
 });
 
 async function call(store: TaxProfileStore, method: string, path: string, body?: unknown): Promise<Response> {
   const request = new Request(`http://localhost${path}`, body === undefined
     ? { method }
     : { method, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
-  const response = await handleAccountantMandateRoute(request, new URL(request.url), store, principal, NOW);
+  const scopedPrincipal = method === 'POST' ? {
+    ...principal, version: 'tax-tenant-principal-v3' as const,
+    method: 'POST' as const, path, bodyHash: 'a'.repeat(64),
+  } : principal;
+  const response = await handleAccountantMandateRoute(request, new URL(request.url), store, scopedPrincipal, NOW);
   if (!response) throw new Error('ROUTE_NOT_HANDLED');
   return response;
 }

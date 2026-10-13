@@ -1,7 +1,9 @@
 import {
   loadMasterKey,
   loadRepresentedCuitCommitmentKey,
+  loadTaxpayerReferenceKey,
 } from './crypto';
+import { AfipSdkWsaaLoginClient } from './afipsdk-wsaa';
 import { createBoundaryHandler } from './http';
 import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
@@ -11,25 +13,43 @@ const hostname = process.env.ARCA_BOUNDARY_HOST ?? '127.0.0.1';
 const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
 if (environment === 'production' && process.env.ARCA_BOUNDARY_PRODUCTION_APPROVED !== 'true') throw new Error('ARCA_BOUNDARY_PRODUCTION_APPROVAL_REQUIRED');
 const databasePath = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:';
-if (environment === 'production' && databasePath === ':memory:')
+if (databasePath === ':memory:')
   throw new Error('ARCA_BOUNDARY_DURABLE_STORE_REQUIRED');
 const tokens = {
   payloadWriter: requiredToken('ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN'),
   payloadResolver: requiredToken('ARCA_BOUNDARY_PAYLOAD_RESOLVE_TOKEN'),
   wsaa: requiredToken('ARCA_BOUNDARY_WSAA_TOKEN'),
+  status: requiredToken('ARCA_BOUNDARY_STATUS_TOKEN'),
   admin: requiredToken('ARCA_BOUNDARY_ADMIN_TOKEN'),
+  padron: process.env.ARCA_BOUNDARY_PADRON_TOKEN
+    ? requiredToken('ARCA_BOUNDARY_PADRON_TOKEN') : undefined,
+  issuerRevoke: process.env.ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN
+    ? requiredToken('ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN') : undefined,
 };
-if (new Set(Object.values(tokens)).size !== 4) throw new Error('ARCA_BOUNDARY_TOKENS_MUST_BE_DISTINCT');
+const configuredTokens = Object.values(tokens).filter((token): token is string => !!token);
+if (new Set(configuredTokens).size !== configuredTokens.length)
+  throw new Error('ARCA_BOUNDARY_TOKENS_MUST_BE_DISTINCT');
 const masterKey = loadMasterKey();
 const representedCuitCommitmentKey = loadRepresentedCuitCommitmentKey();
+const taxpayerReferenceKey = loadTaxpayerReferenceKey();
 const retentionPolicy = loadRetentionPolicy(environment);
+const authProvider = process.env.ARCA_WSAA_PROVIDER ?? 'direct';
+if (authProvider !== 'direct' && authProvider !== 'afipsdk')
+  throw new Error('ARCA_WSAA_PROVIDER_INVALID');
+if (authProvider === 'afipsdk' && process.env.ARCA_AFIPSDK_KEY_TRANSFER_APPROVED !== 'true')
+  throw new Error('AFIPSDK_KEY_TRANSFER_APPROVAL_REQUIRED');
+const wsaa = authProvider === 'afipsdk'
+  ? new AfipSdkWsaaLoginClient(requiredToken('AFIPSDK_ACCESS_TOKEN'))
+  : undefined;
 const service = new ArcaBoundaryService(
   new ArcaBoundaryStore(masterKey, databasePath, representedCuitCommitmentKey),
-  undefined,
-  retentionPolicy
+  wsaa,
+  retentionPolicy,
+  taxpayerReferenceKey
 );
 masterKey.fill(0);
 representedCuitCommitmentKey.fill(0);
+taxpayerReferenceKey.fill(0);
 const handler = createBoundaryHandler(service, tokens, environment);
 
 export const server = Bun.serve({

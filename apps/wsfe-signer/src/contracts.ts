@@ -11,6 +11,72 @@ const unsignedDecimalSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const invoiceNumberSchema = z.string().regex(/^[1-9]\d{0,7}$/);
 
+export const pointOfSaleDiscoverySchema = z.object({
+  version: z.literal('arca-wsfe-point-of-sale-discovery-v1'),
+  environment: z.enum(['homologation', 'production']),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileReferenceHash: sha256Schema,
+  representedCuitCommitment: sha256Schema,
+  activePoints: z.array(z.number().int().positive().max(99998)).max(1000),
+  listedCount: z.number().int().nonnegative().max(1000),
+  authorityResponseHash: sha256Schema,
+  observedAt: z.iso.datetime({ offset: true }),
+  evidenceHash: sha256Schema,
+}).strict().superRefine((receipt, context) => {
+  const { evidenceHash, ...material } = receipt;
+  if (evidenceHash !== hashCanonical(material)) context.addIssue({ code: 'custom', path: ['evidenceHash'], message: 'WSFE_POINT_OF_SALE_EVIDENCE_HASH_MISMATCH' });
+});
+
+export const pointOfSaleReadbackSchema = z.object({
+  version: z.literal('arca-wsfe-point-of-sale-readback-v1'),
+  environment: z.literal('homologation'),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileReferenceHash: sha256Schema,
+  representedCuitCommitment: sha256Schema,
+  pointOfSale: z.literal(1),
+  documentType: z.literal(11),
+  invoiceNumber: z.literal('1'),
+  caeHash: sha256Schema,
+  discoveryResponseHash: sha256Schema,
+  authorityResponseHash: sha256Schema,
+  observedAt: z.iso.datetime({ offset: true }),
+  evidenceHash: sha256Schema,
+}).strict().superRefine((receipt, context) => {
+  const { evidenceHash, ...material } = receipt;
+  if (evidenceHash !== hashCanonical(material)) context.addIssue({ code: 'custom', path: ['evidenceHash'], message: 'WSFE_POINT_OF_SALE_READBACK_HASH_MISMATCH' });
+});
+
+export type PointOfSaleDiscovery = z.infer<typeof pointOfSaleDiscoverySchema>;
+export type PointOfSaleReadback = z.infer<typeof pointOfSaleReadbackSchema>;
+
+export const nextVoucherRequestSchema = z.object({
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: z.string().min(1).max(500),
+  documentType: z.literal(11),
+  pointOfSale: z.number().int().positive().max(99998),
+}).strict();
+
+export const nextVoucherSchema = z.object({
+  version: z.literal('arca-wsfe-next-voucher-v1'),
+  environment: z.enum(['homologation', 'production']),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileReferenceHash: sha256Schema,
+  representedCuitCommitment: sha256Schema,
+  documentType: z.literal(11),
+  pointOfSale: z.number().int().positive().max(99998),
+  lastInvoiceNumber: z.string().regex(/^\d{1,8}$/),
+  nextInvoiceNumber: invoiceNumberSchema,
+  observedAt: z.iso.datetime({ offset: true }),
+  evidenceHash: sha256Schema,
+}).strict().superRefine((receipt, context) => {
+  const { evidenceHash, ...material } = receipt;
+  if (evidenceHash !== hashCanonical(material) || BigInt(receipt.nextInvoiceNumber) !== BigInt(receipt.lastInvoiceNumber) + 1n)
+    context.addIssue({ code: 'custom', path: ['evidenceHash'], message: 'WSFE_NEXT_VOUCHER_EVIDENCE_MISMATCH' });
+});
+
+export type NextVoucherRequest = z.infer<typeof nextVoucherRequestSchema>;
+export type NextVoucher = z.infer<typeof nextVoucherSchema>;
+
 // Every domestic WSFEV1 lane here is pesos-only: MonId is always 'PES' and
 // MonCotiz always 1. (Foreign-currency service export lives in the WSFEX signer.)
 const arsMoneySchema = z.object({ decimal: unsignedDecimalSchema, currency: z.literal('ARS') }).strict();

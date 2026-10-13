@@ -34,6 +34,7 @@ export type FacturaEIntentV1 = Readonly<{
   operationType: 2;
   pointOfSale: number;
   issueDate: IsoDate;
+  servicePeriod?: Readonly<{ start: IsoDate; end: IsoDate }> | undefined;
   paymentDate: IsoDate;
   sameCurrencyPayment: boolean;
   exchangeRate: Readonly<{
@@ -381,6 +382,8 @@ export function validateFacturaEIntent(intent: FacturaEIntentV1, asOf: IsoDate):
   if (!Number.isInteger(intent.destinationCountryArcaCode) || intent.destinationCountryArcaCode <= 0 || intent.destinationCountryArcaCode > 999) errors.push('DESTINATION_ARCA_CODE_INVALID');
   if (!Number.isInteger(intent.pointOfSale) || intent.pointOfSale <= 0 || intent.pointOfSale > 99998) errors.push('EXPORT_POINT_OF_SALE_INVALID');
   if (!isIsoDate(intent.issueDate) || !isIsoDate(intent.paymentDate) || !isIsoDate(asOf)) errors.push('INVOICE_DATE_INVALID');
+  if (intent.servicePeriod && (!isIsoDate(intent.servicePeriod.start) || !isIsoDate(intent.servicePeriod.end)
+    || intent.servicePeriod.start > intent.servicePeriod.end)) errors.push('SERVICE_PERIOD_INVALID');
   if (isIsoDate(intent.issueDate) && isIsoDate(intent.paymentDate) && intent.paymentDate < intent.issueDate) errors.push('PAYMENT_DATE_BEFORE_ISSUE_DATE');
   if (isIsoDate(intent.issueDate) && isIsoDate(asOf) && Math.abs(daysBetween(intent.issueDate, asOf)) > 5) errors.push('AUTHORIZATION_DATE_OUTSIDE_FIVE_DAY_WINDOW');
   if (!intent.serviceDescription.trim()) errors.push('SERVICE_DESCRIPTION_REQUIRED');
@@ -578,6 +581,8 @@ export function requestFacturaEApproval(run: FacturaEAgentRunV1, input: Readonly
 }>): Readonly<{ run: FacturaEAgentRunV1; event: FacturaEAgentEventV1 }> {
   if (run.readinessState !== 'verified') throw new Error('ARCA_READINESS_PROOF_REQUIRED');
   if (run.intentState !== 'validated' || !run.intentHash) throw new Error('VALIDATED_INTENT_REQUIRED');
+  if (run.issuancePath === 'wsfex_delegated' && !run.intent?.servicePeriod)
+    throw new Error('SERVICE_PERIOD_REQUIRED');
   const readinessProof = [...run.verifiedProofs].reverse().find(proof => proof.purpose === 'arca_taxpayer_readiness');
   if (!readinessProof || !run.intent) throw new Error('ARCA_READINESS_PROOF_REQUIRED');
   const readinessClaims = readinessProof.claims as ArcaReadinessClaimsV1;
@@ -595,6 +600,8 @@ export function approveFacturaEIntent(run: FacturaEAgentRunV1, input: Readonly<{
   idempotencyKey: string;
 }>): Readonly<{ run: FacturaEAgentRunV1; event: FacturaEAgentEventV1 }> {
   if (run.approvalState !== 'pending') throw new Error('USER_APPROVAL_NOT_REQUESTED');
+  if (run.issuancePath === 'wsfex_delegated' && !run.intent?.servicePeriod)
+    throw new Error('SERVICE_PERIOD_REQUIRED');
   if (!run.intentHash || input.intentHash !== run.intentHash) throw new Error('APPROVAL_INTENT_HASH_MISMATCH');
   const approvalState = 'user_approved' as const;
   const issuanceState = run.accountantReviewRequired

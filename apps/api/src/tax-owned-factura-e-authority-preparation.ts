@@ -19,6 +19,10 @@ import type { WsfexSequenceGateway } from './wsfex';
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_REFERENCE = /^[A-Za-z0-9._:/-]{1,500}$/;
 const MAX_RESPONSE_BYTES = 32 * 1024;
+const fiscalScopeSchema = z.union([
+  z.uuid(),
+  z.string().regex(/^personal:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+]);
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -46,6 +50,41 @@ const deskPrivateDataSchema = z.object({
 
 type DeskPrivateData = z.infer<typeof deskPrivateDataSchema>;
 
+const deskCommercialRequestSchema = z.object({
+  version: z.literal('desk-factura-e-commercial-request-v1'),
+  sourceKind: z.literal('pre_cae_commercial_request'),
+  workspaceId: fiscalScopeSchema,
+  runId: z.uuid(),
+  ledgerInvoiceId: z.uuid(),
+  idempotencyKey: z.string().min(16).max(200),
+  taxpayerReferenceHash: z.string().regex(SHA256),
+  foreignCustomerReferenceHash: z.string().regex(SHA256),
+  customer: z.object({
+    name: z.string().min(1).max(200),
+    address: z.string().min(1).max(300),
+    foreignTaxId: z.string().min(1).max(50),
+    countryIso2: z.string().regex(/^[A-Z]{2}$/),
+    countryArcaCode: z.number().int().positive(),
+  }).strict(),
+  requestedPointOfSale: z.number().int().positive().max(99_998),
+  issueDate: z.iso.date(),
+  servicePeriod: z.object({ start: z.iso.date(), end: z.iso.date() }).strict(),
+  paymentDate: z.iso.date(),
+  amount: z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+  currency: z.literal('USD'),
+  description: z.string().min(1).max(500),
+  frozenManualQuote: z.object({
+    decimal: z.string().regex(/^(?:[1-9]\d{0,3})(?:\.\d{1,6})?$/),
+    observedForDate: z.iso.date(),
+    sourceReferenceId: z.string().min(1).max(200),
+  }).strict().optional(),
+  sameCurrencyPayment: z.boolean(),
+  frozenAt: z.iso.datetime({ offset: true }),
+  evidenceHash: z.string().regex(SHA256),
+}).strict();
+
+export type FacturaECommercialRequest = z.infer<typeof deskCommercialRequestSchema>;
+
 export interface FacturaEPrivateDataGateway {
   getFrozenPrivateData(input: FacturaEAuthorityPreparationRequest): Promise<DeskPrivateData>;
 }
@@ -69,34 +108,10 @@ export class HttpDeskFacturaEPrivateDataGateway implements FacturaEPrivateDataGa
   }
 
   async getFrozenPrivateData(input: FacturaEAuthorityPreparationRequest): Promise<DeskPrivateData> {
-    const rawBody = JSON.stringify({
+    const raw = await this.exchange({
       version: 'tax-desk-factura-e-private-data-request-v1',
       ...input,
-    });
-    let response: Response;
-    try {
-      response = await this.fetchImpl(this.endpoint, {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          'idempotency-key': input.idempotencyKey,
-          'x-tax-desk-private-data-signature': hmac(this.secret, rawBody),
-        },
-        body: rawBody,
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch {
-      throw new Error('TAX_DESK_PRIVATE_DATA_UPSTREAM_UNAVAILABLE');
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`TAX_DESK_PRIVATE_DATA_REJECTED_${response.status}`);
-    }
-    const raw = await readBoundedBody(response);
-    const signature = response.headers.get('x-tax-desk-private-data-signature') ?? '';
-    if (!constantTimeEqual(signature, hmac(this.secret, raw)))
-      throw new Error('TAX_DESK_PRIVATE_DATA_RECEIPT_UNAUTHORIZED');
+    }, input.idempotencyKey);
     let data: DeskPrivateData;
     try {
       data = deskPrivateDataSchema.parse(JSON.parse(raw));
@@ -115,6 +130,63 @@ export class HttpDeskFacturaEPrivateDataGateway implements FacturaEPrivateDataGa
     if (evidenceHash !== hashCanonical(material))
       throw new Error('TAX_DESK_PRIVATE_DATA_RECEIPT_HASH_MISMATCH');
     return data;
+  }
+
+  async getFrozenCommercialRequest(input: Readonly<{
+    workspaceId: string;
+    runId: string;
+    ledgerInvoiceId: string;
+    idempotencyKey: string;
+  }>): Promise<FacturaECommercialRequest> {
+    const raw = await this.exchange({
+      version: 'tax-desk-factura-e-commercial-request-v1',
+      ...input,
+    }, input.idempotencyKey);
+    let data: FacturaECommercialRequest;
+    try {
+      data = deskCommercialRequestSchema.parse(JSON.parse(raw));
+    } catch {
+      throw new Error('TAX_DESK_COMMERCIAL_REQUEST_INVALID');
+    }
+    if (data.workspaceId !== input.workspaceId || data.runId !== input.runId
+      || data.ledgerInvoiceId !== input.ledgerInvoiceId
+      || data.idempotencyKey !== input.idempotencyKey
+      || data.servicePeriod.start > data.servicePeriod.end
+      || data.foreignCustomerReferenceHash !== hashCanonical(data.customer))
+      throw new Error('TAX_DESK_COMMERCIAL_REQUEST_BINDING_MISMATCH');
+    const { evidenceHash, ...material } = data;
+    if (evidenceHash !== hashCanonical(material))
+      throw new Error('TAX_DESK_COMMERCIAL_REQUEST_HASH_MISMATCH');
+    return data;
+  }
+
+  private async exchange(body: object, idempotencyKey: string): Promise<string> {
+    const rawBody = JSON.stringify(body);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.endpoint, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': idempotencyKey,
+          'x-tax-desk-private-data-signature': hmac(this.secret, rawBody),
+        },
+        body: rawBody,
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      throw new Error('TAX_DESK_PRIVATE_DATA_UPSTREAM_UNAVAILABLE');
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`TAX_DESK_PRIVATE_DATA_REJECTED_${response.status}`);
+    }
+    const raw = await readBoundedBody(response);
+    const signature = response.headers.get('x-tax-desk-private-data-signature') ?? '';
+    if (!constantTimeEqual(signature, hmac(this.secret, raw)))
+      throw new Error('TAX_DESK_PRIVATE_DATA_RECEIPT_UNAUTHORIZED');
+    return raw;
   }
 }
 
@@ -158,6 +230,9 @@ export class TaxOwnedFacturaEAuthorityPreparationGateway
       || run.intent.foreignCustomerReferenceHash !== input.foreignCustomerReferenceHash
       || run.intent.pointOfSale !== input.pointOfSale)
       throw new Error('TAX_OWNED_PREPARATION_RUN_BINDING_MISMATCH');
+    if (this.environment === 'production'
+      && run.intent.exchangeRate?.sourceReferenceId.startsWith('manual-unverified-bna:'))
+      throw new Error('TAX_PRODUCTION_VERIFIED_EXCHANGE_RATE_REQUIRED');
     const issuerProfileRef = this.profiles.get(input.workspaceId);
     if (!issuerProfileRef) throw new Error('TAX_ARCA_ISSUER_PROFILE_NOT_CONFIGURED');
     const onboarding = selectReadyOnboarding(

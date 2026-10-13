@@ -50,7 +50,9 @@ export class SoapWsaaLoginClient implements WsaaLoginClient {
     }
     const raw = await readBoundedBody(response, 1_048_576, 'WSAA_RESPONSE_TOO_LARGE');
     const rawHash = hashCanonical(raw);
-    if (!response.ok) throw new Error(`WSAA_HTTP_REJECTED_${response.status}`);
+    if (!response.ok) throw new Error(raw.includes('coe.alreadyAuthenticated')
+      ? 'WSAA_ALREADY_AUTHENTICATED'
+      : `WSAA_HTTP_REJECTED_${response.status}`);
     if (/<!DOCTYPE|<!ENTITY/i.test(raw)) throw new Error('WSAA_LOGIN_RESPONSE_UNSAFE_XML');
     const outer = xmlNode(this.#parser.parse(raw));
     const body = xmlNode(xmlNode(outer.Envelope).Body);

@@ -10,7 +10,7 @@ import {
 
 import { readBoundedBody } from './bounded-body';
 import type { TaxProfileStore } from './store';
-import { assertTaxTenantPrincipalScope, type TaxTenantPrincipalV2 } from './tenant-principal';
+import { assertTaxTenantPrincipalScope, type TaxTenantPrincipalV2, type TaxTenantPrincipalV3 } from './tenant-principal';
 
 const scopeSchema = z.enum([
   'review_tax_obligation',
@@ -32,8 +32,9 @@ export async function handleAccountantMandateRoute(
   request: Request,
   url: URL,
   store: TaxProfileStore,
-  principal: TaxTenantPrincipalV2 | null,
+  principal: TaxTenantPrincipalV2 | TaxTenantPrincipalV3 | null,
   now = new Date(),
+  rawBody?: string,
 ): Promise<Response | null> {
   if (request.method === 'GET' && url.pathname === '/v1/accountant-portfolio') {
     if (!principal) throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
@@ -44,9 +45,25 @@ export async function handleAccountantMandateRoute(
     );
     const workspaceIds = [...new Set(mandates.map(mandate => mandate.workspaceId))];
     const clientCases = workspaceIds.flatMap(workspaceId => {
+      const invoiceMandate = mandates.some(mandate => {
+        try {
+          assertActiveAccountantMandate(mandate, {
+            workspaceId, accountantActorId: principal.actorId,
+            scope: 'approve_invoice_intent', at: now.toISOString(),
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      const emptyInvoiceCase: AccountantClientCaseSummaryV1[] = invoiceMandate ? [{
+        version: 'accountant-client-case-summary-v1', workspaceId, nextDueAt: null,
+        outstandingObligationCount: 0, professionalReviewCount: 0,
+        clientApprovalCount: 0,
+      }] : [];
       try {
         const receipt = store.getLatestTaxWidgetSnapshot(workspaceId, now.toISOString());
-        if (!receipt) return [];
+        if (!receipt) return emptyInvoiceCase;
         const obligations = receipt.snapshot.obligations;
         const summary: AccountantClientCaseSummaryV1 = {
           version: 'accountant-client-case-summary-v1',
@@ -68,7 +85,7 @@ export async function handleAccountantMandateRoute(
         };
         return [summary];
       } catch {
-        return [];
+        return emptyInvoiceCase;
       }
     });
     const projection = buildAccountantPortfolioProjection({
@@ -78,19 +95,21 @@ export async function handleAccountantMandateRoute(
       mandates,
       clientCases,
     });
-    const activeMandates = mandates.filter(mandate => {
-      try {
-        assertActiveAccountantMandate(mandate, {
-          workspaceId: mandate.workspaceId,
-          accountantActorId: principal.actorId,
-          scope: 'review_tax_obligation',
-          at: now.toISOString(),
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    });
+    const activeMandates = mandates.filter(mandate =>
+      (['review_tax_obligation', 'approve_invoice_intent'] as const).some(scope => {
+        try {
+          assertActiveAccountantMandate(mandate, {
+            workspaceId: mandate.workspaceId,
+            accountantActorId: principal.actorId,
+            scope,
+            at: now.toISOString(),
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })
+    );
     return json({ data: { ...projection, mandates: activeMandates } }, 200, {
       'cache-control': 'private, no-store',
       vary: 'authorization, x-tax-tenant-principal, x-tax-tenant-signature',
@@ -98,14 +117,25 @@ export async function handleAccountantMandateRoute(
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/accountant-mandates') {
-    if (!principal) throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
-    const body = grantSchema.parse(JSON.parse(await readBoundedBody(request, 64 * 1024, 'ACCOUNTANT_MANDATE_REQUEST_TOO_LARGE')) as unknown);
-    assertTaxTenantPrincipalScope(principal, principal.workspaceId, principal.actorId);
+    if (!principal || principal.version !== 'tax-tenant-principal-v3') throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
+    const body = grantSchema.parse(JSON.parse(rawBody ?? await readBoundedBody(request, 64 * 1024, 'ACCOUNTANT_MANDATE_REQUEST_TOO_LARGE')) as unknown);
     const expiresAt = Date.parse(body.expiresAt);
     if (expiresAt <= now.getTime() || expiresAt - now.getTime() > 366 * 86_400_000) {
       throw new Error('ACCOUNTANT_MANDATE_EXPIRY_OUT_OF_RANGE');
     }
     const scopes = [...new Set(body.scopes)].sort() as AccountantMandateScope[];
+    const existing = store.getAccountantMandate(body.mandateId);
+    if (existing) {
+      if (existing.workspaceId !== principal.workspaceId
+        || existing.accountantActorId !== body.accountantActorId
+        || existing.accountantOrganizationId !== body.accountantOrganizationId
+        || existing.grantedByActorId !== principal.actorId
+        || existing.expiresAt !== body.expiresAt
+        || existing.revokedAt !== null
+        || JSON.stringify(existing.scopes) !== JSON.stringify(scopes))
+        throw new Error('ACCOUNTANT_MANDATE_ID_CONFLICT');
+      return json({ data: existing }, 200);
+    }
     const mandate: AccountantMandateV1 = {
       version: 'accountant-mandate-v1',
       mandateId: body.mandateId,
@@ -130,8 +160,7 @@ export async function handleAccountantMandateRoute(
 
   const revokeMatch = url.pathname.match(/^\/v1\/accountant-mandates\/([^/]+)\/revoke$/);
   if (request.method === 'POST' && revokeMatch) {
-    if (!principal) throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
-    assertTaxTenantPrincipalScope(principal, principal.workspaceId, principal.actorId);
+    if (!principal || principal.version !== 'tax-tenant-principal-v3') throw new Error('TAX_TENANT_SCOPE_UNAUTHORIZED');
     const mandate = store.revokeAccountantMandate(decodeURIComponent(revokeMatch[1]!), principal.workspaceId, principal.actorId, now.toISOString());
     return json({ data: mandate });
   }

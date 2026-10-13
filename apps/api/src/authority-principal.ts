@@ -4,6 +4,11 @@ import { taxWorkspaceIdSchema } from '@tax-engine/core';
 import { z } from 'zod';
 
 export const taxAuthorityCapabilitySchema = z.enum([
+  'factura-e:case:create',
+  'factura-e:case:read',
+  'factura-e:case:prepare',
+  'factura-e:authority:attest',
+  'factura-e:intent:approve',
   'factura-e:intent:create',
   'factura-e:approval:register',
   'factura-e:execute',
@@ -20,7 +25,7 @@ const authorityPrincipalSchema = z
     actorId: z.string().min(1).max(300),
     capability: taxAuthorityCapabilitySchema,
     method: z.enum(['GET', 'POST']),
-    path: z.string().regex(/^\/v1\/authority\/[a-z0-9/_-]+$/),
+    path: z.string().regex(/^\/v1\/authority\/[A-Za-z0-9%:/_-]+$/),
     bodyHash: z.string().regex(/^[a-f0-9]{64}$/),
     expiresAt: z.iso.datetime({ offset: true }),
   })

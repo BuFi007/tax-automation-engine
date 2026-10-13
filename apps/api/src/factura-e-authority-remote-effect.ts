@@ -69,7 +69,7 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
       workspaceId: input.workspaceId,
       payload,
       expiresAt: prepared.expiresAt,
-      idempotencyKey: `${input.idempotencyKey}:payload`,
+      idempotencyKey: `${input.idempotencyKey}:payload:${prepared.preparationHash}`,
     });
     if (receipt.payloadHash !== hashCanonical(payload)) {
       throw new Error('TAX_AUTHORITY_PAYLOAD_RECEIPT_HASH_MISMATCH');
@@ -114,7 +114,11 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
   async reconcile(
     input: FacturaEAuthorityEffectPreparation
   ): Promise<FacturaEAuthorityReconciliationOutcome> {
-    const run = this.boundRun(input);
+    const run = this.boundRun(input, true);
+    if (run.issuanceState === 'arca_authorized'
+      && (run.authority.requestId !== input.requestId
+        || run.authority.payloadReferenceHash !== hashCanonical(input.authorityPayloadRef)))
+      throw new Error('TAX_AUTHORITY_RECONCILIATION_REPLAY_CONFLICT');
     const result = await this.wsfex.reconcile({
       run,
       requestId: input.requestId,
@@ -122,6 +126,8 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
       authorityPayloadHash: input.authorityPayloadHash,
     });
     assertAuthorityEnvironment(result, this.environment);
+    if (run.issuanceState === 'arca_authorized' && result.status !== 'accepted')
+      throw new Error('TAX_AUTHORITY_RECONCILIATION_REPLAY_CONFLICT');
     if (result.status === 'ambiguous') {
       return { status: 'ambiguous', receiptHash: result.receiptHash };
     }
@@ -140,6 +146,15 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
     ) {
       throw new Error('TAX_AUTHORITY_RECONCILIATION_RECEIPT_INCOMPLETE');
     }
+    if (run.issuanceState === 'arca_authorized'
+      && (run.authority.invoiceNumber !== result.invoiceNumber
+        || run.authority.cae !== result.cae
+        || run.authority.caeExpiry !== result.caeExpiry
+        || run.authority.currencyId !== result.currencyId
+        || run.authority.currencyQuote !== result.currencyQuote
+        || run.authority.receiptHash !== result.reconciliationEvidenceHash
+        || run.authority.reprocessed !== result.reprocessed))
+      throw new Error('TAX_AUTHORITY_RECONCILIATION_REPLAY_CONFLICT');
     await this.payloads.markTerminal({
       workspaceId: input.workspaceId,
       reference: input.authorityPayloadRef,
@@ -177,14 +192,15 @@ export class TaxWsfexAuthorityRemoteEffect implements FacturaEAuthorityRemoteEff
     workspaceId: string;
     runId: string;
     intentHash: string;
-  }>): FacturaEAgentRunV1 {
+  }>, allowAlreadyAuthorized = false): FacturaEAgentRunV1 {
     const run = this.runs.getRun(input.runId);
     if (
       run.workspaceId !== input.workspaceId
       || run.intentHash !== input.intentHash
       || !run.intent
       || run.intentState !== 'frozen'
-      || run.issuanceState !== 'ready_for_wsfex'
+      || (run.issuanceState !== 'ready_for_wsfex'
+        && !(allowAlreadyAuthorized && run.issuanceState === 'arca_authorized'))
       || run.issuancePath !== 'wsfex_delegated'
       || hashCanonical(run.intent) !== input.intentHash
     ) throw new Error('TAX_AUTHORITY_REMOTE_EFFECT_RUN_BINDING_CONFLICT');

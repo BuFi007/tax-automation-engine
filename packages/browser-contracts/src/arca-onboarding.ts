@@ -72,6 +72,7 @@ export const arcaOnboardingBrowserRunV1Schema = z
         candidates: z.array(pointOfSaleSchema).max(100),
       })
       .strict(),
+    domesticPointOfSale: z.object({ number: pointOfSaleSchema.nullable(), active: z.boolean() }).strict(),
     delegation: z.object({ wsfex: z.boolean(), wsfe: z.boolean() }).strict(),
     apiVerification: z
       .object({
@@ -126,6 +127,9 @@ export const arcaOnboardingBrowserRunV1Schema = z
         message: 'Active point-of-sale state must agree with the selected point',
         path: ['pointOfSale'],
       });
+    }
+    if (run.domesticPointOfSale.active !== (run.domesticPointOfSale.number !== null)) {
+      context.addIssue({ code: 'custom', message: 'Domestic point-of-sale state must agree with its number', path: ['domesticPointOfSale'] });
     }
     if (run.humanAuth.completionRecorded !== (run.humanAuth.completedAt !== null)) {
       context.addIssue({
@@ -251,6 +255,7 @@ const internalRunSchema = z
         candidates: z.array(pointOfSaleSchema).max(100).optional(),
       })
       .passthrough(),
+    domesticPointOfSale: z.object({ number: pointOfSaleSchema.nullable(), active: z.boolean() }).passthrough().optional(),
     delegation: z.object({ wsfex: z.boolean(), wsfe: z.boolean() }).passthrough(),
     apiVerification: z
       .object({ wsfex: z.boolean(), wsfe: z.boolean(), observedAt: isoDateTimeSchema.nullable() })
@@ -328,6 +333,7 @@ export function projectArcaOnboardingBrowserRunV1(input: unknown): ArcaOnboardin
       active: run.pointOfSale.active,
       candidates: run.pointOfSale.candidates ?? [],
     },
+    domesticPointOfSale: { number: run.domesticPointOfSale?.number ?? null, active: run.domesticPointOfSale?.active ?? false },
     delegation: { wsfex: run.delegation.wsfex, wsfe: run.delegation.wsfe },
     apiVerification: {
       wsfex: run.apiVerification.wsfex,

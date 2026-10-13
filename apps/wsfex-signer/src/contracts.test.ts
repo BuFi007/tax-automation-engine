@@ -114,6 +114,23 @@ describe('WSFEX signer contracts', () => {
     const validPayload = payload();
     const validRequest = request();
     expect(() => assertPayloadMatchesRequest(validPayload, validRequest)).not.toThrow();
+    if (validPayload.canonicalDocument.version !== 'factura-e-intent-v1') throw new Error('invoice fixture required');
+    const datedDocument = {
+      ...validPayload.canonicalDocument,
+      servicePeriod: { start: '2026-07-01', end: '2026-07-31' },
+    };
+    const datedPayload = payload({ canonicalDocument: datedDocument, intentHash: hashCanonical(datedDocument) });
+    const datedRequest = request({
+      intentHash: hashCanonical(datedDocument), authorityPayloadHash: hashCanonical(datedPayload),
+    });
+    expect(() => assertPayloadMatchesRequest(datedPayload, datedRequest)).not.toThrow();
+    const changedPeriodPayload = {
+      ...datedPayload,
+      canonicalDocument: { ...datedDocument, servicePeriod: { ...datedDocument.servicePeriod, end: '2026-08-31' } },
+    };
+    expect(() => assertPayloadMatchesRequest(changedPeriodPayload, {
+      ...datedRequest, authorityPayloadHash: hashCanonical(changedPeriodPayload),
+    })).toThrow('AUTHORITY_PAYLOAD_CANONICAL_HASH_MISMATCH');
     const changedCanonical = { ...validPayload.canonicalDocument, paymentTerms: 'Changed after approval' };
     const changedCanonicalPayload = { ...validPayload, canonicalDocument: changedCanonical };
     expect(() => assertPayloadMatchesRequest(changedCanonicalPayload, {

@@ -33,7 +33,7 @@ describe('signer external trust boundaries', () => {
         expect(JSON.parse(String(init?.body))).toEqual({
           version: 'wsaa-ticket-request-v1', service: 'wsfe', environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/1',
         });
-        return Response.json({ token: 'ephemeral-token', sign: 'ephemeral-sign', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' });
+        return Response.json({ token: 'ephemeral-token', sign: 'ephemeral-sign', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' });
       }
       return Response.json({
         version: 'wsaa-broker-health-v1', service: 'wsfe', environment: 'homologation', certificateDelegationConfigured: true, wsaaReady: true,
@@ -50,7 +50,7 @@ describe('signer external trust boundaries', () => {
 
   test('rejects an expired or near-expiry WSAA ticket', async () => {
     const broker = new HttpWsaaTicketBroker({ baseUrl: 'https://wsaa.test', token: 'secret' }, async () => Response.json({
-      token: 'token', sign: 'sign', representedCuit: '20123456786', expiresAt: '2026-01-01T00:00:00.000Z',
+      token: 'token', sign: 'sign', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2026-01-01T00:00:00.000Z',
     }));
     await expect(broker.getTicket({ environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1' }))
       .rejects.toThrow('WSAA_TICKET_EXPIRED_OR_TOO_CLOSE');

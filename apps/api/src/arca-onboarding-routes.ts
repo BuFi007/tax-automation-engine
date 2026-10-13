@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core';
 
 import type { ManualArcaOnboardingCommand, ArcaOnboardingService } from './arca-onboarding';
+import type { HttpArcaBoundaryStatusReader } from './arca-connection-projection';
 import { readBoundedBody } from './bounded-body';
 import {
   assertTaxTenantPrincipalScope,
@@ -34,6 +35,8 @@ export async function handleArcaOnboardingRoute(
     userApprovalToken: string | null;
     evidenceIngestToken: string | null;
     tenantPrincipal?: TaxTenantPrincipalV3 | null;
+    issuerProfiles?: ReadonlyMap<string, string> | null;
+    boundaryReader?: HttpArcaBoundaryStatusReader | null;
   }>,
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/arca-onboarding/callback') {
@@ -100,6 +103,29 @@ export async function handleArcaOnboardingRoute(
   }
 
   const verificationMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/api-verification\/wsfex$/);
+  const existingMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/existing-issuer$/);
+  if (request.method === 'POST' && existingMatch) {
+    if (options.tenantPrincipal?.capability !== 'arca:onboard')
+      throw new Error('ARCA_EXISTING_ISSUER_SCOPED_PRINCIPAL_REQUIRED');
+    const onboardingId = decodeURIComponent(existingMatch[1]!);
+    const run = service.getRun(onboardingId);
+    const body = z.object({ ...baseMutationSchema,
+      confirmedExistingSetup: z.literal(true),
+      exportPointOfSale: pointOfSaleSchema.nullable(),
+      domesticPointOfSale: pointOfSaleSchema.nullable(),
+    }).strict().parse(await boundedJson(request));
+    requireUserAuthority(request, options, run.workspaceId, body.actorId);
+    const issuerProfileRef = options.issuerProfiles?.get(run.workspaceId);
+    if (!issuerProfileRef) throw new Error('ARCA_EXISTING_ISSUER_PROFILE_CONFIGURATION_REQUIRED');
+    return json({ data: projectArcaOnboardingBrowserMutationV1(await service.importExistingIssuer({
+      onboardingId, issuerProfileRef, exportPointOfSale: body.exportPointOfSale,
+      domesticPointOfSale: body.domesticPointOfSale,
+      confirmedExistingSetup: true, actorId: body.actorId,
+      idempotencyKey: body.idempotencyKey, occurredAt: new Date().toISOString(),
+      boundaryReader: options.boundaryReader ?? null,
+    })) });
+  }
+
   if (request.method === 'POST' && verificationMatch) {
     requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
     const body = z.object({
@@ -109,6 +135,20 @@ export async function handleArcaOnboardingRoute(
     return json({ data: await service.verifyWsfexApi({
       onboardingId: decodeURIComponent(verificationMatch[1]!),
       issuerProfileRef: body.issuerProfileRef,
+      actorId: body.actorId,
+      idempotencyKey: body.idempotencyKey,
+      occurredAt: new Date().toISOString(),
+    }) });
+  }
+
+  const wsfeVerificationMatch = url.pathname.match(/^\/v1\/arca-onboarding\/runs\/([^/]+)\/api-verification\/wsfe$/);
+  if (request.method === 'POST' && wsfeVerificationMatch) {
+    requireTrustedToken(request, 'x-tax-evidence-ingest-token', options.evidenceIngestToken, 'EVIDENCE_INGEST');
+    const body = z.object({ ...baseMutationSchema, issuerProfileRef: z.string().min(1).max(500), pointOfSale: pointOfSaleSchema.optional() }).strict().parse(await boundedJson(request));
+    return json({ data: await service.verifyWsfeApi({
+      onboardingId: decodeURIComponent(wsfeVerificationMatch[1]!),
+      issuerProfileRef: body.issuerProfileRef,
+      ...(body.pointOfSale === undefined ? {} : { pointOfSale: body.pointOfSale }),
       actorId: body.actorId,
       idempotencyKey: body.idempotencyKey,
       occurredAt: new Date().toISOString(),
@@ -263,15 +303,7 @@ function commandForStep(step: string, raw: unknown): Readonly<{ actorId: string;
       return { actorId: body.actorId, command: { kind: 'record_ws_delegation', ...withoutActor(body) } };
     }
     case 'api_verification': {
-      const body = z.object({
-        ...baseMutationSchema,
-        verifiedServices: z.object({ wsfex: z.boolean(), wsfe: z.boolean() }).strict(),
-        activeExportPointOfSale: pointOfSaleSchema,
-        observedAt: z.iso.datetime({ offset: true }),
-        wsfexReceiptHash: sha256Schema.nullable(),
-        wsfeReceiptHash: sha256Schema.nullable(),
-      }).strict().parse(raw);
-      return { actorId: body.actorId, command: { kind: 'record_api_verification', ...withoutActor(body) } };
+      throw new Error('ARCA_API_VERIFICATION_PROVIDER_REQUIRED');
     }
     case 'zk_evidence':
     case 'ready':

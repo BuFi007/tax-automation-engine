@@ -157,6 +157,20 @@ describe('Factura E agent domain', () => {
     })).toThrow('CAE_PROOF_INVOICE_MISMATCH');
   });
 
+  test('keeps a delegated export intent unapprovable without a valid service period', () => {
+    const withoutPeriod = { ...intent(), servicePeriod: undefined };
+    const run = draftFacturaEIntent(
+      { ...createRun('wsfex_delegated'), readinessState: 'verified' },
+      { intent: withoutPeriod, asOf: '2026-07-11', actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'draft-no-period' }
+    ).run;
+    expect(() => requestFacturaEApproval(run, {
+      actorId: 'agent:tax', occurredAt: now, idempotencyKey: 'approve-no-period',
+    })).toThrow('SERVICE_PERIOD_REQUIRED');
+    expect(validateFacturaEIntent({
+      ...intent(), servicePeriod: { start: '2026-07-31', end: '2026-07-01' },
+    }, '2026-07-11').errors).toContain('SERVICE_PERIOD_INVALID');
+  });
+
   test('keeps WSFEX ambiguous recovery pinned to one request and payload', () => {
     let run = createRun('wsfex_delegated');
     run = { ...run, issuanceState: 'ready_for_wsfex' };

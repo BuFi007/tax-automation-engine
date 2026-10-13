@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
 
-import { signerRequestSchema } from './contracts';
+import { isValidCuit, nextVoucherRequestSchema, signerRequestSchema } from './contracts';
+import { AfipSdkWsfeClient } from './afipsdk';
 import { WsfeSignerService } from './service';
 import { SoapWsfeAuthorityClient } from './soap';
 import { SignerAttemptStore } from './store';
@@ -14,6 +16,18 @@ const apiToken = requiredEnvironment('WSFE_SIGNER_API_TOKEN');
 // is exactly 'production'. Anything else stays on homologation.
 const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
 if (environment === 'production' && process.env.WSFE_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFE_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
+if (environment === 'production' && process.env.WSFE_HOMOLOGATION_POS_PROOF) throw new Error('WSFE_HOMOLOGATION_POS_PROOF_FORBIDDEN');
+const homologationPointOfSaleProof = process.env.WSFE_HOMOLOGATION_POS_PROOF
+  ? z.object({
+      workspaceId: z.string().min(1).max(200),
+      issuerProfileRef: z.string().min(1).max(500),
+      representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+      representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
+      cae: z.string().regex(/^\d{14}$/),
+    }).strict().parse(JSON.parse(process.env.WSFE_HOMOLOGATION_POS_PROOF))
+  : undefined;
+const signerDatabasePath = process.env.WSFE_SIGNER_DB_PATH ?? ':memory:';
+if (signerDatabasePath === ':memory:') throw new Error('WSFE_SIGNER_DURABLE_DB_REQUIRED');
 const vault = new HttpAuthorityPayloadVault({
   baseUrl: requiredEnvironment('WSFE_SIGNER_VAULT_URL'),
   token: requiredEnvironment('WSFE_SIGNER_VAULT_TOKEN'),
@@ -22,12 +36,19 @@ const wsaa = new HttpWsaaTicketBroker({
   baseUrl: requiredEnvironment('WSFE_WSAA_BROKER_URL'),
   token: requiredEnvironment('WSFE_WSAA_BROKER_TOKEN'),
 });
+const authorityProvider = process.env.WSFE_AUTHORITY_PROVIDER ?? 'direct';
+if (authorityProvider !== 'direct' && authorityProvider !== 'afipsdk') throw new Error('WSFE_AUTHORITY_PROVIDER_INVALID');
+if (authorityProvider === 'afipsdk' && process.env.AFIPSDK_WSAA_TICKET_TRANSFER_APPROVED !== 'true')
+  throw new Error('AFIPSDK_WSAA_TICKET_TRANSFER_APPROVAL_REQUIRED');
+const authority = authorityProvider === 'afipsdk'
+  ? new AfipSdkWsfeClient({ accessToken: requiredEnvironment('AFIPSDK_ACCESS_TOKEN'), environment })
+  : new SoapWsfeAuthorityClient(environment);
 const service = new WsfeSignerService(
-  { environment, signerVersion: process.env.WSFE_SIGNER_VERSION ?? '0.1.0' },
-  new SignerAttemptStore(),
+  { environment, signerVersion: process.env.WSFE_SIGNER_VERSION ?? '0.1.0', ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}) },
+  new SignerAttemptStore(signerDatabasePath),
   vault,
   wsaa,
-  new SoapWsfeAuthorityClient(environment)
+  authority
 );
 
 export const server = Bun.serve({
@@ -38,6 +59,18 @@ export const server = Bun.serve({
       if (!authorized(request, apiToken)) return json({ error: 'UNAUTHORIZED' }, 401);
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/health') return json(await service.health());
+      if (request.method === 'POST' && url.pathname === '/v1/wsfev1/params/points-of-sale/discover') {
+        const context = pointOfSaleDiscoveryRequestSchema.parse(await boundedJson(request));
+        return json(await service.discoverPointsOfSale(context, new Date().toISOString()));
+      }
+      if (request.method === 'POST' && url.pathname === '/v1/wsfev1/params/points-of-sale/verify-readback') {
+        const context = pointOfSaleDiscoveryRequestSchema.extend({ pointOfSale: z.literal(1) }).parse(await boundedJson(request));
+        return json(await service.verifyPointOfSaleReadback(context, new Date().toISOString()));
+      }
+      if (request.method === 'POST' && url.pathname === '/v1/wsfev1/params/next-voucher') {
+        const context = nextVoucherRequestSchema.parse(await boundedJson(request));
+        return json(await service.getNextVoucher(context, new Date().toISOString()));
+      }
       if (request.method === 'POST' && url.pathname === '/v1/wsfev1/invoices') {
         const declaredBytes = Number(request.headers.get('content-length') ?? 0);
         if (declaredBytes > 1_048_576) return json({ error: 'SIGNER_REQUEST_TOO_LARGE' }, 413);
@@ -79,6 +112,17 @@ function statusFor(code: string): number {
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
+}
+
+const pointOfSaleDiscoveryRequestSchema = z.object({
+  workspaceId: z.string().min(1).max(200), issuerProfileRef: z.string().min(1).max(500),
+}).strict();
+
+async function boundedJson(request: Request): Promise<unknown> {
+  if (Number(request.headers.get('content-length') ?? 0) > 4096) throw new Error('SIGNER_REQUEST_TOO_LARGE');
+  const body = await request.text();
+  if (Buffer.byteLength(body) > 4096) throw new Error('SIGNER_REQUEST_TOO_LARGE');
+  return JSON.parse(body);
 }
 
 if (import.meta.main) {

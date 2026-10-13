@@ -1,13 +1,31 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { hashCanonical } from '@tax-engine/core';
 
 import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
-import { authorityPayload, certificateBundle, CUIT, NOW, wsfeAuthorityPayload } from './test-fixtures';
+import { authorityPayload, certificateBundle, CUIT, NOW, WSFE_RECEPTOR_CUIT, wsfeAuthorityPayload } from './test-fixtures';
 import type { WsaaLoginClient } from './wsaa';
 
 describe('ARCA authority boundary service', () => {
+  test('clones a sealed BUFI certificate only through the admin delegation path', () => {
+    const fixture = boundary();
+    fixture.service.provisionIssuer(provisionRequest(), NOW.toISOString());
+    const receipt = fixture.service.delegateIssuerFromStoredCertificate({
+      version: 'wsaa-issuer-delegation-v1',
+      templateWorkspaceId: 'workspace-1', templateIssuerProfileRef: 'issuer://workspace-1/primary',
+      workspaceId: 'personal:delegate', issuerProfileRef: 'issuer://delegate/primary',
+      environment: 'homologation', representedCuit: WSFE_RECEPTOR_CUIT,
+    }, NOW.toISOString());
+    expect(receipt.representedCuitCommitment).toMatch(/^[a-f0-9]{64}$/);
+    expect(fixture.service.issuerStatus('personal:delegate', 'issuer://delegate/primary', 'homologation', NOW.toISOString()))
+      .toEqual(expect.objectContaining({ configured: true, representedCuitLast4: WSFE_RECEPTOR_CUIT.slice(-4) }));
+    expect(() => fixture.store.getIssuer('workspace-1', 'issuer://delegate/primary', 'homologation'))
+      .toThrow('WSAA_ISSUER_NOT_FOUND');
+  });
   test('caps the caller-selected minimum retention horizon at seven days', () => {
     const service = boundary().service;
     const request = {
@@ -80,6 +98,56 @@ describe('ARCA authority boundary service', () => {
     await expect(fixture.service.getTicket({
       version: 'wsaa-ticket-request-v1', service: 'wsfex', environment: 'homologation', workspaceId: 'workspace-other', issuerProfileRef: 'issuer://workspace-1/primary',
     }, NOW.toISOString())).rejects.toThrow('WSAA_ISSUER_NOT_FOUND');
+  });
+
+  test('blocks an expired certificate even when the issuer and ticket remain stored', async () => {
+    const fixture = boundary();
+    fixture.service.provisionIssuer(provisionRequest(), NOW.toISOString());
+    const request = {
+      version: 'wsaa-ticket-request-v1' as const,
+      service: 'wsfe' as const,
+      environment: 'homologation' as const,
+      workspaceId: 'workspace-1',
+      issuerProfileRef: 'issuer://workspace-1/primary',
+    };
+    await fixture.service.getTicket(request, NOW.toISOString());
+    await expect(fixture.service.getTicket(request, '2027-07-12T12:00:00.000Z'))
+      .rejects.toThrow('WSAA_CERTIFICATE_NOT_CURRENT');
+  });
+
+  test('reuses an encrypted WSAA ticket after restart and drops it on issuer revocation', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arca-wsaa-ticket-'));
+    const path = join(directory, 'boundary.sqlite');
+    const key = Buffer.alloc(32, 5);
+    const wsaa = new FakeWsaa();
+    const request = {
+      version: 'wsaa-ticket-request-v1' as const,
+      service: 'wsfe' as const,
+      environment: 'homologation' as const,
+      workspaceId: 'workspace-1',
+      issuerProfileRef: 'issuer://workspace-1/primary',
+    };
+    try {
+      const firstStore = new ArcaBoundaryStore(key, path);
+      const firstService = new ArcaBoundaryService(firstStore, wsaa);
+      const issuer = firstService.provisionIssuer(provisionRequest(), NOW.toISOString());
+      const first = await firstService.getTicket(request, NOW.toISOString());
+      firstStore.close();
+
+      const secondStore = new ArcaBoundaryStore(key, path);
+      const secondService = new ArcaBoundaryService(secondStore, wsaa);
+      expect(await secondService.getTicket(request, NOW.toISOString())).toEqual(first);
+      expect(wsaa.calls).toBe(1);
+      const bytes = readdirSync(directory).map(file => readFileSync(join(directory, file)).toString('utf8')).join('');
+      expect(bytes).not.toContain(first.token);
+      expect(bytes).not.toContain(first.sign);
+      expect(bytes).not.toContain(CUIT);
+      secondService.revokeIssuer(issuer.issuerProfileRef, issuer.certificateFingerprint, NOW.toISOString());
+      expect(secondStore.getTicket(hashCanonical({ environment: request.environment, workspaceId: request.workspaceId, issuerProfileRef: request.issuerProfileRef, service: request.service, certificateFingerprint: issuer.certificateFingerprint, representedCuitCommitment: issuer.representedCuitCommitment }), NOW.toISOString())).toBeNull();
+      secondStore.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

@@ -10,6 +10,8 @@ import {
   type PayloadStoreReceipt,
   type PayloadTerminalReceipt,
   type PayloadTerminalRequest,
+  ticketResponseSchema,
+  type TicketResponse,
 } from './contracts';
 import {
   commitRepresentedCuit,
@@ -46,6 +48,7 @@ export class ArcaBoundaryStore {
   readonly #db: Database;
   readonly #payloadKeys: Record<PayloadFamily, Buffer>;
   readonly #issuerKey: Buffer;
+  readonly #ticketKey: Buffer;
   readonly #representedCuitCommitmentKey: Buffer;
 
   constructor(
@@ -61,6 +64,7 @@ export class ArcaBoundaryStore {
       wsfe: deriveDomainKey(masterKey, PAYLOAD_DOMAIN.wsfe),
     };
     this.#issuerKey = deriveDomainKey(masterKey, 'issuer-credentials');
+    this.#ticketKey = deriveDomainKey(masterKey, 'wsaa-tickets');
     if (representedCuitCommitmentKey.length !== 32)
       throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_INVALID');
     this.#representedCuitCommitmentKey = Buffer.from(representedCuitCommitmentKey);
@@ -115,6 +119,12 @@ export class ArcaBoundaryStore {
         active INTEGER NOT NULL,
         stored_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS wsaa_tickets (
+        cache_key TEXT PRIMARY KEY,
+        issuer_profile_ref TEXT NOT NULL,
+        encrypted_ticket TEXT NOT NULL,
+        expires_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS boundary_events (
         event_id TEXT PRIMARY KEY,
@@ -324,7 +334,8 @@ export class ArcaBoundaryStore {
       issuerAad(credential.issuerProfileRef, credential.environment, credential.certificateFingerprint),
       credential
     );
-    this.#db.query(`
+    this.#db.transaction(() => {
+      this.#db.query(`
       INSERT INTO issuer_credentials (
         issuer_profile_ref, workspace_id_hash, environment, certificate_holder_cuit_hash, represented_cuit_hash, represented_cuit_commitment, certificate_fingerprint,
         credential_bundle_hash, encrypted_bundle, delegation_confirmed, active, stored_at, updated_at
@@ -341,7 +352,7 @@ export class ArcaBoundaryStore {
         delegation_confirmed = excluded.delegation_confirmed,
         active = 1,
         updated_at = excluded.updated_at
-    `).run(
+      `).run(
       credential.issuerProfileRef,
       hashCanonical(credential.workspaceId),
       credential.environment,
@@ -354,8 +365,10 @@ export class ArcaBoundaryStore {
       credential.delegationConfirmed ? 1 : 0,
       existing?.stored_at ?? input.occurredAt,
       input.occurredAt
-    );
-    this.appendEvent(existing ? 'wsaa_issuer_rotated' : 'wsaa_issuer_provisioned', hashCanonical(input.credential.issuerProfileRef), input.credential.certificateFingerprint, input.occurredAt);
+      );
+      if (existing) this.deleteIssuerTickets(input.credential.issuerProfileRef);
+      this.appendEvent(existing ? 'wsaa_issuer_rotated' : 'wsaa_issuer_provisioned', hashCanonical(input.credential.issuerProfileRef), input.credential.certificateFingerprint, input.occurredAt);
+    })();
     return {
       version: 'wsaa-issuer-provision-receipt-v1',
       issuerProfileRef: input.credential.issuerProfileRef,
@@ -373,6 +386,21 @@ export class ArcaBoundaryStore {
     return this.openIssuer(row);
   }
 
+  inspectIssuer(workspaceId: string, issuerProfileRef: string, environment: 'homologation' | 'production'): IssuerCredential | null {
+    const row = this.#db.query<IssuerRow, [string]>('SELECT * FROM issuer_credentials WHERE issuer_profile_ref = ?').get(issuerProfileRef);
+    if (!row || row.workspace_id_hash !== hashCanonical(workspaceId) || row.environment !== environment) return null;
+    return { ...this.openIssuer(row), active: Boolean(row.active), delegationConfirmed: Boolean(row.delegation_confirmed) };
+  }
+
+  hasValidTicket(cacheKey: string, occurredAt: string): boolean {
+    const row = this.#db.query<{ encrypted_ticket: string; expires_at: string }, [string]>(
+      'SELECT encrypted_ticket, expires_at FROM wsaa_tickets WHERE cache_key = ?'
+    ).get(cacheKey);
+    if (!row || Date.parse(row.expires_at) <= Date.parse(occurredAt) + 60_000) return false;
+    const ticket = ticketResponseSchema.parse(openJson(this.#ticketKey, `wsaa-ticket:${cacheKey}`, row.encrypted_ticket));
+    return ticket.expiresAt === row.expires_at;
+  }
+
   firstDelegatedIssuer(environment: 'homologation' | 'production'): IssuerCredential | null {
     const row = this.#db.query<IssuerRow, [string]>('SELECT * FROM issuer_credentials WHERE environment = ? AND active = 1 AND delegation_confirmed = 1 ORDER BY updated_at DESC LIMIT 1').get(environment);
     return row ? this.openIssuer(row) : null;
@@ -382,8 +410,38 @@ export class ArcaBoundaryStore {
     const row = this.#db.query<IssuerRow, [string]>('SELECT * FROM issuer_credentials WHERE issuer_profile_ref = ?').get(issuerProfileRef);
     if (!row || row.certificate_fingerprint !== certificateFingerprint) throw new Error('WSAA_ISSUER_REVOCATION_PRECONDITION_FAILED');
     if (!row.active) return;
-    this.#db.query('UPDATE issuer_credentials SET active = 0, delegation_confirmed = 0, updated_at = ? WHERE issuer_profile_ref = ?').run(occurredAt, issuerProfileRef);
-    this.appendEvent('wsaa_issuer_revoked', hashCanonical(issuerProfileRef), certificateFingerprint, occurredAt);
+    this.#db.transaction(() => {
+      this.#db.query('UPDATE issuer_credentials SET active = 0, delegation_confirmed = 0, updated_at = ? WHERE issuer_profile_ref = ?').run(occurredAt, issuerProfileRef);
+      this.deleteIssuerTickets(issuerProfileRef);
+      this.appendEvent('wsaa_issuer_revoked', hashCanonical(issuerProfileRef), certificateFingerprint, occurredAt);
+    })();
+  }
+
+  getTicket(cacheKey: string, occurredAt: string): TicketResponse | null {
+    const row = this.#db.query<{ encrypted_ticket: string; expires_at: string }, [string]>(
+      'SELECT encrypted_ticket, expires_at FROM wsaa_tickets WHERE cache_key = ?'
+    ).get(cacheKey);
+    if (!row) return null;
+    if (Date.parse(row.expires_at) <= Date.parse(occurredAt) + 60_000) {
+      this.#db.query('DELETE FROM wsaa_tickets WHERE cache_key = ?').run(cacheKey);
+      return null;
+    }
+    const ticket = ticketResponseSchema.parse(openJson(this.#ticketKey, `wsaa-ticket:${cacheKey}`, row.encrypted_ticket));
+    if (ticket.expiresAt !== row.expires_at) throw new Error('WSAA_TICKET_BINDING_MISMATCH');
+    return ticket;
+  }
+
+  storeTicket(cacheKey: string, issuerProfileRef: string, ticket: TicketResponse): void {
+    const validated = ticketResponseSchema.parse(ticket);
+    this.#db.query(`
+      INSERT INTO wsaa_tickets (cache_key, issuer_profile_ref, encrypted_ticket, expires_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET encrypted_ticket = excluded.encrypted_ticket, expires_at = excluded.expires_at
+    `).run(cacheKey, issuerProfileRef, sealJson(this.#ticketKey, `wsaa-ticket:${cacheKey}`, validated), validated.expiresAt);
+  }
+
+  private deleteIssuerTickets(issuerProfileRef: string): void {
+    this.#db.query('DELETE FROM wsaa_tickets WHERE issuer_profile_ref = ?').run(issuerProfileRef);
   }
 
   appendTicketEvent(issuerProfileRef: string, ticketHash: string, occurredAt: string): void {
@@ -394,6 +452,7 @@ export class ArcaBoundaryStore {
     this.#db.close();
     for (const key of Object.values(this.#payloadKeys)) key.fill(0);
     this.#issuerKey.fill(0);
+    this.#ticketKey.fill(0);
     this.#representedCuitCommitmentKey.fill(0);
   }
 
@@ -407,6 +466,7 @@ export class ArcaBoundaryStore {
     } as IssuerCredential;
     if (
       credential.issuerProfileRef !== row.issuer_profile_ref
+      || hashCanonical(credential.workspaceId) !== row.workspace_id_hash
       || credential.environment !== row.environment
       || credential.certificateFingerprint !== row.certificate_fingerprint
       || hashCanonical(credential.certificateHolderCuit) !== row.certificate_holder_cuit_hash

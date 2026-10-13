@@ -5,18 +5,25 @@ import {
 } from '@tax-engine/core';
 import { ContabiliumSandboxProvider } from '@tax-engine/erp';
 import { z } from 'zod';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { applyCors } from './cors';
 import { handleAgentRoute } from './agent-routes';
 import { FacturaEAgentService } from './factura-e-agent';
 import { HttpReclaimProofVault } from './proof-vault';
 import { ReclaimProtocolGateway } from './reclaim';
-import { TaxProfileStore } from './store';
+import { TaxProfileStore, resolveTaxEngineDatabasePath } from './store';
+import { ArcaIssuerProfileRegistry } from './arca-issuer-profile-registry';
 import { HttpWsfexGateway } from './wsfex';
+import { HttpWsfePointOfSaleGateway } from './wsfe';
 import { HttpAuthorityPayloadWriter } from './authority-payload';
 import { ArcaOnboardingService } from './arca-onboarding';
 import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
+import { HttpArcaBoundaryStatusReader, issuerAcceptanceForPrincipal, latestArcaConnectionProjectionForPrincipal, latestPrivateArcaConnectionProjection, privateArcaConnectionProjection, revokeArcaConnectionForPrincipal } from './arca-connection-projection';
+import { PersonalWsfeAttemptStore } from './personal-wsfe-attempt';
+import { handleWsfeAttemptRoute } from './wsfe-attempt-routes';
+import { arcaFiscalBetaFromEnvironment } from './arca-fiscal-beta';
 import { TaxEvidenceWorkspaceService } from './evidence-workspace';
 import { handleTaxEvidenceRoute } from './evidence-routes';
 import {
@@ -77,6 +84,7 @@ import { readBoundedBody } from './bounded-body';
 import { handleAccountantMandateRoute } from './accountant-mandate-routes';
 import { handleExternalAccountantDecisionRoute } from './accountant-decision-routes';
 import { handleAccountantReviewRoute } from './accountant-review-routes';
+import { handleAccountantInvoiceRoute } from './accountant-invoice-routes';
 import {
   assertNoTaxEngineFundingAuthority,
   resolveArgentinaLaunchPolicyReadiness,
@@ -99,6 +107,25 @@ const snapshotProjectorToken = process.env.TAX_ENGINE_SNAPSHOT_PROJECTOR_TOKEN ?
 const userPrincipalSecret = process.env.TAX_ENGINE_USER_PRINCIPAL_HMAC_SECRET ?? null;
 const motoraOnboardingPrincipalSecret =
   process.env.TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET ?? null;
+const deskArcaProjectionPrincipalSecret =
+  process.env.TAX_ENGINE_DESK_ARCA_PROJECTION_PRINCIPAL_HMAC_SECRET ?? null;
+const deskArcaIssuePrincipalSecret =
+  process.env.TAX_ENGINE_DESK_ARCA_ISSUE_PRINCIPAL_HMAC_SECRET ?? null;
+const fiscalBeta = arcaFiscalBetaFromEnvironment();
+const personalWsfeEnabled = process.env.ARCA_FISCAL_BETA_ENABLED === 'true';
+if (deskArcaProjectionPrincipalSecret && (
+  Buffer.byteLength(deskArcaProjectionPrincipalSecret) < 32
+  || deskArcaProjectionPrincipalSecret === motoraOnboardingPrincipalSecret
+)) throw new Error('TAX_ENGINE_DESK_ARCA_PROJECTION_PRINCIPAL_CONFIGURATION_INVALID');
+if (personalWsfeEnabled && (
+  !deskArcaIssuePrincipalSecret || Buffer.byteLength(deskArcaIssuePrincipalSecret) < 32
+  || deskArcaIssuePrincipalSecret === deskArcaProjectionPrincipalSecret
+  || deskArcaIssuePrincipalSecret === motoraOnboardingPrincipalSecret
+  || deskArcaIssuePrincipalSecret === userPrincipalSecret
+  || fiscalBeta.deploymentEnvironment !== 'development'
+  || fiscalBeta.authorityEnvironment !== 'homologation'
+)) throw new Error('TAX_PERSONAL_WSFE_CONFIGURATION_INVALID');
+const arcaBoundaryStatusReader = HttpArcaBoundaryStatusReader.fromEnvironment();
 const accountantDecisionPrincipalSecret =
   process.env.TAX_ENGINE_ACCOUNTANT_DECISION_PRINCIPAL_HMAC_SECRET ?? null;
 const accountantDecisionIngressEnabled =
@@ -197,6 +224,7 @@ if (process.env.NODE_ENV === 'production') {
   const tenantSecrets = [
     userPrincipalSecret,
     motoraOnboardingPrincipalSecret,
+    deskArcaProjectionPrincipalSecret,
     ...(accountantDecisionIngressEnabled ? [accountantDecisionPrincipalSecret] : []),
     snapshotProjectorPrincipalSecret,
     evidencePublisherPrincipalSecret,
@@ -341,13 +369,23 @@ const taxBrowserSnapshots = new TaxBrowserSnapshotService(
 const argentinaErp = new ContabiliumSandboxProvider(null);
 const reclaimGateway = ReclaimProtocolGateway.fromEnvironment();
 const wsfexGateway = HttpWsfexGateway.fromEnvironment();
+const wsfePointOfSaleGateway = HttpWsfePointOfSaleGateway.fromEnvironment();
+const personalWsfeAttempts = personalWsfeEnabled
+  ? new PersonalWsfeAttemptStore(process.env.TAX_WSFE_DB_PATH ?? process.env.TAX_PERSONAL_WSFE_DB_PATH ?? '')
+  : null;
 const arcaEnvironment = arcaProductionAuthority ? 'production' as const : 'homologacion' as const;
 const proofVault = HttpReclaimProofVault.fromEnvironment();
 const proofCustodyRequired = process.env.RECLAIM_PROOF_CUSTODY_REQUIRED === 'true';
 const authorityPayloadWriter = HttpAuthorityPayloadWriter.fromEnvironment();
 const externalAuthorityPreparation = HttpFacturaEAuthorityPreparationGateway.fromEnvironment();
 const deskFacturaEPrivateData = HttpDeskFacturaEPrivateDataGateway.fromEnvironment();
-const issuerProfileRegistry = TaxOwnedFacturaEAuthorityPreparationGateway.profileRegistryFromEnvironment();
+const issuerProfileRegistry = new ArcaIssuerProfileRegistry(
+  resolveTaxEngineDatabasePath(),
+  TaxOwnedFacturaEAuthorityPreparationGateway.profileRegistryFromEnvironment() ?? new Map(),
+);
+if (personalWsfeEnabled && (!wsfePointOfSaleGateway || !authorityPayloadWriter)) {
+  throw new Error('TAX_PERSONAL_WSFE_CONFIGURATION_REQUIRED');
+}
 let facturaEFeatures: FacturaEFeaturePublicationStore | null = null;
 const facturaEFeatureMutationFence = createLateBoundFacturaEFeatureMutationFence({
   enabled: () => facturaEFeatureEnabled,
@@ -377,7 +415,7 @@ const taxOwnedAuthorityPreparation =
 const authorityPreparation = taxOwnedAuthorityPreparation ?? externalAuthorityPreparation;
 const facturaEAuthorityStore = new FacturaEAuthorityExecutionStore(
   process.env.TAX_AUTHORITY_EXECUTION_DB_PATH ?? ':memory:',
-  (process.env.NODE_ENV === 'production' || arcaProductionAuthority)
+  (process.env.NODE_ENV === 'production' || arcaProductionAuthority || fiscalBeta.enabled)
     && (authorityCorridorEnabled || authorityRemoteEffectsEnabled || facturaEFeatureEnabled)
 );
 if (
@@ -446,6 +484,7 @@ const arcaOnboarding = new ArcaOnboardingService(
   proofVault,
   proofCustodyRequired,
   wsfexGateway,
+  wsfePointOfSaleGateway,
 );
 const jurisdictionSchema = z.enum(['AR', 'US']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
@@ -476,6 +515,28 @@ export const server = Bun.serve({
     if (request.method === 'OPTIONS') return applyCors(new Response(null, { status: 204 }), request);
 
     try {
+      if (request.method === 'POST' && url.pathname === '/v1/arca-onboarding/issuer-bindings') {
+        const adminToken = process.env.TAX_ARCA_ISSUER_BINDING_ADMIN_TOKEN;
+        if (!adminToken || !safeBearerToken(request, adminToken))
+          return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
+        if (!arcaBoundaryStatusReader)
+          throw new Error('ARCA_BOUNDARY_STATUS_CONFIGURATION_REQUIRED');
+        const body = z.object({
+          onboardingId: z.uuid(),
+          issuerProfileRef: z.string().regex(/^[A-Za-z0-9._:/-]{1,500}$/),
+        }).strict().parse(JSON.parse(await readBoundedBody(request, 2048, 'ARCA_ISSUER_BINDING_REQUEST_TOO_LARGE')) as unknown);
+        const run = arcaOnboarding.getRun(body.onboardingId);
+        if (run.environment !== 'homologation' || run.status === 'failed')
+          throw new Error('ARCA_ISSUER_BINDING_RUN_INVALID');
+        const boundary = await arcaBoundaryStatusReader.read(run.workspaceId, body.issuerProfileRef);
+        if (boundary.workspaceId !== run.workspaceId || boundary.issuerProfileRef !== body.issuerProfileRef
+          || boundary.environment !== 'homologation' || !boundary.configured || !boundary.active
+          || !boundary.delegationConfirmed || !boundary.certificate.current
+          || boundary.taxpayerReferenceHash !== run.taxpayerReferenceHash)
+          throw new Error('ARCA_ISSUER_BINDING_BOUNDARY_MISMATCH');
+        issuerProfileRegistry.bind(run.workspaceId, body.issuerProfileRef, new Date().toISOString());
+        return applyCors(json({ data: { bound: true, workspaceId: run.workspaceId } }), request);
+      }
       if (url.pathname === '/v1/reclaim/arca-onboarding/callback') {
         const callbackResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
@@ -512,6 +573,55 @@ export const server = Bun.serve({
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
       if (
+        request.method === 'GET'
+        && (url.pathname === '/v1/arca-onboarding/private-connection-projection'
+          || /^\/v1\/arca-onboarding\/runs\/[^/]+\/private-connection-projection$/.test(url.pathname))
+      ) {
+        const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
+          request, deskArcaProjectionPrincipalSecret, 'arca:onboard',
+        );
+        const projection = url.pathname === '/v1/arca-onboarding/private-connection-projection'
+          ? await latestPrivateArcaConnectionProjection(request, url, scopedPrincipal, arcaOnboarding, issuerProfileRegistry, arcaBoundaryStatusReader)
+          : await privateArcaConnectionProjection(request, url, scopedPrincipal, arcaOnboarding, issuerProfileRegistry, arcaBoundaryStatusReader);
+        return applyCors(json(projection), request);
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/arca-onboarding/issuer-acceptance') {
+        const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
+          request, deskArcaProjectionPrincipalSecret, 'arca:onboard',
+        );
+        if (url.searchParams.size !== 1) throw new Error('ARCA_ISSUER_ACCEPTANCE_INVALID_REQUEST');
+        const onboardingId = z.uuid().parse(url.searchParams.get('onboardingId'));
+        const result = await issuerAcceptanceForPrincipal(
+          scopedPrincipal, onboardingId, arcaOnboarding, issuerProfileRegistry, arcaBoundaryStatusReader,
+        );
+        return applyCors(json(result), request);
+      }
+      if (request.method === 'POST'
+        && url.pathname === '/v1/arca-onboarding/connection/revoke') {
+        const rawBody = await readBoundedBody(request, 1024, 'ARCA_CONNECTION_REVOKE_REQUEST_TOO_LARGE');
+        const scopedPrincipal = verifyBoundTaxTenantPrincipalForRawBody(
+          request, rawBody, deskArcaProjectionPrincipalSecret, 'arca:onboard',
+        );
+        const expected = z.object({
+          issuerProfileRef: z.string().min(1).max(500),
+          certificateFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+        }).strict().parse(JSON.parse(rawBody) as unknown);
+        const result = await revokeArcaConnectionForPrincipal(
+          scopedPrincipal, expected, issuerProfileRegistry, arcaBoundaryStatusReader,
+          process.env.ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN ?? null,
+        );
+        issuerProfileRegistry.unbind(scopedPrincipal.workspaceId, expected.issuerProfileRef);
+        return applyCors(json({ data: result }), request);
+      }
+      const wsfeResponse = await handleWsfeAttemptRoute(request, url, {
+        principalSecret: deskArcaIssuePrincipalSecret, beta: fiscalBeta,
+        attempts: personalWsfeAttempts, signer: wsfePointOfSaleGateway, vault: authorityPayloadWriter,
+        projection: async principal => (await latestArcaConnectionProjectionForPrincipal(
+          principal, arcaOnboarding, issuerProfileRegistry, arcaBoundaryStatusReader,
+        )).data,
+      });
+      if (wsfeResponse) return applyCors(wsfeResponse, request);
+      if (
         /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
         && request.headers.has('x-tax-tenant-principal')
       ) {
@@ -524,7 +634,8 @@ export const server = Bun.serve({
           request,
           url,
           arcaOnboarding,
-          { userApprovalToken, evidenceIngestToken, tenantPrincipal: scopedPrincipal },
+          { userApprovalToken, evidenceIngestToken, tenantPrincipal: scopedPrincipal,
+            issuerProfiles: issuerProfileRegistry, boundaryReader: arcaBoundaryStatusReader },
         );
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
@@ -555,13 +666,30 @@ export const server = Bun.serve({
         );
         return applyCors(scopedResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
       }
+      if (request.method === 'POST' && url.pathname === '/v1/accountant-invoice-approvals') {
+        if (!accountantDecisionIngressEnabled) throw new Error('ACCOUNTANT_DECISION_CONFIGURATION_REQUIRED');
+        const rawBody = await readBoundedBody(request, 16 * 1024, 'ACCOUNTANT_INVOICE_REQUEST_TOO_LARGE');
+        const scopedPrincipal = verifyBoundTaxTenantPrincipalForRawBody(
+          request, rawBody, accountantDecisionPrincipalSecret, 'accountant:decision',
+        );
+        const response = await handleAccountantInvoiceRoute(
+          request, url, store, facturaEAgent, scopedPrincipal, new Date(), rawBody,
+        );
+        return applyCors(response ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
       const authorityCorridorResponse = await handleFacturaEAuthorityCorridorRoute(
         request,
         url,
         facturaEAuthorityExecution,
         {
           corridorEnabled: authorityCorridorEnabled,
+          beta: fiscalBeta,
           secrets: authorityPrincipalSecrets,
+          agent: facturaEAgent,
+          store,
+          ...(deskFacturaEPrivateData ? { commercialGateway: deskFacturaEPrivateData } : {}),
+          ...(issuerProfileRegistry ? { issuerProfiles: issuerProfileRegistry } : {}),
+          environment: arcaAuthorityEnvironment,
         }
       );
       if (authorityCorridorResponse)
@@ -578,6 +706,18 @@ export const server = Bun.serve({
       );
       if (featureResponse) return applyCors(featureResponse, request);
       if (!authorized(request)) return applyCors(json({ error: 'UNAUTHORIZED' }, 401), request);
+      if (request.method === 'POST'
+        && (url.pathname === '/v1/accountant-mandates'
+          || /^\/v1\/accountant-mandates\/[^/]+\/revoke$/.test(url.pathname))) {
+        const rawBody = await readBoundedBody(request, 64 * 1024, 'ACCOUNTANT_MANDATE_REQUEST_TOO_LARGE');
+        const principal = verifyBoundTaxTenantPrincipalForRawBody(
+          request, rawBody, userPrincipalSecret, 'accountant:mandate',
+        );
+        const response = await handleAccountantMandateRoute(
+          request, url, store, principal, new Date(), rawBody,
+        );
+        return applyCors(response ?? json({ error: 'NOT_FOUND' }, 404), request);
+      }
       const tenantCapability = /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
         || url.pathname === '/v1/accountant-decisions'
         ? null
@@ -601,6 +741,10 @@ export const server = Bun.serve({
         tenantPrincipal,
       );
       if (accountantReviewResponse) return applyCors(accountantReviewResponse, request);
+      const accountantInvoiceResponse = await handleAccountantInvoiceRoute(
+        request, url, store, facturaEAgent, tenantPrincipal,
+      );
+      if (accountantInvoiceResponse) return applyCors(accountantInvoiceResponse, request);
       const onboardingResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, {
         userApprovalToken,
         evidenceIngestToken,
@@ -732,6 +876,13 @@ export const server = Bun.serve({
 function authorized(request: Request): boolean {
   if (!apiKey) return true;
   return request.headers.get('authorization') === `Bearer ${apiKey}`;
+}
+
+function safeBearerToken(request: Request, expected: string): boolean {
+  const actual = request.headers.get('authorization')?.replace(/^Bearer\s+/, '') ?? '';
+  const a = createHash('sha256').update(actual).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return actual.length > 0 && timingSafeEqual(a, b);
 }
 
 function json(value: unknown, status = 200): Response {

@@ -4,6 +4,7 @@ import { hashCanonical } from '@tax-engine/core';
 
 const RECONCILIATION_LEASE_MS = 30_000;
 const RECOVERY_LEASE_MS = 30_000;
+const PREPARATION_RESUME_AFTER_MS = 30_000;
 
 export type FacturaEAuthorityExecutionState =
   | 'intent_persisted'
@@ -65,6 +66,19 @@ export type SafeFacturaEAuthorityExecutionReceipt = Readonly<{
     | 'recover_exactly'
     | 'reconcile_authority_exactly'
     | 'none';
+}>;
+
+export type ReconciledFacturaEExecution = Readonly<{
+  executionId: string;
+  workspaceId: string;
+  runId: string;
+  intentHash: string;
+  authorityEnvironment: 'homologation' | 'production' | 'unbound';
+  authorityProviderId: string;
+  requestId: string | null;
+  authorityPayloadReferenceHash: string | null;
+  receiptHash: string | null;
+  authorityIdentityHash: string | null;
 }>;
 
 export type FacturaEAuthorityEffectPreparation = Readonly<{
@@ -284,6 +298,39 @@ export class FacturaEAuthorityExecutionStore {
     return row ? recordFromRow(row) : null;
   }
 
+  reconciledForRun(workspaceId: string, runId: string): ReconciledFacturaEExecution | null {
+    const rows = this.#db.query<{
+      execution_id: string; workspace_id: string; run_id: string; intent_hash: string;
+      authority_environment: string; authority_provider_id: string;
+      request_id: string | null; authority_payload_ref: string | null;
+      receipt_hash: string | null;
+      authority_identity_hash: string | null;
+    }, [string, string]>(`
+      SELECT execution_id, workspace_id, run_id, intent_hash,
+             authority_environment, authority_provider_id, request_id,
+             authority_payload_ref,
+             receipt_hash, authority_identity_hash
+      FROM factura_e_authority_executions
+      WHERE workspace_id = ? AND run_id = ? AND state = 'officially_reconciled'
+      LIMIT 2
+    `).all(workspaceId, runId);
+    if (rows.length > 1) throw new Error('TAX_AUTHORITY_RUN_EXECUTION_CONFLICT');
+    const row = rows[0];
+    return row ? {
+      executionId: row.execution_id,
+      workspaceId: row.workspace_id,
+      runId: row.run_id,
+      intentHash: row.intent_hash,
+      authorityEnvironment: authorityEnvironment(row.authority_environment),
+      authorityProviderId: row.authority_provider_id,
+      requestId: row.request_id,
+      authorityPayloadReferenceHash: row.authority_payload_ref
+        ? hashCanonical(row.authority_payload_ref) : null,
+      receiptHash: row.receipt_hash,
+      authorityIdentityHash: row.authority_identity_hash,
+    } : null;
+  }
+
   create(input: Readonly<{
     workspaceId: string;
     runId: string;
@@ -447,7 +494,8 @@ export class FacturaEAuthorityExecutionStore {
   prepared(
     executionId: string,
     preparation: FacturaEAuthorityEffectPreparation,
-    occurredAt: string
+    occurredAt: string,
+    resume = false
   ): FacturaEAuthorityExecutionRecord {
     if (!/^vault:\/\/[A-Za-z0-9._:/-]+$/.test(preparation.authorityPayloadRef))
       throw new Error('TAX_AUTHORITY_PAYLOAD_REFERENCE_INVALID');
@@ -457,13 +505,36 @@ export class FacturaEAuthorityExecutionStore {
       throw new Error('TAX_AUTHORITY_REQUEST_ID_INVALID');
     return this.#db.transaction(() => {
       const current = this.required(executionId);
+      if (
+        preparation.executionId !== executionId ||
+        preparation.workspaceId !== current.workspaceId ||
+        preparation.runId !== current.runId ||
+        preparation.intentHash !== current.intentHash
+      )
+        throw new Error('TAX_AUTHORITY_PREPARATION_BINDING_MISMATCH');
       if (current.state === 'prepared') {
         if (
           current.requestId !== preparation.requestId ||
           current.authorityPayloadRef !== preparation.authorityPayloadRef ||
           current.authorityPayloadHash !== preparation.authorityPayloadHash
-        )
-          throw new Error('TAX_AUTHORITY_PREPARATION_CONFLICT');
+        ) {
+          if (!resume) throw new Error('TAX_AUTHORITY_PREPARATION_CONFLICT');
+          const updated = this.#db.query(`
+            UPDATE factura_e_authority_executions
+            SET request_id = ?, authority_payload_ref = ?, authority_payload_hash = ?, updated_at = ?
+            WHERE execution_id = ? AND state = 'prepared'
+          `).run(
+            preparation.requestId,
+            preparation.authorityPayloadRef,
+            preparation.authorityPayloadHash,
+            occurredAt,
+            executionId
+          );
+          if (updated.changes !== 1) throw new Error('TAX_AUTHORITY_PREPARATION_STATE_CONFLICT');
+          this.audit(executionId, current.workspaceId, current.createdByActorHash,
+            'renew_private_authority_payload', 'prepared', preparation.authorityPayloadHash, occurredAt);
+          return this.required(executionId);
+        }
         return current;
       }
       if (current.state !== 'preparing')
@@ -951,6 +1022,15 @@ export class FacturaEAuthorityExecutionService {
     return record ? safeReceipt(record, false) : null;
   }
 
+  exactStatus(workspaceId: string, executionId: string): SafeFacturaEAuthorityExecutionReceipt | null {
+    const record = this.store.get(executionId);
+    return record?.workspaceId === workspaceId ? safeReceipt(record, false) : null;
+  }
+
+  reconciledForRun(workspaceId: string, runId: string): ReconciledFacturaEExecution | null {
+    return this.store.reconciledForRun(workspaceId, runId);
+  }
+
   createIntent(input: Readonly<{
     workspaceId: string;
     runId: string;
@@ -998,6 +1078,14 @@ export class FacturaEAuthorityExecutionService {
     this.assertCurrentAuthorityContext(input.executionId);
     const begun = this.store.beginExecution(input);
     let record = begun.record;
+    // A replay while the first preparation is still live must wait. After a
+    // stalled preparation, the same key may resume before any ARCA dispatch.
+    if (
+      begun.replayed &&
+      (record.state === 'preparing' || record.state === 'prepared') &&
+      !canResumePreparation(record, Date.parse(input.occurredAt))
+    )
+      return safeReceipt(record, true, Date.parse(input.occurredAt));
     if (
       record.state === 'authority_accepted_unverified' ||
       record.state === 'rejected' ||
@@ -1006,7 +1094,7 @@ export class FacturaEAuthorityExecutionService {
       return safeReceipt(record, true);
     if (record.state === 'dispatching' || record.state === 'recovering')
       return safeReceipt(record, true);
-    if (record.state === 'preparing') {
+    if (record.state === 'preparing' || (record.state === 'prepared' && begun.replayed)) {
       const prepared = await this.effect.prepare({
         executionId: record.executionId,
         workspaceId: record.workspaceId,
@@ -1014,7 +1102,7 @@ export class FacturaEAuthorityExecutionService {
         intentHash: record.intentHash,
         idempotencyKey: `${record.executionId}:prepare`,
       });
-      record = this.store.prepared(record.executionId, prepared, input.occurredAt);
+      record = this.store.prepared(record.executionId, prepared, input.occurredAt, begun.replayed);
     }
     if (record.state !== 'prepared')
       throw new Error('TAX_AUTHORITY_EXECUTION_STATE_CONFLICT');
@@ -1144,7 +1232,8 @@ function privatePreparation(
 
 function safeReceipt(
   record: FacturaEAuthorityExecutionRecord,
-  replayed: boolean
+  replayed: boolean,
+  nowMs = Date.now()
 ): SafeFacturaEAuthorityExecutionReceipt {
   const state = safeState(record.state);
   return {
@@ -1165,9 +1254,21 @@ function safeReceipt(
               : state === 'reconciliation_required'
                 ? 'reconcile_authority_exactly'
             : state === 'effect_pending'
-              ? 'wait'
+              ? canResumePreparation(record, nowMs)
+                ? 'execute_with_one_use_approval'
+                : 'wait'
               : 'none',
   };
+}
+
+function canResumePreparation(record: FacturaEAuthorityExecutionRecord, nowMs: number): boolean {
+  const updatedAtMs = Date.parse(record.updatedAt);
+  return (
+    (record.state === 'preparing' || record.state === 'prepared') &&
+    Number.isFinite(nowMs) &&
+    Number.isFinite(updatedAtMs) &&
+    nowMs - updatedAtMs >= PREPARATION_RESUME_AFTER_MS
+  );
 }
 
 function safeState(

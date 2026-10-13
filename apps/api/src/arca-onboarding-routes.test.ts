@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { HUMAN_AUTH_CAPTURE_POLICY_HASH } from '@tax-engine/core';
+import { HUMAN_AUTH_CAPTURE_POLICY_HASH, hashCanonical, hashTaxEvidenceConsentScope } from '@tax-engine/core';
 
 import { ArcaOnboardingService } from './arca-onboarding';
+import { HttpArcaBoundaryStatusReader } from './arca-connection-projection';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
 import { TaxProfileStore } from './store';
 
@@ -89,6 +90,13 @@ describe('ARCA onboarding HTTP boundary', () => {
   test('requires a trusted evidence channel for authoritative API verification', async () => {
     const request = jsonRequest('/v1/arca-onboarding/runs/60000000-0000-4000-8000-000000000010/steps/api_verification', {});
     expect(handle(request)).rejects.toThrow('EVIDENCE_INGEST_CONFIGURATION_REQUIRED');
+    const forged = jsonRequest('/v1/arca-onboarding/runs/60000000-0000-4000-8000-000000000010/steps/api_verification', {
+      actorId: 'system:authority', idempotencyKey: 'forged-manual-receipts',
+      verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 2, activeDomesticPointOfSale: 1,
+      observedAt: new Date().toISOString(), wsfexReceiptHash: 'a'.repeat(64), wsfeReceiptHash: 'b'.repeat(64),
+    }, { 'x-tax-evidence-ingest-token': 'trusted-token' });
+    expect(handle(forged, { userApprovalToken: null, evidenceIngestToken: 'trusted-token' }))
+      .rejects.toThrow('ARCA_API_VERIFICATION_PROVIDER_REQUIRED');
   });
 
   test('requires a trusted evidence channel for authoritative WSFEX verification', async () => {
@@ -97,6 +105,82 @@ describe('ARCA onboarding HTTP boundary', () => {
       {}
     );
     expect(handle(request)).rejects.toThrow('EVIDENCE_INGEST_CONFIGURATION_REQUIRED');
+  });
+
+  test('requires a trusted evidence channel for authoritative WSFE verification', async () => {
+    const request = jsonRequest(
+      '/v1/arca-onboarding/runs/60000000-0000-4000-8000-000000000010/api-verification/wsfe',
+      {},
+    );
+    expect(handle(request)).rejects.toThrow('EVIDENCE_INGEST_CONFIGURATION_REQUIRED');
+  });
+
+  test('never imports an existing issuer from an unscoped browser request', async () => {
+    const service = new ArcaOnboardingService(new TaxProfileStore(':memory:'), null, null, false);
+    const id = '60000000-0000-4000-8000-000000000017';
+    service.createRun({ onboardingId: id, workspaceId: 'workspace-1', taxpayerReferenceHash: 'a'.repeat(64),
+      environment: 'homologation', requestedServices: ['wsfex'], actorId: 'user:owner',
+      idempotencyKey: 'create-existing-run', occurredAt: '2026-09-23T12:00:00.000Z' });
+    const path = `/v1/arca-onboarding/runs/${id}/existing-issuer`;
+    const request = jsonRequest(path, { actorId: 'user:owner',
+      idempotencyKey: 'import-existing-run', confirmedExistingSetup: true,
+      exportPointOfSale: 2, domesticPointOfSale: null });
+    await expect(handleArcaOnboardingRoute(request, new URL(request.url), service,
+      { userApprovalToken: 'user-token', evidenceIngestToken: null }))
+      .rejects.toThrow('ARCA_EXISTING_ISSUER_SCOPED_PRINCIPAL_REQUIRED');
+    expect(service.getRun(id).currentStep).toBe('login_handoff');
+  });
+
+  test('imports a tenant-bound issuer through the browser route without exposing private evidence', async () => {
+    const store = new TaxProfileStore(':memory:');
+    const now = new Date().toISOString();
+    const hash = hashCanonical;
+    store.appendEvidenceConsentEvent({ version: 'tax-evidence-consent-event-v1',
+      eventId: '70000000-0000-4000-8000-000000000099', workspaceId: 'workspace-1',
+      sequence: 1, action: 'grant', authoritySource: 'desk_subscription',
+      actorReferenceHash: hash('user:owner'), consent: { purpose: 'tax_workspace_processing',
+        version: 'consent-v1', sourceIds: ['arca-onboarding'],
+        scopeHash: hashTaxEvidenceConsentScope('consent-v1', ['arca-onboarding']) }, occurredAt: now });
+    const gateway = {
+      async discoverPointsOfSale() {
+        const receipt = { version: 'arca-wsfex-point-of-sale-discovery-v1' as const,
+          environment: 'homologation' as const, workspaceId: 'workspace-1',
+          issuerProfileReferenceHash: hash('vault://issuer/1'),
+          representedCuitCommitment: hash('represented-cuit'), activePoints: [2],
+          authorityResponseHash: hash('official-points'), observedAt: now };
+        return { ...receipt, evidenceHash: hash(receipt) };
+      },
+      async verifyPointOfSaleReadback(): Promise<never> { throw new Error('unexpected readback'); },
+    };
+    const service = new ArcaOnboardingService(store, null, null, false, gateway, null);
+    const id = '60000000-0000-4000-8000-000000000018';
+    service.createRun({ onboardingId: id, workspaceId: 'workspace-1',
+      taxpayerReferenceHash: hash('taxpayer'), environment: 'homologation',
+      requestedServices: ['wsfex'], actorId: 'user:owner', idempotencyKey: 'create-route-import',
+      occurredAt: now });
+    const boundaryReader = new HttpArcaBoundaryStatusReader('status-token', 'https://boundary.test',
+      async () => Response.json({ version: 'wsaa-issuer-status-v1', workspaceId: 'workspace-1',
+        issuerProfileRef: 'vault://issuer/1', environment: 'homologation', configured: true,
+        active: true, delegationConfirmed: true, certificateFingerprint: hash('certificate'),
+        representedCuitCommitment: hash('represented-cuit'), taxpayerReferenceHash: hash('taxpayer'),
+        representedCuitLast4: '4039', certificate: { current: true,
+          validFrom: new Date(Date.now() - 86_400_000).toISOString(),
+          validUntil: new Date(Date.now() + 86_400_000).toISOString() } }));
+    const path = `/v1/arca-onboarding/runs/${id}/existing-issuer`;
+    const request = jsonRequest(path, { actorId: 'user:owner',
+      idempotencyKey: 'route-import', confirmedExistingSetup: true,
+      exportPointOfSale: 2, domesticPointOfSale: null });
+    const response = await handleArcaOnboardingRoute(request, new URL(request.url), service, {
+      userApprovalToken: null, evidenceIngestToken: null,
+      tenantPrincipal: { version: 'tax-tenant-principal-v3', workspaceId: 'workspace-1',
+        actorId: 'user:owner', capability: 'arca:onboard', method: 'POST', path,
+        bodyHash: '0'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      issuerProfiles: new Map([['workspace-1', 'vault://issuer/1']]), boundaryReader,
+    });
+    expect(response?.status).toBe(200);
+    const payload = await response?.json();
+    expect(payload.data.run.apiVerification.wsfex).toBe(true);
+    expect(JSON.stringify(payload)).not.toMatch(/certificateFingerprint|taxpayerReferenceHash|representedCuitCommitment|boundaryReceiptHash/);
   });
 
   test('rejects a Reclaim callback without its bound session header', async () => {

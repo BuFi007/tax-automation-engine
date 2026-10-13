@@ -28,6 +28,8 @@ export function rotateBoundaryMasterKey(input: Readonly<{
   const newPayloadKeys = payloadKeys(input.newMasterKey);
   const oldIssuerKey = deriveDomainKey(input.oldMasterKey, 'issuer-credentials');
   const newIssuerKey = deriveDomainKey(input.newMasterKey, 'issuer-credentials');
+  const oldTicketKey = deriveDomainKey(input.oldMasterKey, 'wsaa-tickets');
+  const newTicketKey = deriveDomainKey(input.newMasterKey, 'wsaa-tickets');
   let committed = false;
   try {
     database.exec('PRAGMA secure_delete = ON');
@@ -38,6 +40,10 @@ export function rotateBoundaryMasterKey(input: Readonly<{
     const issuers = database.query<{ issuer_profile_ref: string; environment: string; certificate_fingerprint: string; encrypted_bundle: string }, []>(
       'SELECT issuer_profile_ref, environment, certificate_fingerprint, encrypted_bundle FROM issuer_credentials'
     ).all();
+    const hasTickets = !!database.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wsaa_tickets'").get();
+    const tickets = hasTickets ? database.query<{ cache_key: string; encrypted_ticket: string }, []>(
+      'SELECT cache_key, encrypted_ticket FROM wsaa_tickets'
+    ).all() : [];
     const rotatedPayloads = payloads.map(row => {
       const family = referenceFamily(row.reference);
       const aad = payloadAad(row.reference, row.payload_hash);
@@ -50,6 +56,11 @@ export function rotateBoundaryMasterKey(input: Readonly<{
       const value = openJson(oldIssuerKey, aad, row.encrypted_bundle);
       return { issuerProfileRef: row.issuer_profile_ref, encrypted: sealJson(newIssuerKey, aad, value) };
     });
+    const rotatedTickets = tickets.map(row => {
+      const aad = `wsaa-ticket:${row.cache_key}`;
+      const value = openJson(oldTicketKey, aad, row.encrypted_ticket);
+      return { cacheKey: row.cache_key, encrypted: sealJson(newTicketKey, aad, value) };
+    });
     if (input.dryRun) {
       database.exec('ROLLBACK');
       return { payloadsValidated: payloads.length, issuersValidated: issuers.length, rotated: false };
@@ -58,6 +69,10 @@ export function rotateBoundaryMasterKey(input: Readonly<{
     for (const row of rotatedPayloads) updatePayload.run(row.encrypted, row.reference);
     const updateIssuer = database.query('UPDATE issuer_credentials SET encrypted_bundle = ? WHERE issuer_profile_ref = ?');
     for (const row of rotatedIssuers) updateIssuer.run(row.encrypted, row.issuerProfileRef);
+    if (hasTickets) {
+      const updateTicket = database.query('UPDATE wsaa_tickets SET encrypted_ticket = ? WHERE cache_key = ?');
+      for (const row of rotatedTickets) updateTicket.run(row.encrypted, row.cacheKey);
+    }
     database.query('INSERT INTO boundary_events (event_id, action, subject_hash, artifact_hash, occurred_at) VALUES (?, ?, ?, ?, ?)').run(
       randomUUID(), 'boundary_master_key_rotated', hashCanonical('arca-boundary-master-key'),
       hashCanonical({ payloadCount: payloads.length, issuerCount: issuers.length, occurredAt: input.occurredAt }), input.occurredAt

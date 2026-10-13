@@ -35,6 +35,10 @@ evidence bodies, provider data and free text. Stale or missing client
 projections remain unavailable and cannot be approved from aggregate portfolio
 counts.
 
+Package `0.11.0` separates the domestic WSFE point of sale from the WSFEX
+export point in browser-safe ARCA onboarding runs. It is required even when
+only one service has been requested.
+
 Package `0.6.0` adds the consented, non-scoring Tax evidence-quality union. Only
 `ready` carries the frozen 0–100 value, band, and five dimensions. Named
 no-value states remain fail-closed, while the 0.5.x supplemental shape stays

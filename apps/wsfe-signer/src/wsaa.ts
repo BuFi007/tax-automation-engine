@@ -6,6 +6,7 @@ export type WsfeAccessTicket = Readonly<{
   token: string;
   sign: string;
   representedCuit: string;
+  representedCuitCommitment: string;
   expiresAt: string;
 }>;
 
@@ -20,6 +21,7 @@ const ticketSchema = z.object({
   token: z.string().min(1),
   sign: z.string().min(1),
   representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+  representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.iso.datetime({ offset: true }),
 }).strict();
 const healthSchema = z.object({

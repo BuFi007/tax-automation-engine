@@ -13,6 +13,31 @@ import type { WsaaTicketBroker } from './wsaa';
 const occurredAt = '2026-07-11T12:00:00.000Z';
 
 describe('isolated WSFEX signer service', () => {
+  test('accepts only the bound homologation E point after exact official voucher readback', async () => {
+    const proof = {
+      workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1',
+      representedCuit: '20123456786', representedCuitCommitment: payload().representedCuitCommitment,
+      cae: '12345678901234',
+    };
+    const fixture = setup({ homologationPointOfSaleProof: proof, recoveredDocuments: [
+      retrieved({ pointOfSale: 2, invoiceNumber: '1' }),
+      retrieved({ pointOfSale: 2, invoiceNumber: '1', cae: '99999999999999' }),
+    ] });
+    fixture.authority.pointOfSaleError = new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.pointOfSaleDiscovery = { activePoints: [], listedCount: 0, rawResponseHash: hashCanonical('empty') };
+    const check = (workspaceId = 'workspace-1', pointOfSale = 2, documentType: 19 | 20 | 21 = 19) =>
+      (fixture.service as unknown as { assertPointOfSaleActive: (ticket: object, workspaceId: string, issuerProfileRef: string, pointOfSale: number, documentType: 19 | 20 | 21) => Promise<void> })
+        .assertPointOfSaleActive({ representedCuit: '20123456786', representedCuitCommitment: proof.representedCuitCommitment }, workspaceId, proof.issuerProfileRef, pointOfSale, documentType);
+    await expect(check()).resolves.toBeUndefined();
+    await expect(check('workspace-2')).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    await expect(check('workspace-1', 3)).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    await expect(check('workspace-1', 2, 21)).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.pointOfSaleDiscovery = { activePoints: [], listedCount: 1, rawResponseHash: hashCanonical('blocked') };
+    await expect(check()).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.pointOfSaleDiscovery = { activePoints: [], listedCount: 0, rawResponseHash: hashCanonical('empty') };
+    await expect(check()).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+  });
+
   test('reserves ARCA last+1 once, replays it, and consumes it on authorization', async () => {
     const fixture = setup({ sequenceReservationsRequired: true });
     const reservation = {
@@ -428,10 +453,37 @@ describe('WSFEX cotización endpoint + error-1667 band', () => {
 });
 
 describe('WSFEX point-of-sale discovery', () => {
+  test('issues a hashed readback receipt only for the configured sandbox issuer and exact accepted E voucher', async () => {
+    const proof = {
+      workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1', representedCuit: '20123456786',
+      representedCuitCommitment: payload().representedCuitCommitment, cae: '12345678901234',
+    };
+    const fixture = setup({ homologationPointOfSaleProof: proof, recoveredDocuments: [retrieved({ pointOfSale: 2, invoiceNumber: '1' })] });
+    fixture.authority.pointOfSaleDiscovery = { activePoints: [], listedCount: 0, rawResponseHash: hashCanonical('empty-list') };
+    const receipt = await fixture.service.verifyPointOfSaleReadback({ workspaceId: proof.workspaceId, issuerProfileRef: proof.issuerProfileRef, pointOfSale: 2 }, occurredAt);
+    expect(receipt).toEqual(expect.objectContaining({
+      environment: 'homologation', pointOfSale: 2, documentType: 19, invoiceNumber: '1',
+      caeHash: hashCanonical(proof.cae), representedCuitCommitment: proof.representedCuitCommitment,
+    }));
+    expect(JSON.stringify(receipt)).not.toContain(proof.representedCuit);
+    await expect(fixture.service.verifyPointOfSaleReadback({ workspaceId: 'workspace-2', issuerProfileRef: proof.issuerProfileRef, pointOfSale: 2 }, occurredAt))
+      .rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.pointOfSaleDiscovery = { activePoints: [], listedCount: 1, rawResponseHash: hashCanonical('blocked') };
+    await expect(fixture.service.verifyPointOfSaleReadback({ workspaceId: proof.workspaceId, issuerProfileRef: proof.issuerProfileRef, pointOfSale: 2 }, occurredAt))
+      .rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    const production = new WsfexSignerService(
+      { environment: 'production', signerVersion: 'test', homologationPointOfSaleProof: proof },
+      fixture.store, fixture.vault, new FakeWsaa(proof.representedCuitCommitment), fixture.authority
+    );
+    await expect(production.verifyPointOfSaleReadback({ workspaceId: proof.workspaceId, issuerProfileRef: proof.issuerProfileRef, pointOfSale: 2 }, occurredAt))
+      .rejects.toThrow('WSFEX_POS_READBACK_HOMOLOGATION_ONLY');
+  });
+
   test('returns an authority-bound, CUIT-committed discovery receipt', async () => {
     const fixture = setup();
     fixture.authority.pointOfSaleDiscovery = {
       activePoints: [7, 4],
+      listedCount: 2,
       rawResponseHash: hashCanonical('FEXGetPARAM_PtoVenta-response'),
     };
     const result = await fixture.service.discoverPointsOfSale(
@@ -465,6 +517,7 @@ function setup(options: Readonly<{
   store?: SignerAttemptStore;
   wsaaCommitment?: string;
   sequenceReservationsRequired?: boolean;
+  homologationPointOfSaleProof?: Readonly<{ workspaceId: string; issuerProfileRef: string; representedCuit: string; representedCuitCommitment: string; cae: string }>;
 }> = {}) {
   const signerRequest = options.request ?? request();
   const authorityPayload = options.payload ?? payload();
@@ -478,6 +531,7 @@ function setup(options: Readonly<{
       ...(options.sequenceReservationsRequired === undefined
         ? {}
         : { sequenceReservationsRequired: options.sequenceReservationsRequired }),
+      ...(options.homologationPointOfSaleProof ? { homologationPointOfSaleProof: options.homologationPointOfSaleProof } : {}),
     },
     store,
     vault,
@@ -505,13 +559,14 @@ class FakeWsaa implements WsaaTicketBroker {
 
 class FakeAuthority implements WsfexAuthorityClient {
   authorizeCalls = 0;
+  pointOfSaleError: Error | null = null;
   getDocumentCalls = 0;
   sequenceReadCalls = 0;
   originalDocument: WsfexRetrievedDocument = retrieved({ invoiceNumber: '81' });
   // In band with the fixture invoice quote (1200.25) so invoice preflight passes;
   // tests override to force an error-1667 out-of-band rejection.
   cotizacion: WsfexCotizacion = { monId: 'DOL', ctz: '1200.25', date: '2026-07-10' };
-  pointOfSaleDiscovery = { activePoints: [4] as readonly number[], rawResponseHash: hashCanonical('points-of-sale') };
+  pointOfSaleDiscovery = { activePoints: [4] as readonly number[], listedCount: 1, rawResponseHash: hashCanonical('points-of-sale') };
   readonly #authorizeResults: AuthorizeStep[];
   readonly #recoveredDocuments: RetrieveStep[];
 
@@ -542,7 +597,7 @@ class FakeAuthority implements WsfexAuthorityClient {
     return { ...this.cotizacion, monId };
   }
   async getPointsOfSale() { return this.pointOfSaleDiscovery; }
-  async assertPointOfSaleActive() {}
+  async assertPointOfSaleActive() { if (this.pointOfSaleError) throw this.pointOfSaleError; }
 }
 
 function accepted(overrides: Partial<WsfexAuthorizationResult> = {}): WsfexAuthorizationResult {

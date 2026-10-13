@@ -14,6 +14,47 @@ const occurredAt = '2026-07-11T12:00:00.000Z';
 const association = { documentType: 11 as const, pointOfSale: 4, invoiceNumber: '81' };
 
 describe('isolated WSFE signer service', () => {
+  test('reads the next C number for the scoped issuer without authorizing a voucher', async () => {
+    const fixture = setup();
+    const result = await fixture.service.getNextVoucher({
+      workspaceId: 'personal:user-1', issuerProfileRef: 'vault://issuer/profile-1',
+      documentType: 11, pointOfSale: 4,
+    }, occurredAt);
+    expect(result).toEqual(expect.objectContaining({ lastInvoiceNumber: '5', nextInvoiceNumber: '6', pointOfSale: 4 }));
+    expect(fixture.authority.authorizeCalls).toBe(0);
+  });
+
+  test('returns an issuer-bound C readback receipt only for the known accepted sandbox voucher', async () => {
+    const proof = { workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1', representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit'), cae: '71234567890123' };
+    const fixture = setup({ homologationPointOfSaleProof: proof });
+    fixture.authority.pointOfSaleError = new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.proofDocument = retrieved({ pointOfSale: 1, invoiceNumber: '1' });
+    const context = { workspaceId: proof.workspaceId, issuerProfileRef: proof.issuerProfileRef, pointOfSale: 1 as const };
+    const discovery = await fixture.service.discoverPointsOfSale(context, occurredAt);
+    expect(discovery).toEqual(expect.objectContaining({ activePoints: [], listedCount: 0, representedCuitCommitment: proof.representedCuitCommitment }));
+    const readback = await fixture.service.verifyPointOfSaleReadback(context, occurredAt);
+    expect(readback).toEqual(expect.objectContaining({ pointOfSale: 1, documentType: 11, invoiceNumber: '1', representedCuitCommitment: proof.representedCuitCommitment }));
+    fixture.authority.proofDocument = retrieved({ pointOfSale: 1, invoiceNumber: '1', cae: '99999999999999' });
+    await expect(fixture.service.verifyPointOfSaleReadback(context, occurredAt)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.proofDocument = retrieved({ pointOfSale: 1, invoiceNumber: '1' });
+    fixture.authority.listedCountOverride = 1;
+    await expect(fixture.service.verifyPointOfSaleReadback(context, occurredAt)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+  });
+  test('accepts only the bound homologation C point after exact official voucher readback', async () => {
+    const proof = { workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1', representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit'), cae: '71234567890123' };
+    const fixture = setup({ homologationPointOfSaleProof: proof, ownDocuments: [retrieved({ pointOfSale: 1, invoiceNumber: '1' })] });
+    fixture.authority.pointOfSaleError = new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    const check = (scope = fixture.request, document = payload({ pointOfSale: 1 })) =>
+      (fixture.service as unknown as { assertPointOfSaleActive: (request: SignerRequest, payload: AuthorityPayload, ticket: { representedCuit: string; representedCuitCommitment: string }) => Promise<void> })
+        .assertPointOfSaleActive(scope, document, { representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit') });
+    await expect(check()).resolves.toBeUndefined();
+    await expect(check({ ...fixture.request, workspaceId: 'workspace-2' })).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    await expect(check(fixture.request, payload({ pointOfSale: 2 }))).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    await expect(check(fixture.request, payload({ pointOfSale: 1, documentType: 13 }))).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    fixture.authority.proofDocument = retrieved({ pointOfSale: 1, invoiceNumber: '1', cae: '99999999999999' });
+    await expect(check()).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+  });
+
   test('issues once, persists only safe evidence, and idempotently returns the receipt', async () => {
     const fixture = setup();
     const first = await fixture.service.issueInvoice(fixture.request, fixture.request.requestId, occurredAt);
@@ -80,6 +121,23 @@ describe('isolated WSFE signer service', () => {
     expect(result).toEqual(expect.objectContaining({ status: 'accepted', cae: '71234567890123', feCompConsultarEcho: null }));
   });
 
+  test('recovers official readback for an accepted CAE without sending a second authorization', async () => {
+    const fixture = setup({ ownDocuments: [null, retrieved()] });
+    const first = await fixture.service.issueInvoice(fixture.request, fixture.request.requestId, occurredAt);
+    expect(first.feCompConsultarEcho).toBeNull();
+    const verified = await fixture.service.issueInvoice(fixture.request, fixture.request.requestId, '2026-07-11T12:01:00.000Z');
+    expect(verified.feCompConsultarEcho).toEqual(expect.objectContaining({ cae: first.cae, invoiceNumber: '6' }));
+    expect(fixture.authority.authorizeCalls).toBe(1);
+  });
+
+  test('refuses an accepted readback with a different CAE', async () => {
+    const fixture = setup({ ownDocuments: [null, retrieved({ cae: '99999999999999' })] });
+    await fixture.service.issueInvoice(fixture.request, fixture.request.requestId, occurredAt);
+    await expect(fixture.service.issueInvoice(fixture.request, fixture.request.requestId, '2026-07-11T12:01:00.000Z'))
+      .rejects.toThrow('WSFE_ACCEPTED_READBACK_CAE_MISMATCH');
+    expect(fixture.authority.authorizeCalls).toBe(1);
+  });
+
   test('refuses recovery with a changed vault payload hash', async () => {
     const fixture = setup({ authorizeResults: ['ambiguous'], ownDocuments: [null] });
     await fixture.service.issueInvoice(fixture.request, fixture.request.requestId, occurredAt);
@@ -143,6 +201,7 @@ function setup(options: Readonly<{
   ownDocuments?: RetrieveStep[];
   lastInvoice?: (documentType: DocumentType) => string;
   originalDocument?: WsfeRetrievedDocument;
+  homologationPointOfSaleProof?: Readonly<{ workspaceId: string; issuerProfileRef: string; representedCuit: string; representedCuitCommitment: string; cae: string }>;
 }> = {}) {
   const signerRequest = options.request ?? request();
   const authorityPayload = options.payload ?? payload();
@@ -150,7 +209,7 @@ function setup(options: Readonly<{
   const vault = new FakeVault(authorityPayload);
   const authority = new FakeAuthority(options.authorizeResults, options.ownDocuments, options.lastInvoice, options.originalDocument);
   const service = new WsfeSignerService(
-    { environment: 'homologation', signerVersion: 'test' },
+    { environment: 'homologation', signerVersion: 'test', ...(options.homologationPointOfSaleProof ? { homologationPointOfSaleProof: options.homologationPointOfSaleProof } : {}) },
     store,
     vault,
     new FakeWsaa(),
@@ -166,12 +225,15 @@ class FakeVault implements AuthorityPayloadVault {
 }
 
 class FakeWsaa implements WsaaTicketBroker {
-  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' }; }
+  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit'), expiresAt: '2099-01-01T00:00:00.000Z' }; }
   async health() { return { certificateDelegationConfigured: true, wsaaReady: true }; }
 }
 
 class FakeAuthority implements WsfeAuthorityClient {
   authorizeCalls = 0;
+  pointOfSaleError: Error | null = null;
+  proofDocument: WsfeRetrievedDocument | null = null;
+  listedCountOverride: number | null = null;
   readonly #authorizeResults: AuthorizeStep[];
   readonly #ownDocuments: RetrieveStep[];
   readonly #lastInvoice: (documentType: DocumentType) => string;
@@ -198,11 +260,13 @@ class FakeAuthority implements WsfeAuthorityClient {
   async getLastInvoiceNumber(_ticket: unknown, documentType: DocumentType) { return this.#lastInvoice(documentType); }
   async getDocument(_ticket: unknown, documentType: DocumentType, _pointOfSale: number, invoiceNumber: string) {
     if (documentType === 11 && invoiceNumber === '81') return this.#originalDocument;
+    if (documentType === 11 && invoiceNumber === '1' && this.proofDocument) return this.proofDocument;
     const result = this.#ownDocuments.length ? this.#ownDocuments.shift()! : retrieved({ documentType, invoiceNumber });
     if (result === 'ambiguous') throw new WsfeAmbiguousTransportError(hashCanonical('own-ambiguous'));
     return result;
   }
-  async assertPointOfSaleActive() {}
+  async assertPointOfSaleActive() { if (this.pointOfSaleError) throw this.pointOfSaleError; }
+  async getPointsOfSale() { return { activePoints: this.pointOfSaleError ? [] : [4], listedCount: this.listedCountOverride ?? (this.pointOfSaleError ? 0 : 1), rawResponseHash: hashCanonical('discovery') }; }
   async dummy() { return { appServer: 'OK', dbServer: 'OK', authServer: 'OK' }; }
 }
 

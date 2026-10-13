@@ -9,11 +9,15 @@ import {
   type ArcaOnboardingRunV1,
   type ArcaWebService,
 } from '@tax-engine/core';
+import { pointOfSaleReadbackSchema } from '@tax-engine/wsfex-signer/contracts';
+import { pointOfSaleReadbackSchema as wsfePointOfSaleReadbackSchema } from '@tax-engine/wsfe-signer/contracts';
 
 import type { ArcaOnboardingReclaimGateway, ArcaOnboardingReclaimRequest } from './arca-onboarding-reclaim';
+import type { HttpArcaBoundaryStatusReader } from './arca-connection-projection';
 import type { ReclaimProofVault } from './proof-vault';
 import type { TaxProfileStore } from './store';
 import type { WsfexPointOfSaleGateway } from './wsfex';
+import type { WsfePointOfSaleGateway } from './wsfe';
 
 export type ArcaOnboardingMutationResult<T = undefined> = Readonly<{
   run: ArcaOnboardingRunV1;
@@ -32,6 +36,7 @@ export class ArcaOnboardingService {
     private readonly proofVault: ReclaimProofVault | null,
     private readonly proofCustodyRequired: boolean,
     private readonly wsfexPointOfSale: WsfexPointOfSaleGateway | null = null,
+    private readonly wsfePointOfSale: WsfePointOfSaleGateway | null = null,
   ) {}
 
   capabilities(): Readonly<Record<string, unknown>> {
@@ -55,6 +60,7 @@ export class ArcaOnboardingService {
       pointOfSaleAuthorityDiscovery: this.wsfexPointOfSale
         ? 'available'
         : 'configuration_required',
+      domesticPointOfSaleAuthorityDiscovery: this.wsfePointOfSale ? 'available' : 'configuration_required',
       invariants: [
         'credentials_and_browser_cookies_are_never_collected',
         'user_confirms_account_and_permission_changes_at_action_time',
@@ -113,6 +119,82 @@ export class ArcaOnboardingService {
     return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
   }
 
+  /** Import an already configured issuer only after live certificate and official point checks. */
+  async importExistingIssuer(input: Readonly<{
+    onboardingId: string;
+    issuerProfileRef: string;
+    exportPointOfSale: number | null;
+    domesticPointOfSale: number | null;
+    confirmedExistingSetup: true;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+    boundaryReader: HttpArcaBoundaryStatusReader | null;
+  }>): Promise<ArcaOnboardingMutationResult> {
+    const current = this.getRun(input.onboardingId);
+    if (current.environment !== 'homologation' || !input.boundaryReader)
+      throw new Error('ARCA_EXISTING_ISSUER_HOMOLOGATION_CONFIGURATION_REQUIRED');
+    const boundary = await input.boundaryReader.read(current.workspaceId, input.issuerProfileRef);
+    if (boundary.workspaceId !== current.workspaceId || boundary.issuerProfileRef !== input.issuerProfileRef
+      || boundary.environment !== 'homologation' || !boundary.configured || !boundary.active
+      || !boundary.delegationConfirmed || !boundary.certificate.current
+      || !boundary.certificateFingerprint || !boundary.representedCuitCommitment
+      || boundary.taxpayerReferenceHash !== current.taxpayerReferenceHash
+      || !boundary.certificate.validFrom || !boundary.certificate.validUntil
+      || Date.parse(boundary.certificate.validFrom) > Date.parse(input.occurredAt)
+      || Date.parse(boundary.certificate.validUntil) <= Date.parse(input.occurredAt) + 60_000)
+      throw new Error('ARCA_EXISTING_ISSUER_CERTIFICATE_NOT_VERIFIED');
+    const alreadyImported = current.processedCommandKeys.includes(input.idempotencyKey);
+    if (alreadyImported && (
+      current.authorityBinding?.issuerProfileReferenceHash !== hashCanonical(input.issuerProfileRef)
+      || current.authorityBinding.representedCuitCommitment !== boundary.representedCuitCommitment
+      || current.steps.find(step => step.step === 'ws_delegation')?.evidenceHashes[1]
+        !== hashCanonical(boundary.certificateFingerprint)
+      || current.pointOfSale.number !== (current.requestedServices.includes('wsfex')
+        ? input.exportPointOfSale : input.domesticPointOfSale)
+      || current.domesticPointOfSale?.number !== input.domesticPointOfSale
+    )) throw new Error('ARCA_EXISTING_ISSUER_RETRY_MISMATCH');
+    if (!alreadyImported) {
+      this.applyManualCommand({
+        onboardingId: input.onboardingId, actorId: input.actorId, occurredAt: input.occurredAt,
+        command: {
+          kind: 'record_existing_issuer_setup', confirmedExistingSetup: input.confirmedExistingSetup,
+          taxpayerReferenceHash: boundary.taxpayerReferenceHash,
+          issuerProfileReferenceHash: hashCanonical(input.issuerProfileRef),
+          representedCuitCommitment: boundary.representedCuitCommitment,
+          boundaryReceiptHash: hashCanonical(boundary),
+          certificateFingerprintHash: hashCanonical(boundary.certificateFingerprint),
+          exportPointOfSale: input.exportPointOfSale,
+          domesticPointOfSale: input.domesticPointOfSale,
+          idempotencyKey: input.idempotencyKey,
+        },
+      });
+    }
+    let verifiedNow = false;
+    let run = this.getRun(input.onboardingId);
+    if (run.currentStep === 'api_verification' && run.requestedServices.includes('wsfex')
+      && !run.apiVerification.wsfex) {
+      await this.verifyWsfexApi({ onboardingId: input.onboardingId,
+        issuerProfileRef: input.issuerProfileRef, actorId: input.actorId,
+        idempotencyKey: `${input.idempotencyKey}:wsfex`, occurredAt: input.occurredAt });
+      verifiedNow = true;
+      run = this.getRun(input.onboardingId);
+    }
+    if (run.currentStep === 'api_verification' && run.requestedServices.includes('wsfe')
+      && !run.apiVerification.wsfe) {
+      await this.verifyWsfeApi({ onboardingId: input.onboardingId,
+        issuerProfileRef: input.issuerProfileRef,
+        ...(input.domesticPointOfSale === null ? {} : { pointOfSale: input.domesticPointOfSale }),
+        actorId: input.actorId, idempotencyKey: `${input.idempotencyKey}:wsfe`,
+        occurredAt: input.occurredAt });
+      verifiedNow = true;
+      run = this.getRun(input.onboardingId);
+    }
+    if (!run.requestedServices.every(service => run.apiVerification[service]))
+      throw new Error('ARCA_EXISTING_ISSUER_API_VERIFICATION_INCOMPLETE');
+    return result(run, alreadyImported && !verifiedNow, undefined);
+  }
+
   async verifyWsfexApi(input: Readonly<{
     onboardingId: string;
     issuerProfileRef: string;
@@ -123,6 +205,7 @@ export class ArcaOnboardingService {
     state: 'recorded' | 'wsfe_verification_required';
     activePoints: readonly number[];
     evidenceHash: string;
+    verificationSource: 'point_of_sale_discovery' | 'accepted_voucher_readback';
   }> | null>> {
     if (!this.wsfexPointOfSale) throw new Error('ARCA_POINT_OF_SALE_DISCOVERY_CONFIGURATION_REQUIRED');
     const replay = this.store.getArcaOnboardingRunByIdempotency(input.onboardingId, input.idempotencyKey);
@@ -151,43 +234,108 @@ export class ArcaOnboardingService {
     if (selected === null || !current.pointOfSale.active) {
       throw new Error('ARCA_POINT_OF_SALE_REQUIRED');
     }
+    let evidenceHash = receipt.evidenceHash;
+    let observedAt = receipt.observedAt;
+    let verificationSource: 'point_of_sale_discovery' | 'accepted_voucher_readback' = 'point_of_sale_discovery';
     if (!receipt.activePoints.includes(selected)) {
-      throw new Error('ARCA_POINT_OF_SALE_NOT_ACTIVE');
-    }
-    if (current.requestedServices.includes('wsfe')) {
-      return {
-        run: current,
-        replayed: false,
-        output: {
-          state: 'wsfe_verification_required',
-          activePoints: receipt.activePoints,
-          evidenceHash: receipt.evidenceHash,
-        },
-        nextActions: ['VERIFY_WSFE_API_AND_RECORD_COMBINED_RECEIPTS'],
-      };
+      if (current.environment !== 'homologation' || receipt.activePoints.length !== 0 || selected !== 2)
+        throw new Error('ARCA_POINT_OF_SALE_NOT_ACTIVE');
+      const readback = pointOfSaleReadbackSchema.parse(await this.wsfexPointOfSale.verifyPointOfSaleReadback({
+        workspaceId: current.workspaceId, issuerProfileRef: input.issuerProfileRef, pointOfSale: selected,
+      }));
+      if (readback.workspaceId !== current.workspaceId
+        || readback.issuerProfileReferenceHash !== current.authorityBinding?.issuerProfileReferenceHash
+        || readback.representedCuitCommitment !== current.authorityBinding?.representedCuitCommitment
+        || readback.pointOfSale !== selected)
+        throw new Error('ARCA_POINT_OF_SALE_AUTHORITY_BINDING_MISMATCH');
+      evidenceHash = readback.evidenceHash;
+      observedAt = readback.observedAt;
+      verificationSource = 'accepted_voucher_readback';
     }
     const applied = this.applyManualCommand({
       onboardingId: current.onboardingId,
       actorId: input.actorId,
       occurredAt: input.occurredAt,
       command: {
-        kind: 'record_api_verification',
-        verifiedServices: { wsfex: true, wsfe: false },
-        activeExportPointOfSale: selected,
-        observedAt: receipt.observedAt,
-        wsfexReceiptHash: receipt.evidenceHash,
-        wsfeReceiptHash: null,
+        kind: 'record_service_api_verification',
+        service: 'wsfex',
+        activePointOfSale: selected,
+        observedAt,
+        receiptHash: evidenceHash,
         idempotencyKey: input.idempotencyKey,
       },
     });
     return {
       ...applied,
       output: {
-        state: 'recorded',
+        state: applied.run.currentStep === 'api_verification' ? 'wsfe_verification_required' : 'recorded',
         activePoints: receipt.activePoints,
-        evidenceHash: receipt.evidenceHash,
+        evidenceHash,
+        verificationSource,
       },
     };
+  }
+
+  async verifyWsfeApi(input: Readonly<{
+    onboardingId: string;
+    issuerProfileRef: string;
+    pointOfSale?: number;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): Promise<ArcaOnboardingMutationResult<Readonly<{
+    state: 'recorded' | 'wsfex_verification_required';
+    activePoints: readonly number[];
+    evidenceHash: string;
+    verificationSource: 'point_of_sale_discovery' | 'accepted_voucher_readback';
+  }> | null>> {
+    if (!this.wsfePointOfSale) throw new Error('ARCA_WSFE_POINT_OF_SALE_DISCOVERY_CONFIGURATION_REQUIRED');
+    const replay = this.store.getArcaOnboardingRunByIdempotency(input.onboardingId, input.idempotencyKey);
+    if (replay) return result(replay, true, null);
+    const current = this.getRun(input.onboardingId);
+    if (current.currentStep !== 'api_verification') throw new Error('ARCA_ONBOARDING_STEP_OUT_OF_ORDER');
+    if (!current.requestedServices.includes('wsfe')) throw new Error('ARCA_WSFE_NOT_REQUESTED');
+    const selected = input.pointOfSale ?? 1;
+    if (!Number.isInteger(selected) || selected < 1 || selected > 99998) throw new Error('ARCA_WSFE_POINT_OF_SALE_INVALID');
+    const receipt = await this.wsfePointOfSale.discoverPointsOfSale({
+      workspaceId: current.workspaceId, issuerProfileRef: input.issuerProfileRef,
+    });
+    if (receipt.environment !== current.environment) throw new Error('ARCA_WSFE_POINT_OF_SALE_ENVIRONMENT_MISMATCH');
+    if (receipt.issuerProfileReferenceHash !== current.authorityBinding?.issuerProfileReferenceHash
+      || receipt.representedCuitCommitment !== current.authorityBinding?.representedCuitCommitment)
+      throw new Error('ARCA_WSFE_POINT_OF_SALE_AUTHORITY_BINDING_MISMATCH');
+    if (!current.pointOfSale.active || current.pointOfSale.number === null) throw new Error('ARCA_POINT_OF_SALE_REQUIRED');
+    if (!current.requestedServices.includes('wsfex') && current.pointOfSale.number !== selected)
+      throw new Error('ARCA_WSFE_POINT_OF_SALE_MISMATCH');
+    let evidenceHash = receipt.evidenceHash;
+    let observedAt = receipt.observedAt;
+    let verificationSource: 'point_of_sale_discovery' | 'accepted_voucher_readback' = 'point_of_sale_discovery';
+    if (!receipt.activePoints.includes(selected)) {
+      if (current.environment !== 'homologation' || selected !== 1 || receipt.listedCount !== 0 || receipt.activePoints.length !== 0)
+        throw new Error('ARCA_WSFE_POINT_OF_SALE_NOT_ACTIVE');
+      const readback = wsfePointOfSaleReadbackSchema.parse(await this.wsfePointOfSale.verifyPointOfSaleReadback({
+        workspaceId: current.workspaceId, issuerProfileRef: input.issuerProfileRef, pointOfSale: 1,
+      }));
+      if (readback.workspaceId !== current.workspaceId
+        || readback.issuerProfileReferenceHash !== current.authorityBinding?.issuerProfileReferenceHash
+        || readback.representedCuitCommitment !== current.authorityBinding?.representedCuitCommitment
+        || readback.pointOfSale !== selected) throw new Error('ARCA_WSFE_POINT_OF_SALE_AUTHORITY_BINDING_MISMATCH');
+      evidenceHash = readback.evidenceHash;
+      observedAt = readback.observedAt;
+      verificationSource = 'accepted_voucher_readback';
+    }
+    const applied = this.applyManualCommand({
+      onboardingId: current.onboardingId, actorId: input.actorId, occurredAt: input.occurredAt,
+      command: {
+        kind: 'record_service_api_verification',
+        service: 'wsfe',
+        activePointOfSale: selected,
+        observedAt,
+        receiptHash: evidenceHash,
+        idempotencyKey: input.idempotencyKey,
+      },
+    });
+    return { ...applied, output: { state: applied.run.currentStep === 'api_verification' ? 'wsfex_verification_required' : 'recorded', activePoints: receipt.activePoints, evidenceHash, verificationSource } };
   }
 
   async startReclaim(input: Readonly<{

@@ -12,6 +12,7 @@ const capabilitySchema = z.enum([
   'snapshot:read',
   'tax.factoring.read',
   'arca:onboard',
+  'arca:issue',
   'accountant:mandate',
   'accountant:portfolio',
   'accountant:review-queue',
@@ -268,9 +269,15 @@ export function requiredTaxTenantPrincipalCapability(
   if (method === 'GET' && /^\/v1\/browser\/snapshots\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'snapshot:read';
   if (method === 'GET' && /^\/v1\/browser\/factoring-projections\/[^/]+(?:\/[^/]+)?$/.test(pathname)) return 'tax.factoring.read';
   if (/^\/v1\/arca-onboarding(?:\/|$)/.test(pathname)) return 'arca:onboard';
+  if (method === 'POST' && (
+    pathname === '/v1/wsfe/attempts' || pathname === '/v1/wsfe/attempts/issue'
+      || pathname === '/v1/wsfe/attempts/recover' || pathname === '/v1/personal-wsfe/attempts' || pathname === '/v1/personal-wsfe/attempts/issue'
+      || pathname === '/v1/personal-wsfe/attempts/recover'
+  )) return 'arca:issue';
   if (/^\/v1\/accountant-mandates(?:\/|$)/.test(pathname)) return 'accountant:mandate';
   if (method === 'GET' && pathname === '/v1/accountant-portfolio') return 'accountant:portfolio';
   if (method === 'GET' && pathname === '/v1/accountant-review-queue') return 'accountant:review-queue';
+  if (method === 'GET' && pathname === '/v1/accountant-invoice-review-queue') return 'accountant:review-queue';
   if (method === 'POST' && pathname === '/v1/accountant-decisions') return 'accountant:decision';
   return null;
 }

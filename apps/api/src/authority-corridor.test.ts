@@ -130,6 +130,37 @@ function signedStatusRequest(candidateWorkspaceId: string, actorId = 'motora:use
 }
 
 describe('Tax-owned Factura E authority corridor', () => {
+  test('reads one exact execution without switching to another invoice in the workspace', async () => {
+    const { store, service } = fixture();
+    try {
+      const first = service.createIntent({
+        workspaceId, runId, intentHash, actorId: 'user:creator',
+        idempotencyKey: 'exact-status-first-123456', occurredAt: '2026-07-15T16:00:00.000Z',
+      });
+      const path = `/v1/authority/factura-e/intents/${first.executionId}/status`;
+      const read = async (scope: string) => {
+        const request = new Request(`https://tax.test${path}`, {
+          method: 'GET', headers: createTaxAuthorityPrincipalHeaders({
+            secret: motoraSecret, workspaceId: scope, actorId: 'motora:user-1',
+            capability: 'factura-e:status:read', method: 'GET', path, rawBody: '',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          }),
+        });
+        const response = await handleFacturaEAuthorityCorridorRoute(
+          request, new URL(request.url), service, {
+            corridorEnabled: true,
+            secrets: { motora: motoraSecret, openAgentsApproval: approvalSecret },
+          },
+        );
+        return (await response!.json() as any).data;
+      };
+      expect(await read(workspaceId)).toMatchObject({ executionId: first.executionId });
+      expect(await read('44444444-4444-4444-8444-444444444444')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   test('persists intent, consumes a distinct one-use approval, and recovers exactly', async () => {
     const { store, service, calls } = fixture();
     try {
@@ -225,6 +256,141 @@ describe('Tax-owned Factura E authority corridor', () => {
       expect(JSON.stringify(reconciled)).not.toMatch(/identity|vault|cuit|cae/i);
     } finally {
       store.close();
+    }
+  });
+
+  test('waits for a live preparation and resumes only the same stalled pre-dispatch attempt', async () => {
+    for (const stalledState of ['preparing', 'prepared'] as const) {
+      const { store, service, calls, effect } = fixture();
+      try {
+        const startedAt = new Date(Date.now() - 31_000).toISOString();
+        const execution = service.createIntent({
+          workspaceId, runId, intentHash, actorId: 'user:creator',
+          idempotencyKey: `create-${stalledState}`, occurredAt: startedAt,
+        });
+        service.registerApproval({
+          executionId: execution.executionId, workspaceId, intentHash, approvalRef,
+          actorId: 'oa:approval:resume', idempotencyKey: `approve-${stalledState}`,
+          occurredAt: startedAt,
+        });
+        const command = {
+          executionId: execution.executionId, workspaceId,
+          actorId: 'motora:authority-corridor', idempotencyKey: `execute-${stalledState}`,
+        };
+        store.beginExecution({ ...command, occurredAt: startedAt });
+        if (stalledState === 'prepared') {
+          store.prepared(execution.executionId, {
+            ...command, runId, intentHash, requestId: '41',
+            authorityPayloadRef: 'vault://wsfex/33333333-3333-4333-8333-333333333333',
+            authorityPayloadHash: 'b'.repeat(64),
+          }, startedAt);
+          effect.prepare = async input => {
+            calls.prepare += 1;
+            return {
+              ...input,
+              requestId: '42',
+              authorityPayloadRef: 'vault://wsfex/55555555-5555-4555-8555-555555555555',
+              authorityPayloadHash: 'd'.repeat(64),
+            };
+          };
+        }
+        expect(service.exactStatus(workspaceId, execution.executionId)).toMatchObject({
+          state: 'effect_pending', nextAction: 'execute_with_one_use_approval',
+        });
+        const resumed = await service.execute({ ...command, occurredAt: new Date().toISOString() });
+        expect(resumed).toMatchObject({ state: 'recovery_required', replayed: true });
+        expect(calls.prepare).toBe(1);
+        if (stalledState === 'prepared') {
+          expect(store.get(execution.executionId)).toMatchObject({
+            requestId: '42',
+            authorityPayloadRef: 'vault://wsfex/55555555-5555-4555-8555-555555555555',
+          });
+        }
+        expect(calls.execute).toBe(1);
+        await service.execute({ ...command, occurredAt: new Date().toISOString() });
+        expect(calls.execute).toBe(1);
+      } finally {
+        store.close();
+      }
+    }
+  });
+
+  test('does not repeat preparation while the first attempt can still be running', async () => {
+    const { store, service, calls } = fixture();
+    try {
+      const startedAt = new Date().toISOString();
+      const execution = service.createIntent({
+        workspaceId, runId, intentHash, actorId: 'user:creator',
+        idempotencyKey: 'create-fresh', occurredAt: startedAt,
+      });
+      service.registerApproval({
+        executionId: execution.executionId, workspaceId, intentHash, approvalRef,
+        actorId: 'oa:approval:fresh', idempotencyKey: 'approve-fresh', occurredAt: startedAt,
+      });
+      const command = {
+        executionId: execution.executionId, workspaceId,
+        actorId: 'motora:authority-corridor', idempotencyKey: 'execute-fresh',
+      };
+      store.beginExecution({ ...command, occurredAt: startedAt });
+      expect(service.exactStatus(workspaceId, execution.executionId)).toMatchObject({
+        state: 'effect_pending', nextAction: 'wait',
+      });
+      expect(await service.execute({ ...command, occurredAt: startedAt })).toMatchObject({
+        state: 'effect_pending', nextAction: 'wait', replayed: true,
+      });
+      expect(calls.prepare).toBe(0);
+      expect(calls.execute).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('resumes a prepared execution after a Tax process restart without a new approval', async () => {
+    const databasePath = join(tmpdir(), `tax-authority-prepared-${crypto.randomUUID()}.sqlite`);
+    const initial = fixture(undefined, databasePath);
+    let restartedStore: FacturaEAuthorityExecutionStore | null = null;
+    try {
+      const startedAt = new Date(Date.now() - 31_000).toISOString();
+      const execution = initial.service.createIntent({
+        workspaceId, runId, intentHash, actorId: 'user:creator',
+        idempotencyKey: 'create-restarted-preparation', occurredAt: startedAt,
+      });
+      initial.service.registerApproval({
+        executionId: execution.executionId, workspaceId, intentHash, approvalRef,
+        actorId: 'oa:approval:restart', idempotencyKey: 'approve-restarted-preparation',
+        occurredAt: startedAt,
+      });
+      const command = {
+        executionId: execution.executionId, workspaceId,
+        actorId: 'motora:authority-corridor', idempotencyKey: 'execute-restarted-preparation',
+      };
+      initial.store.beginExecution({ ...command, occurredAt: startedAt });
+      initial.store.prepared(execution.executionId, {
+        ...command, runId, intentHash, requestId: '41',
+        authorityPayloadRef: 'vault://wsfex/33333333-3333-4333-8333-333333333333',
+        authorityPayloadHash: 'b'.repeat(64),
+      }, startedAt);
+      initial.store.close();
+      restartedStore = new FacturaEAuthorityExecutionStore(databasePath, false);
+      const resumed = new FacturaEAuthorityExecutionService(
+        restartedStore,
+        () => ({ workspaceId, intentHash, issuanceState: 'ready_for_wsfex' }),
+        initial.effect,
+        true
+      );
+      expect(resumed.exactStatus(workspaceId, execution.executionId)).toMatchObject({
+        state: 'effect_pending', nextAction: 'execute_with_one_use_approval',
+      });
+      expect(await resumed.execute({ ...command, occurredAt: new Date().toISOString() }))
+        .toMatchObject({ state: 'recovery_required', replayed: true });
+      expect(initial.calls.prepare).toBe(1);
+      expect(initial.calls.execute).toBe(1);
+    } finally {
+      try { initial.store.close(); } catch { /* Simulated process already stopped. */ }
+      restartedStore?.close();
+      rmSync(databasePath, { force: true });
+      rmSync(`${databasePath}-wal`, { force: true });
+      rmSync(`${databasePath}-shm`, { force: true });
     }
   });
 
@@ -597,23 +763,16 @@ describe('Tax-owned Factura E authority corridor', () => {
         version: 'factura-e-authority-intent-create-v1',
         workspaceId,
         runId,
+        ledgerInvoiceId: '44444444-4444-4444-8444-444444444444',
         intentHash,
         idempotencyKey: 'motora-create-authority-1',
       } as const;
       const createPath = '/v1/authority/factura-e/intents';
-      const created = await handleFacturaEAuthorityCorridorRoute(
-        signedRequest(createPath, createBody, {
-          capability: 'factura-e:intent:create',
-          actorId: 'motora:user-1',
-          secret: motoraSecret,
-        }),
-        new URL(`https://tax.test${createPath}`),
-        service,
-        options
-      );
-      expect(created?.status).toBe(200);
-      const createdBody = await created!.json();
-      const executionId = createdBody.data.executionId as string;
+      const executionId = service.createIntent({
+        workspaceId, runId, intentHash, actorId: 'motora:user-1',
+        idempotencyKey: createBody.idempotencyKey,
+        occurredAt: '2026-07-15T16:00:00.000Z',
+      }).executionId;
 
       const approvePath = `/v1/authority/factura-e/intents/${executionId}/approvals`;
       const approved = await handleFacturaEAuthorityCorridorRoute(

@@ -93,7 +93,7 @@ class FakeVault implements AuthorityPayloadVault {
   async resolve() { return { payload: this.payload, payloadHash: this.payloadHash }; }
 }
 class FakeWsaa implements WsaaTicketBroker {
-  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' }; }
+  async getTicket() { return { token: 'wsaa-token-secret', sign: 'wsaa-sign-secret', representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit'), expiresAt: '2099-01-01T00:00:00.000Z' }; }
   async health() { return { certificateDelegationConfigured: true, wsaaReady: true }; }
 }
 class FakeAuthority implements WsfeAuthorityClient {
@@ -120,6 +120,7 @@ class FakeAuthority implements WsfeAuthorityClient {
     return result;
   }
   async assertPointOfSaleActive() {}
+  async getPointsOfSale() { return { activePoints: [4], listedCount: 1, rawResponseHash: hashCanonical('discovery') }; }
   async dummy() { return { appServer: 'OK', dbServer: 'OK', authServer: 'OK' }; }
 }
 

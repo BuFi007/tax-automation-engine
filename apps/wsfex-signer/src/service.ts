@@ -6,6 +6,7 @@ import {
   hashWsfexAuthorityIdentity,
   hashWsfexReconciliationAttestation,
   pointOfSaleDiscoverySchema,
+  pointOfSaleReadbackSchema,
   sequenceReservationRequestSchema,
   signerRequestSchema,
   type AuthorityPayload,
@@ -62,6 +63,10 @@ export class WsfexSignerService {
       environment: 'homologation' | 'production';
       signerVersion: string;
       sequenceReservationsRequired?: boolean;
+      homologationPointOfSaleProof?: Readonly<{
+        workspaceId: string; issuerProfileRef: string; representedCuit: string;
+        representedCuitCommitment: string; cae: string;
+      }>;
     }>,
     private readonly store: SignerAttemptStore,
     private readonly vault: AuthorityPayloadVault,
@@ -110,7 +115,7 @@ export class WsfexSignerService {
       );
       if (racedReplay && sequenceReservationReplayUsable(racedReplay, occurredAt))
         return sequenceReservationReceipt(request, racedReplay, true);
-      await this.authority.assertPointOfSaleActive(ticket, request.pointOfSale);
+      await this.assertPointOfSaleActive(ticket, request.workspaceId, request.issuerProfileRef, request.pointOfSale, 19);
       const [lastRequestId, lastInvoiceNumber] = await Promise.all([
         this.authority.getLastRequestId(ticket),
         this.authority.getLastInvoiceNumber(ticket, 19, request.pointOfSale),
@@ -301,6 +306,34 @@ export class WsfexSignerService {
       ...receipt,
       evidenceHash: hashCanonical(receipt),
     });
+  }
+
+  async verifyPointOfSaleReadback(
+    context: Readonly<{ workspaceId: string; issuerProfileRef: string; pointOfSale: 2 }>,
+    occurredAt: string
+  ) {
+    if (this.config.environment !== 'homologation') throw new Error('WSFEX_POS_READBACK_HOMOLOGATION_ONLY');
+    const ticket = await this.wsaa.getTicket({
+      environment: 'homologation', workspaceId: context.workspaceId, issuerProfileRef: context.issuerProfileRef,
+    });
+    const readback = await this.readbackKnownHomologationVoucher(
+      ticket, context.workspaceId, context.issuerProfileRef, context.pointOfSale, 19
+    );
+    const receipt = {
+      version: 'arca-wsfex-point-of-sale-readback-v1' as const,
+      environment: 'homologation' as const,
+      workspaceId: context.workspaceId,
+      issuerProfileReferenceHash: hashCanonical(context.issuerProfileRef),
+      representedCuitCommitment: ticket.representedCuitCommitment,
+      pointOfSale: 2 as const,
+      documentType: 19 as const,
+      invoiceNumber: '1' as const,
+      caeHash: readback.caeHash,
+      discoveryResponseHash: readback.discoveryResponseHash,
+      authorityResponseHash: readback.authorityResponseHash,
+      observedAt: occurredAt,
+    };
+    return pointOfSaleReadbackSchema.parse({ ...receipt, evidenceHash: hashCanonical(receipt) });
   }
 
   async recover(
@@ -584,7 +617,7 @@ export class WsfexSignerService {
     payload: AuthorityPayload,
     ticket: WsfexAccessTicket
   ): Promise<void> {
-    await this.authority.assertPointOfSaleActive(ticket, payload.pointOfSale);
+    await this.assertPointOfSaleActive(ticket, request.workspaceId, payload.issuerProfileRef, payload.pointOfSale, payload.documentType);
     const [lastRequestId, lastInvoiceNumber] = await Promise.all([
       this.authority.getLastRequestId(ticket),
       this.authority.getLastInvoiceNumber(
@@ -627,6 +660,44 @@ export class WsfexSignerService {
         throw new Error('WSFEX_ADJUSTMENT_CURRENCY_QUOTE_MISMATCH');
       }
     }
+  }
+
+  private async assertPointOfSaleActive(
+    ticket: WsfexAccessTicket, workspaceId: string, issuerProfileRef: string,
+    pointOfSale: number, documentType: 19 | 20 | 21
+  ): Promise<void> {
+    try {
+      await this.authority.assertPointOfSaleActive(ticket, pointOfSale);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'WSFEX_POINT_OF_SALE_NOT_ACTIVE') throw error;
+      await this.readbackKnownHomologationVoucher(ticket, workspaceId, issuerProfileRef, pointOfSale, documentType);
+    }
+  }
+
+  private async readbackKnownHomologationVoucher(
+    ticket: WsfexAccessTicket, workspaceId: string, issuerProfileRef: string,
+    pointOfSale: number, documentType: 19 | 20 | 21
+  ) {
+    const proof = this.config.homologationPointOfSaleProof;
+    if (this.config.environment !== 'homologation' || !proof
+      || workspaceId !== proof.workspaceId || issuerProfileRef !== proof.issuerProfileRef
+      || ticket.representedCuit !== proof.representedCuit
+      || ticket.representedCuitCommitment !== proof.representedCuitCommitment
+      || documentType !== 19 || pointOfSale !== 2)
+      throw new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    const discovery = await this.authority.getPointsOfSale(ticket);
+    // A listed but blocked point cannot use the historical readback proof.
+    if (discovery.listedCount !== 0) throw new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    // ponytail: this exact sandbox voucher proves only the known E point; remove this seam once ARCA discovery reports it.
+    const document = await this.authority.getDocument(ticket, 19, 2, '1');
+    if (!document || document.result !== 'A' || document.documentType !== 19
+      || document.pointOfSale !== 2 || document.invoiceNumber !== '1' || document.cae !== proof.cae)
+      throw new Error('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+    return {
+      caeHash: hashCanonical(document.cae),
+      discoveryResponseHash: discovery.rawResponseHash,
+      authorityResponseHash: document.rawResponseHash,
+    };
   }
 
   private async ticket(

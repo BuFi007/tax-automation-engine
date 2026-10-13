@@ -14,6 +14,32 @@ const now = '2026-07-14T12:00:00.000Z';
 const hash = (value: string) => hashCanonical(value);
 
 describe('ARCA onboarding step engine', () => {
+  test('records preexisting homologation setup without inventing portal or Reclaim evidence', () => {
+    const command = {
+      kind: 'record_existing_issuer_setup' as const, confirmedExistingSetup: true as const,
+      taxpayerReferenceHash: hash('taxpayer-1'),
+      issuerProfileReferenceHash: hash('issuer-profile'),
+      representedCuitCommitment: hash('represented-cuit'),
+      boundaryReceiptHash: hash('live-boundary'),
+      certificateFingerprintHash: hash('certificate'),
+      exportPointOfSale: 2, domesticPointOfSale: 1, idempotencyKey: 'existing-issuer-1',
+    };
+    const run = apply(createRun(), command);
+    expect(run.currentStep).toBe('api_verification');
+    expect(run.status).toBe('active');
+    expect(run.pointOfSale.number).toBe(2);
+    expect(run.domesticPointOfSale?.number).toBe(1);
+    expect(run.steps.find(step => step.step === 'human_auth')?.state).toBe('skipped');
+    expect(run.steps.find(step => step.step === 'ws_delegation')?.evidenceHashes)
+      .toEqual([hash('live-boundary'), hash('certificate')]);
+    expect(run.steps.find(step => step.step === 'api_verification')?.state).toBe('action_required');
+    expect(run.zkEvidence).toBeNull();
+    expect(apply(run, command)).toEqual(run);
+    expect(() => apply(createRun(), { ...command, taxpayerReferenceHash: hash('other') }))
+      .toThrow('ARCA_EXISTING_ISSUER_TAXPAYER_MISMATCH');
+    expect(() => apply(createRun(['wsfe']), command)).toThrow('ARCA_WSFEX_NOT_REQUESTED');
+  });
+
   test('reaches ready only through the ordered API plus zk evidence path', () => {
     let run = createRun();
     expect(run.currentStep).toBe('login_handoff');
@@ -42,7 +68,7 @@ describe('ARCA onboarding step engine', () => {
       evidenceHash: hash('delegation'), idempotencyKey: 'delegate-1',
     });
     run = apply(run, {
-      kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 4,
+      kind: 'record_api_verification', verifiedServices: { wsfex: true, wsfe: true }, activeExportPointOfSale: 4, activeDomesticPointOfSale: 1,
       observedAt: now, wsfexReceiptHash: hash('wsfex'), wsfeReceiptHash: hash('wsfe'), idempotencyKey: 'api-1',
     });
     expect(run.status).toBe('active');

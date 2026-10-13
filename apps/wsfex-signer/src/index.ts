@@ -3,12 +3,13 @@ import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 import { WsfexSignerService } from './service';
-import { sequenceReservationRequestSchema, signerRequestSchema } from './contracts';
+import { isValidCuit, sequenceReservationRequestSchema, signerRequestSchema } from './contracts';
 import { SoapWsfexAuthorityClient } from './soap';
 import { SignerAttemptStore } from './store';
 import { HttpAuthorityPayloadVault } from './vault';
 import { HttpWsaaTicketBroker } from './wsaa';
 import { readBoundedBody } from './bounded-body';
+import { AfipSdkWsfexClient } from './afipsdk';
 
 const port = Number(process.env.PORT ?? 4200);
 const hostname = process.env.WSFEX_SIGNER_HOST ?? '127.0.0.1';
@@ -16,9 +17,19 @@ const apiToken = requiredSecretEnvironment('WSFEX_SIGNER_API_TOKEN');
 const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
 const sequenceReservationsRequired = process.env.WSFEX_SEQUENCE_RESERVATIONS_REQUIRED !== 'false';
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
+if (environment === 'production' && process.env.WSFEX_HOMOLOGATION_POS_PROOF) throw new Error('WSFEX_HOMOLOGATION_POS_PROOF_FORBIDDEN');
+const homologationPointOfSaleProof = process.env.WSFEX_HOMOLOGATION_POS_PROOF
+  ? z.object({
+      workspaceId: z.string().min(1).max(200),
+      issuerProfileRef: z.string().min(1).max(500),
+      representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+      representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
+      cae: z.string().regex(/^\d{14}$/),
+    }).strict().parse(JSON.parse(process.env.WSFEX_HOMOLOGATION_POS_PROOF))
+  : undefined;
 if (environment === 'production' && !sequenceReservationsRequired) throw new Error('WSFEX_SEQUENCE_RESERVATIONS_REQUIRED');
 const signerDatabasePath = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:';
-if (environment === 'production' && signerDatabasePath === ':memory:') {
+if (signerDatabasePath === ':memory:') {
   throw new Error('WSFEX_SIGNER_DURABLE_DB_REQUIRED');
 }
 const vault = new HttpAuthorityPayloadVault({
@@ -29,16 +40,28 @@ const wsaa = new HttpWsaaTicketBroker({
   baseUrl: requiredEnvironment('WSFEX_WSAA_BROKER_URL'),
   token: requiredSecretEnvironment('WSFEX_WSAA_BROKER_TOKEN'),
 });
+const authorityProvider = process.env.WSFEX_AUTHORITY_PROVIDER ?? 'direct';
+if (authorityProvider !== 'direct' && authorityProvider !== 'afipsdk')
+  throw new Error('WSFEX_AUTHORITY_PROVIDER_INVALID');
+if (authorityProvider === 'afipsdk' && process.env.AFIPSDK_WSAA_TICKET_TRANSFER_APPROVED !== 'true')
+  throw new Error('AFIPSDK_WSAA_TICKET_TRANSFER_APPROVAL_REQUIRED');
+const sdk = authorityProvider === 'afipsdk'
+  ? new AfipSdkWsfexClient({
+      accessToken: requiredSecretEnvironment('AFIPSDK_ACCESS_TOKEN'),
+      environment,
+    }, null, fetch, wsaa)
+  : null;
 const service = new WsfexSignerService(
   {
     environment,
     signerVersion: process.env.WSFEX_SIGNER_VERSION ?? '0.1.0',
     sequenceReservationsRequired,
+    ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}),
   },
   new SignerAttemptStore(signerDatabasePath),
   vault,
-  wsaa,
-  new SoapWsfexAuthorityClient(environment)
+  sdk ?? wsaa,
+  sdk ?? new SoapWsfexAuthorityClient(environment)
 );
 
 export const server = Bun.serve({
@@ -65,6 +88,11 @@ export const server = Bun.serve({
           { workspaceId, issuerProfileRef },
           new Date().toISOString()
         ));
+      }
+      if (request.method === 'POST' && url.pathname === '/v1/wsfexv1/params/points-of-sale/verify-readback') {
+        const raw = await readBoundedBody(request, 16 * 1024, 'SIGNER_REQUEST_TOO_LARGE');
+        const context = pointOfSaleReadbackRequestSchema.parse(JSON.parse(raw));
+        return json(await service.verifyPointOfSaleReadback(context, new Date().toISOString()));
       }
       if (request.method === 'POST' && url.pathname === '/v1/wsfexv1/sequence/reservations') {
         const raw = await readBoundedBody(request, 32 * 1024, 'SIGNER_REQUEST_TOO_LARGE');
@@ -144,6 +172,7 @@ const pointOfSaleDiscoveryRequestSchema = z.object({
   workspaceId: z.string().min(1).max(200),
   issuerProfileRef: z.string().min(1).max(500),
 }).strict();
+const pointOfSaleReadbackRequestSchema = pointOfSaleDiscoveryRequestSchema.extend({ pointOfSale: z.literal(2) });
 
 if (import.meta.main) {
   console.info(`WSFEX signer listening on ${hostname}:${server.port}; environment=${environment}; credentials remain in vault/WSAA boundaries`);

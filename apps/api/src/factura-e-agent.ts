@@ -349,6 +349,7 @@ export class FacturaEAgentService {
     destinationCountryArcaCode: number;
     pointOfSale: number;
     issueDate: string;
+    servicePeriod?: Readonly<{ start: string; end: string }> | undefined;
     paymentDate: string;
     sameCurrencyPayment: boolean;
     exchangeRate: FacturaEIntentV1['exchangeRate'];
@@ -392,6 +393,7 @@ export class FacturaEAgentService {
       operationType: 2,
       pointOfSale: input.pointOfSale,
       issueDate: input.issueDate,
+      ...(input.servicePeriod ? { servicePeriod: input.servicePeriod } : {}),
       paymentDate: input.paymentDate,
       sameCurrencyPayment: input.sameCurrencyPayment,
       exchangeRate: input.exchangeRate,
@@ -543,6 +545,9 @@ export class FacturaEAgentService {
     occurredAt: string;
   }>): AgentMutationResult {
     return this.mutate('approve_intent_by_accountant', input, current => {
+      if (this.listEvents(input.runId).some(event =>
+        event.action === 'factura_e_intent_approved' && event.actorId === input.actorId
+      )) throw new Error('ACCOUNTANT_MUST_DIFFER_FROM_ISSUER');
       const applied = approveFacturaEIntentByAccountant(current, input);
       return { ...applied, output: undefined };
     });

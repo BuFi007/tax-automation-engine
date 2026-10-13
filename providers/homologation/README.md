@@ -19,13 +19,50 @@ bun --filter @tax-engine/api homologation:validate-live-smoke -- \
   ../../providers/homologation/evidence/2026-07-14-wsfex-live-smoke.json
 ```
 
-The current smoke is intentionally **blocked**: WSAA and the WSFEX signer are
-reachable, but `FEXGetPARAM_PtoVenta` returned zero active FEEWS points. Until
-that API result changes, no Factura E attempt is authorized and production
-cannot be enabled.
+The July smoke is **blocked**: `FEXGetPARAM_PtoVenta` returned zero active FEEWS
+points. A later, explicitly authorized one-time diagnostic in homologation
+accepted E 2/1 despite that empty list; see the [registration and CAE evidence](evidence/2026-09-22-arca-self-issuer-pos-registration.json).
+The [following read-only probe](evidence/2026-09-23-arca-self-issuer-readonly.json)
+still reports voucher 1 through both last-number APIs while point discovery
+remains empty. An isolated recheck confirmed exact authorized readback of C 1/1
+and E 2/1 without creating vouchers. A scoped connection through BUFI is still
+required before the app can claim readiness. Production remains disabled.
 
-After the represented taxpayer creates or activates a FEEWS point, rerun the
-authoritative discovery through the isolated signer:
+## Delegated BUFI issuer pilot
+
+BUFI's representative CUIT and its own homologation computer certificate must
+first be provisioned as an active, self-represented template in the encrypted
+ARCA boundary. Set `BUFI_ARCA_REPRESENTATIVE_CUIT` in Desk so the user sees the
+correct CUIT in Invoices. Optional issuer Padrón suggestions additionally need
+the boundary's distinct `ARCA_BOUNDARY_PADRON_TOKEN`, the template workspace
+and profile references, and authorization for
+`ws_sr_constancia_inscripcion`. Without these, Desk asks for manual fiscal data.
+
+After the taxpayer delegates WSFE and/or WSFEX in ARCA and clicks “Ya delegué”,
+the user remains pending. A BUFI operator must accept the designation and
+associate the BUFI computer in ARCA. Only then, with the operator tokens in a
+protected shell, feed the following JSON to the admin command via stdin:
+
+```bash
+bun --filter @tax-engine/api homologation:activate-delegation < /secure/path/activation.json
+```
+
+The file contains `onboardingId`, `workspaceId`, and `representedCuit`. The
+command clones the sealed BUFI credential within the boundary and persists a
+Tax reference; neither certificate nor private key crosses into Desk or Tax.
+It prints only the run and profile references. Tax checks the boundary's CUIT
+commitment against the onboarding run. The user then enters the C/E points in
+Invoices and runs “Verificar emisor existente”; only the existing exact official
+point/voucher reads can mark a service ready. An operator receipt or a user's
+notice alone never enables issuance. No production path uses this command.
+
+The repository-wide preflight also checks the older Reclaim acceptance path;
+its missing Reclaim gates do not by themselves block this direct delegated
+issuer path. The direct pilot still needs running Desk, Motora, Tax, boundary,
+WSFE and WSFEX services and authorized certificates.
+
+After any change to point registration, rerun discovery through the isolated
+signer:
 
 ```bash
 bun --filter @tax-engine/api homologation:probe-points-of-sale
@@ -35,11 +72,13 @@ The command reads `ARCA_HOMOLOGATION_WORKSPACE_ID` and
 `ARCA_HOMOLOGATION_ISSUER_PROFILE_REF` from the server environment, calls
 `FEXGetPARAM_PtoVenta`, and outputs only active point numbers and receipt hashes.
 It exits `2` for an empty list and refuses to run when `ARCA_ENVIRONMENT=production`.
-That receipt is the evidence used by the deterministic onboarding endpoint
+An empty list is investigated with the signer's exact accepted-voucher readback
+for the configured homologation issuer; it is not a generic bypass. That
+receipt is the evidence used by the deterministic onboarding endpoint
 `POST /v1/arca-onboarding/runs/:id/api-verification/wsfex`, after delegation.
 The endpoint requires the active point selected during the earlier portal step
-to appear in ARCA's result and binds the receipt to the exact issuer-profile hash
-and represented-CUIT commitment recorded during delegation. Reclaim may support
+to appear in ARCA's result or in that exact issuer-bound readback, and binds the
+receipt to the issuer-profile hash and represented-CUIT commitment recorded during delegation. Reclaim may support
 the earlier portal discovery, but it cannot satisfy this API-verification step.
 
 The command exits `0` only when all of these are true:

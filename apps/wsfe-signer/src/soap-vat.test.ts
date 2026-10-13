@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { SoapWsfeAuthorityClient } from './soap';
 import { BREAKDOWN_21, BREAKDOWN_MIXED, buildVatAdjustmentCase, buildVatInvoiceCase, fceEmission, RECEPTOR_CONSUMIDOR_FINAL, RECEPTOR_RI } from './test-fixtures-vat';
 
-const ticket = { token: 'tok', sign: 'sig', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' };
+const ticket = { token: 'tok', sign: 'sig', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' };
 
 function capturing(onBody: (body: string) => void, cbteTipo: number, cbteNro: string, docNro: string) {
   return new SoapWsfeAuthorityClient('homologation', async (_input, init) => {

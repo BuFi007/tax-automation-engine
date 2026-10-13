@@ -23,10 +23,13 @@ describe('official WSFEX SOAP transport', () => {
     expect(capturedUrl).toBe('https://wswhomo.afip.gov.ar/wsfexv1/service.asmx');
     expect(capturedBody).toContain('<Fecha_pago>20260711</Fecha_pago>');
     expect(capturedBody).toContain('<CanMisMonExt>S</CanMisMonExt>');
+    expect(capturedBody).toContain('<Tipo_expo>2</Tipo_expo><Permiso_existente></Permiso_existente>');
     expect(capturedBody).toContain('<Cliente>A &amp; B &lt;Corp&gt;</Cliente>');
     expect(capturedBody).toContain('<Id_impositivo>US&lt;&amp;ID</Id_impositivo>');
     expect(capturedBody).toContain('<Token>token&lt;&amp;</Token>');
     expect(result).toEqual(expect.objectContaining({ status: 'accepted', requestId: '101', invoiceNumber: '6', cae: '12345678901234', caeExpiry: '2026-07-21', reprocessed: false }));
+    await client.authorize(ticket, payload({ sameCurrencyPayment: false }));
+    expect(capturedBody).toContain('<CanMisMonExt>N</CanMisMonExt>');
   });
 
   test('omits invoice-only fields and emits one exact association for note 21', async () => {
@@ -98,6 +101,7 @@ describe('official WSFEX SOAP transport', () => {
       </FEXResultGet><FEXErr><ErrCode>0</ErrCode></FEXErr>`));
     const result = await client.getPointsOfSale(ticket);
     expect(result.activePoints).toEqual([4]);
+    expect(result.listedCount).toBe(4);
     expect(result.rawResponseHash).toMatch(/^[a-f0-9]{64}$/);
   });
 

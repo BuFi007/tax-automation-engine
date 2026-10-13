@@ -1,9 +1,12 @@
+import { assertArcaFiscalBeta } from './arca-fiscal-beta';
 import { hashCanonical, type FacturaEAgentRunV1 } from '@tax-engine/core';
 import {
   pointOfSaleDiscoverySchema,
+  pointOfSaleReadbackSchema,
   sequenceReservationReceiptSchema,
   signerResponseSchema,
   type PointOfSaleDiscovery,
+  type PointOfSaleReadback,
   type SequenceReservationReceipt,
 } from '@tax-engine/wsfex-signer/contracts';
 
@@ -37,6 +40,11 @@ export interface WsfexPointOfSaleGateway {
     workspaceId: string;
     issuerProfileRef: string;
   }>): Promise<PointOfSaleDiscovery>;
+  verifyPointOfSaleReadback(input: Readonly<{
+    workspaceId: string;
+    issuerProfileRef: string;
+    pointOfSale: 2;
+  }>): Promise<PointOfSaleReadback>;
 }
 
 export interface WsfexSequenceGateway {
@@ -70,7 +78,8 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
 
   constructor(
     private readonly config: Readonly<{ baseUrl: string; token: string; environment: 'homologation' | 'production' }>,
-    private readonly fetcher: WsfexFetch = (input, init) => fetch(input, init)
+    private readonly fetcher: WsfexFetch = (input, init) => fetch(input, init),
+    private readonly effectGuard: ((workspaceId: string) => void) | null = null
   ) {
     const endpoint = new URL(config.baseUrl);
     if (
@@ -92,7 +101,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     const baseUrl = process.env.ARCA_SIGNER_URL ?? '';
     const token = process.env.ARCA_SIGNER_TOKEN ?? '';
     const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
-    return baseUrl && token ? new HttpWsfexGateway({ baseUrl, token, environment }) : null;
+    return baseUrl && token ? new HttpWsfexGateway({ baseUrl, token, environment }, undefined, assertArcaFiscalBeta) : null;
   }
 
   authorize(input: WsfexInvoiceRequest): Promise<WsfexAuthorityResult> {
@@ -124,6 +133,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     pointOfSale: number;
     idempotencyKey: string;
   }>): Promise<SequenceReservationReceipt> {
+    this.effectGuard?.(input.workspaceId);
     const endpoint = new URL('/v1/wsfexv1/sequence/reservations', `${this.#baseOrigin}/`);
     if (endpoint.origin !== this.#baseOrigin) throw new Error('ARCA_SIGNER_ORIGIN_MISMATCH');
     const body = {
@@ -231,11 +241,41 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     return receipt;
   }
 
+  async verifyPointOfSaleReadback(input: Readonly<{
+    workspaceId: string; issuerProfileRef: string; pointOfSale: 2;
+  }>): Promise<PointOfSaleReadback> {
+    if (this.config.environment !== 'homologation') throw new Error('ARCA_POS_READBACK_HOMOLOGATION_ONLY');
+    const endpoint = new URL('/v1/wsfexv1/params/points-of-sale/verify-readback', `${this.#baseOrigin}/`);
+    if (endpoint.origin !== this.#baseOrigin) throw new Error('ARCA_SIGNER_ORIGIN_MISMATCH');
+    let response: Response;
+    try {
+      response = await this.fetcher(endpoint, {
+        method: 'POST', redirect: 'error',
+        headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(input), signal: AbortSignal.timeout(30_000),
+      });
+    } catch { throw new Error('ARCA_POS_READBACK_UNAVAILABLE'); }
+    if (!response.ok) {
+      await readBoundedResponseBody(response, 64 * 1024, 'ARCA_SIGNER_ERROR_RESPONSE_TOO_LARGE');
+      throw new Error(`ARCA_POS_READBACK_REJECTED_${response.status}`);
+    }
+    const body = await readBoundedResponseBody(response, 64 * 1024, 'ARCA_POS_READBACK_RESPONSE_TOO_LARGE');
+    let receipt: PointOfSaleReadback;
+    try { receipt = pointOfSaleReadbackSchema.parse(JSON.parse(body)); }
+    catch { throw new Error('ARCA_POS_READBACK_RESPONSE_INVALID'); }
+    if (receipt.workspaceId !== input.workspaceId
+      || receipt.issuerProfileReferenceHash !== hashCanonical(input.issuerProfileRef)
+      || receipt.pointOfSale !== input.pointOfSale)
+      throw new Error('ARCA_POS_READBACK_BINDING_MISMATCH');
+    return receipt;
+  }
+
   private async call(
     path: string,
     input: WsfexInvoiceRequest,
     adjustmentId: string | null = null
   ): Promise<WsfexAuthorityResult> {
+    this.effectGuard?.(input.run.workspaceId);
     if (!input.run.intentHash || !input.run.intent) throw new Error('FROZEN_INTENT_REQUIRED');
     if (!/^[1-9]\d{0,14}$/.test(input.requestId)) throw new Error('WSFEX_REQUEST_ID_INVALID');
     const adjustment = adjustmentId ? input.run.adjustments.find(candidate => candidate.adjustmentId === adjustmentId) : null;

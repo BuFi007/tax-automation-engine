@@ -1,5 +1,73 @@
 # Isolated WSFEX signer
 
+## AFIP SDK development access probe
+
+`src/afipsdk.ts` implements managed HTTPS authority transport. Set
+`WSFEX_AUTHORITY_PROVIDER=afipsdk` to select it; the default remains `direct`
+until issuer-scoped homologation validates the provider path. The signer takes
+its WSAA ticket from the encrypted boundary and sends no certificate or private
+key to AFIP SDK for business-method calls. The API token alone does not
+provision customer issuers or replace persistent attempt/sequence state.
+Sending WSAA Token/Sign/CUIT to AFIP SDK requires separate issuer approval and
+`AFIPSDK_WSAA_TICKET_TRANSFER_APPROVED=true`; startup otherwise fails closed.
+
+From the repository root, store `AFIPSDK_ACCESS_TOKEN` in the ignored local file
+`.env.afipsdk.local` with permissions `0600`, then run:
+
+```sh
+bun --env-file=.env.afipsdk.local apps/wsfex-signer/scripts/probe-afipsdk.ts
+bun test apps/wsfex-signer/scripts/probe-afipsdk.test.ts
+```
+
+The probe is hardcoded to **development**, defaulting to the provider's shared
+CUIT 20409378472. Set `AFIPSDK_TEST_CUIT` in the ignored file to check an authorized
+custom issuer; its CUIT is masked in output. The demo probe reads WSFE's latest B voucher at
+point 1 and WSFEX sequence/POS data. A custom issuer additionally checks the exact
+first C and E vouchers. It never authorizes vouchers, generates PDFs
+or runs billed portal automations. It never sends a certificate or private key.
+Output omits provider tokens and WSAA tickets. `ready` means a query succeeded;
+`issuanceReady` also requires an active export point of sale. This is an access
+check, not the full homologation release gate.
+
+On 2026-09-21 authentication and reads succeeded for both services. WSFE returned
+B voucher 35170; WSFEX returned **no active export point of sale** for that demo
+CUIT. The adapter also successfully read its WSFEX sequence and DOL quote. An
+export-enabled homologation issuer is needed before testing Factura E issuance.
+
+On 2026-09-22 a supplied custom CUIT was checked in development. AFIP SDK rejected
+authentication with HTTP 400 and required `cert` and `key`. This does not establish
+whether its tax registration or points of sale are enabled: authentication must
+succeed first.
+
+On 2026-09-22 the owner's existing WSASS certificate and protected local key were
+verified to match. Earlier exploratory AFIP SDK `/auth` calls supplied that pair
+and returned HTTP 200 for both WSFE and WSFEX; the masked CUIT appeared under
+Development. This path is disabled in the probe and adapter: the private key now
+stays in the local WSAA boundary. See the historical
+[masked evidence](../../providers/homologation/evidence/2026-09-22-afipsdk-self-issuer-access.json).
+The 2026-09-23 custom-issuer probe without `cert`/`key` received HTTP 400 for
+both services. WSFEX authority calls can still use AFIP SDK with a WSAA ticket
+from the boundary; this route has not yet passed a live voucher readback.
+
+For the owner's CUIT, the direct read-only probe at
+`apps/arca-boundary/scripts/probe-self-homologation.ts` now uses the encrypted
+boundary database and reuses its WSAA tickets. It needs the homologation DB,
+master key, issuer scope and test CUIT settings. A legacy issuer missing its
+represented-CUIT commitment can be repaired with `--bind-local-issuer` on an
+isolated copy of that database; this reads the local cert/key and does not send
+them to AFIP SDK. ARCA registered point 1 for WSFE Monotributo and point 2 for
+WSFEX export on 2026-09-22; exact C 1/1 and E 2/1 readback passed on 2026-09-23,
+although point discovery remains empty. The default invocation is read-only and
+outputs no tickets. `--issue` remains an explicit sandbox-only smoke flag.
+Never set `ARCA_ENVIRONMENT=production` for the probe.
+The separate `probe-afipsdk-readback.ts` is read-only too, but requires the
+issuer's explicit approval to transmit the WSAA ticket to AFIP SDK before use.
+The AFIP SDK transport is selectable but still disabled by default; AFIP SDK PDF
+rendering can be integrated after an authorized CAE is available.
+
+Provider references: [API authentication](https://docs.afipsdk.com/integracion/api),
+[WSFEX integration](https://docs.afipsdk.com/siguientes-pasos/web-services/factura-de-exportacion).
+
 This service is the high-trust Path A provider behind Motora's safe
 [`SignerRequest`](../../providers/wsfex/openapi.yaml). It accepts only an opaque
 authority-payload reference and the frozen safe document echo; it never accepts
@@ -156,8 +224,8 @@ WSFEX_AR_HOLIDAYS=
 ```
 
 Production startup refuses to run unless `WSFEX_SIGNER_PRODUCTION_APPROVED=true`.
-It also refuses an in-memory attempt database or disabled sequence reservations
-in production. These local gates are
+Both environments refuse an in-memory attempt database; production also refuses
+disabled sequence reservations. These local gates are
 necessary but not sufficient. The public homologation WSDL contract was reviewed
 on 2026-07-15 and is checked by `verify:wsdl`; it exposes every field used by the
 exact comparator, including `Cmp_asoc.Cbte_cuit`. An authenticated homologation

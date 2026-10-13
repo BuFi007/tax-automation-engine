@@ -1139,6 +1139,7 @@ function createProofPendingOnboarding(workspaceId: string): ArcaOnboardingRunV1 
     kind: 'record_api_verification',
     verifiedServices: { wsfex: true, wsfe: true },
     activeExportPointOfSale: 7,
+    activeDomesticPointOfSale: 1,
     observedAt: GENERATED_AT,
     wsfexReceiptHash: hashCanonical('private-wsfex-receipt'),
     wsfeReceiptHash: hashCanonical('private-wsfe-receipt'),

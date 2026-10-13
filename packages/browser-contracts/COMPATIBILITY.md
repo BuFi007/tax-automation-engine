@@ -103,3 +103,8 @@ projections are returned as closed unavailable states and never substituted
 with aggregate portfolio data. Consumers must upgrade before calling
 `GET /v1/accountant-review-queue`; the separate decision ingress remains
 request-bound and server-only.
+
+Package `0.11.0` adds the required `domesticPointOfSale` field to ARCA onboarding
+runs so WSFE (Factura C) and WSFEX (Factura E) can report different verified
+points. Consumers of `./arca-onboarding` must upgrade before Tax emits the new
+run shape; an absent domestic point is represented as `{ number: null, active: false }`.

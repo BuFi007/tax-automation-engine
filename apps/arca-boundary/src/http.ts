@@ -1,6 +1,9 @@
 import {
+  issuerDelegationRequestSchema,
+  issuerPadronRequestSchema,
   issuerProvisionRequestSchema,
   issuerRevokeRequestSchema,
+  issuerStatusRequestSchema,
   payloadResolveRequestSchema,
   payloadRetireRequestSchema,
   payloadRevokeRequestSchema,
@@ -12,12 +15,16 @@ import {
 import { readBoundedBody } from './bounded-body';
 import { safeTokenEqual } from './crypto';
 import type { ArcaBoundaryService } from './service';
+import { queryIssuerPadron } from './padron';
 
 export type BoundaryTokens = Readonly<{
   payloadWriter: string;
   payloadResolver: string;
   wsaa: string;
+  status: string;
   admin: string;
+  padron?: string | undefined;
+  issuerRevoke?: string | undefined;
 }>;
 
 export function createBoundaryHandler(
@@ -36,6 +43,13 @@ export function createBoundaryHandler(
         const requestedService = wsaaServiceSchema.safeParse(url.searchParams.get('service'));
         if (!requestedService.success || requestedEnvironment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
         return json(await service.health(environment, occurredAt, requestedService.data));
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/wsaa/issuers/status') {
+        if (!authorized(request, tokens.status)) return json({ error: 'UNAUTHORIZED' }, 401);
+        if (url.searchParams.size !== 3) return json({ error: 'INVALID_REQUEST' }, 400);
+        const input = issuerStatusRequestSchema.parse(Object.fromEntries(url.searchParams));
+        if (input.environment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
+        return json(service.issuerStatus(input.workspaceId, input.issuerProfileRef, input.environment, occurredAt));
       }
       if (request.method !== 'POST') return json({ error: 'NOT_FOUND' }, 404);
       const requiredToken = tokenForPath(url.pathname, tokens);
@@ -82,8 +96,20 @@ export function createBoundaryHandler(
         if (input.environment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
         return json(service.provisionIssuer(input, occurredAt), 201);
       }
-      if (url.pathname === '/v1/wsaa/issuers/revoke') {
+      if (url.pathname === '/v1/wsaa/issuers/delegations') {
         if (!authorized(request, tokens.admin)) return json({ error: 'UNAUTHORIZED' }, 401);
+        const input = issuerDelegationRequestSchema.parse(body);
+        if (input.environment !== environment) return json({ error: 'WSAA_BROKER_ENVIRONMENT_MISMATCH' }, 400);
+        return json(service.delegateIssuerFromStoredCertificate(input, occurredAt), 201);
+      }
+      if (url.pathname === '/v1/padron/issuer-prefill') {
+        if (!tokens.padron || !authorized(request, tokens.padron)) return json({ error: 'UNAUTHORIZED' }, 401);
+        if (environment !== 'homologation') return json({ error: 'ARCA_PADRON_HOMOLOGATION_ONLY' }, 400);
+        const input = issuerPadronRequestSchema.parse(body);
+        return json(await queryIssuerPadron(service, input, occurredAt));
+      }
+      if (url.pathname === '/v1/wsaa/issuers/revoke') {
+        if (!authorized(request, tokens.issuerRevoke ?? tokens.admin)) return json({ error: 'UNAUTHORIZED' }, 401);
         const input = issuerRevokeRequestSchema.parse(body);
         return json(service.revokeIssuer(input.issuerProfileRef, input.certificateFingerprint, occurredAt));
       }
@@ -109,7 +135,10 @@ function tokenForPath(path: string, tokens: BoundaryTokens): string | null {
   if (path === '/v1/authority-payloads/resolve') return tokens.payloadResolver;
   if (path === '/v1/authority-payloads/retire-eligible') return tokens.admin;
   if (path === '/v1/wsaa/tickets') return tokens.wsaa;
-  if (path === '/v1/wsaa/issuers' || path === '/v1/wsaa/issuers/revoke') return tokens.admin;
+  if (path === '/v1/wsaa/issuers') return tokens.admin;
+  if (path === '/v1/wsaa/issuers/delegations') return tokens.admin;
+  if (path === '/v1/padron/issuer-prefill') return tokens.padron ?? null;
+  if (path === '/v1/wsaa/issuers/revoke') return tokens.issuerRevoke ?? tokens.admin;
   return null;
 }
 

@@ -6,9 +6,13 @@ import {
   assertPayloadMatchesRequest,
   deriveVatTotal,
   isInvoiceLeg,
+  nextVoucherSchema,
+  pointOfSaleDiscoverySchema,
+  pointOfSaleReadbackSchema,
   signerRequestSchema,
   type AuthorityPayload,
   type FeCompConsultarEcho,
+  type NextVoucherRequest,
   type SignerRequest,
   type SignerResponse,
 } from './contracts';
@@ -19,7 +23,10 @@ import type { WsaaTicketBroker, WsfeAccessTicket } from './wsaa';
 
 export class WsfeSignerService {
   constructor(
-    private readonly config: Readonly<{ environment: 'homologation' | 'production'; signerVersion: string }>,
+    private readonly config: Readonly<{
+      environment: 'homologation' | 'production'; signerVersion: string;
+      homologationPointOfSaleProof?: Readonly<{ workspaceId: string; issuerProfileRef: string; representedCuit: string; representedCuitCommitment: string; cae: string }>;
+    }>,
     private readonly store: SignerAttemptStore,
     private readonly vault: AuthorityPayloadVault,
     private readonly wsaa: WsaaTicketBroker,
@@ -36,6 +43,63 @@ export class WsfeSignerService {
     };
   }
 
+  async discoverPointsOfSale(context: Readonly<{ workspaceId: string; issuerProfileRef: string }>, occurredAt: string) {
+    const ticket = await this.wsaa.getTicket({ environment: this.config.environment, ...context });
+    const discovery = await this.authority.getPointsOfSale(ticket);
+    const material = {
+      version: 'arca-wsfe-point-of-sale-discovery-v1' as const,
+      environment: this.config.environment,
+      workspaceId: context.workspaceId,
+      issuerProfileReferenceHash: hashCanonical(context.issuerProfileRef),
+      representedCuitCommitment: ticket.representedCuitCommitment,
+      activePoints: [...discovery.activePoints],
+      listedCount: discovery.listedCount,
+      authorityResponseHash: discovery.rawResponseHash,
+      observedAt: occurredAt,
+    };
+    return pointOfSaleDiscoverySchema.parse({ ...material, evidenceHash: hashCanonical(material) });
+  }
+
+  async verifyPointOfSaleReadback(context: Readonly<{ workspaceId: string; issuerProfileRef: string; pointOfSale: 1 }>, occurredAt: string) {
+    if (this.config.environment !== 'homologation') throw new Error('WSFE_POS_READBACK_HOMOLOGATION_ONLY');
+    const ticket = await this.wsaa.getTicket({ environment: 'homologation', workspaceId: context.workspaceId, issuerProfileRef: context.issuerProfileRef });
+    const readback = await this.readbackKnownHomologationVoucher(ticket, context.workspaceId, context.issuerProfileRef, context.pointOfSale, 11);
+    const material = {
+      version: 'arca-wsfe-point-of-sale-readback-v1' as const,
+      environment: 'homologation' as const,
+      workspaceId: context.workspaceId,
+      issuerProfileReferenceHash: hashCanonical(context.issuerProfileRef),
+      representedCuitCommitment: ticket.representedCuitCommitment,
+      pointOfSale: 1 as const,
+      documentType: 11 as const,
+      invoiceNumber: '1' as const,
+      ...readback,
+      observedAt: occurredAt,
+    };
+    return pointOfSaleReadbackSchema.parse({ ...material, evidenceHash: hashCanonical(material) });
+  }
+
+  async getNextVoucher(context: NextVoucherRequest, occurredAt: string) {
+    const ticket = await this.wsaa.getTicket({ environment: this.config.environment, workspaceId: context.workspaceId, issuerProfileRef: context.issuerProfileRef });
+    await this.ensurePointOfSaleActive(ticket, context.workspaceId, context.issuerProfileRef, context.pointOfSale, context.documentType);
+    const lastInvoiceNumber = await this.authority.getLastInvoiceNumber(ticket, context.documentType, context.pointOfSale);
+    if (!/^\d{1,8}$/.test(lastInvoiceNumber)) throw new Error('WSFE_LAST_VOUCHER_INVALID');
+    const nextInvoiceNumber = (BigInt(lastInvoiceNumber) + 1n).toString();
+    const material = {
+      version: 'arca-wsfe-next-voucher-v1' as const,
+      environment: this.config.environment,
+      workspaceId: context.workspaceId,
+      issuerProfileReferenceHash: hashCanonical(context.issuerProfileRef),
+      representedCuitCommitment: ticket.representedCuitCommitment,
+      documentType: context.documentType,
+      pointOfSale: context.pointOfSale,
+      lastInvoiceNumber,
+      nextInvoiceNumber,
+      observedAt: occurredAt,
+    };
+    return nextVoucherSchema.parse({ ...material, evidenceHash: hashCanonical(material) });
+  }
+
   // Single idempotent entry point. A fresh requestId runs the full first
   // attempt; a settled one replays its receipt; an ambiguous/pending one
   // re-drives recovery by re-sending the byte-identical FECAESolicitar.
@@ -44,13 +108,15 @@ export class WsfeSignerService {
     const existing = this.store.get(request.requestId);
     if (existing) {
       this.assertAttemptBinding(existing, request);
+      if (existing.response?.status === 'accepted' && !existing.response.feCompConsultarEcho)
+        return this.confirmAcceptedReadback(request, existing, occurredAt);
       if (existing.response && existing.state !== 'ambiguous') return existing.response;
       return this.executeExisting(request, existing, occurredAt);
     }
     const resolved = await this.vault.resolve(request.authorityPayloadRef);
     assertPayloadMatchesRequest(resolved.payload, request);
     const ticket = await this.ticket(request, resolved.payload);
-    await this.assertAuthorityPreflight(resolved.payload, ticket, occurredAt);
+    await this.assertAuthorityPreflight(request, resolved.payload, ticket, occurredAt);
     const attempt = this.store.begin({
       request,
       payloadReferenceHash: hashCanonical(request.authorityPayloadRef),
@@ -59,6 +125,21 @@ export class WsfeSignerService {
       occurredAt,
     });
     return this.performIssuance(request, resolved.payload, attempt, ticket, occurredAt, false);
+  }
+
+  private async confirmAcceptedReadback(request: SignerRequest, existing: SignerAttempt, occurredAt: string): Promise<SignerResponse> {
+    const receipt = existing.response!;
+    const resolved = await this.vault.resolve(request.authorityPayloadRef);
+    assertPayloadMatchesRequest(resolved.payload, request);
+    if (resolved.payloadHash !== existing.payloadHash) throw new Error('WSFE_RECOVERY_PAYLOAD_HASH_MISMATCH');
+    const ticket = await this.ticket(request, resolved.payload);
+    const retrieved = await this.confirmEcho(request, resolved.payload, ticket);
+    if (!retrieved) return receipt;
+    if (retrieved.cae !== receipt.cae || retrieved.caeExpiry !== receipt.caeFchVto)
+      throw new Error('WSFE_ACCEPTED_READBACK_CAE_MISMATCH');
+    const verified = { ...receipt, feCompConsultarEcho: echoFromRetrieved(retrieved) };
+    this.store.complete(request.requestId, verified, occurredAt);
+    return verified;
   }
 
   private parseRequest(rawRequest: unknown, idempotencyKey: string): SignerRequest {
@@ -144,8 +225,8 @@ export class WsfeSignerService {
     }
   }
 
-  private async assertAuthorityPreflight(payload: AuthorityPayload, ticket: WsfeAccessTicket, occurredAt: string): Promise<void> {
-    await this.authority.assertPointOfSaleActive(ticket, payload.pointOfSale);
+  private async assertAuthorityPreflight(request: SignerRequest, payload: AuthorityPayload, ticket: WsfeAccessTicket, occurredAt: string): Promise<void> {
+    await this.assertPointOfSaleActive(request, payload, ticket);
     assertIssueDateWithinWindow(payload.issueDate, payload.concept, occurredAt);
     const lastInvoiceNumber = await this.authority.getLastInvoiceNumber(ticket, payload.documentType, payload.pointOfSale);
     // Freeze-time sequence guard. If someone else emitted on this PoS meanwhile,
@@ -160,6 +241,38 @@ export class WsfeSignerService {
       if (original.documentType !== association.documentType) throw new Error('WSFE_ASSOCIATED_DOCUMENT_TYPE_MISMATCH');
       if (original.currencyId !== 'PES') throw new Error('WSFE_ASSOCIATED_DOCUMENT_CURRENCY_MISMATCH');
     }
+  }
+
+  private async assertPointOfSaleActive(request: SignerRequest, payload: AuthorityPayload, ticket: WsfeAccessTicket): Promise<void> {
+    return this.ensurePointOfSaleActive(ticket, request.workspaceId, payload.issuerProfileRef, payload.pointOfSale, payload.documentType);
+  }
+
+  private async ensurePointOfSaleActive(ticket: WsfeAccessTicket, workspaceId: string, issuerProfileRef: string, pointOfSale: number, documentType: number): Promise<void> {
+    try {
+      await this.authority.assertPointOfSaleActive(ticket, pointOfSale);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'WSFE_POINT_OF_SALE_NOT_ACTIVE') throw error;
+      await this.readbackKnownHomologationVoucher(ticket, workspaceId, issuerProfileRef, pointOfSale, documentType);
+    }
+  }
+
+  private async readbackKnownHomologationVoucher(
+    ticket: WsfeAccessTicket, workspaceId: string, issuerProfileRef: string, pointOfSale: number, documentType: number
+  ) {
+    const proof = this.config.homologationPointOfSaleProof;
+    if (this.config.environment !== 'homologation' || !proof
+      || workspaceId !== proof.workspaceId || issuerProfileRef !== proof.issuerProfileRef
+      || ticket.representedCuit !== proof.representedCuit
+      || ticket.representedCuitCommitment !== proof.representedCuitCommitment
+      || documentType !== 11 || pointOfSale !== 1) throw new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    const discovery = await this.authority.getPointsOfSale(ticket);
+    if (discovery.listedCount !== 0) throw new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    // ponytail: this exact sandbox voucher proves only the known C point; remove this seam once ARCA discovery reports it.
+    const document = await this.authority.getDocument(ticket, 11, 1, '1');
+    if (!document || document.result !== 'A' || document.documentType !== 11
+      || document.pointOfSale !== 1 || document.invoiceNumber !== '1' || document.cae !== proof.cae)
+      throw new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    return { caeHash: hashCanonical(document.cae), discoveryResponseHash: discovery.rawResponseHash, authorityResponseHash: document.rawResponseHash };
   }
 
   private ticket(request: SignerRequest, payload: AuthorityPayload): Promise<WsfeAccessTicket> {

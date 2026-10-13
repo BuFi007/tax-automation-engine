@@ -68,6 +68,7 @@ export type ArcaOnboardingRunV1 = Readonly<{
     active: boolean;
     candidates?: readonly number[];
   }>;
+  domesticPointOfSale?: Readonly<{ number: number | null; active: boolean }>;
   delegation: Readonly<Record<ArcaWebService, boolean>>;
   authorityBinding?: Readonly<{
     issuerProfileReferenceHash: string | null;
@@ -78,6 +79,7 @@ export type ArcaOnboardingRunV1 = Readonly<{
     wsfe: boolean;
     observedAt: IsoDateTime | null;
   }>;
+  apiVerificationReceipts?: Readonly<Record<ArcaWebService, string | null>>;
   reclaimSession: ArcaOnboardingReclaimSessionV1 | null;
   humanAuth: Readonly<{
     capturePolicy: HumanAuthCapturePolicyV1;
@@ -112,6 +114,18 @@ export type ArcaOnboardingReclaimSessionV1 = Readonly<{
 }>;
 
 export type ArcaOnboardingCommand =
+  | Readonly<{
+      kind: 'record_existing_issuer_setup';
+      confirmedExistingSetup: true;
+      taxpayerReferenceHash: string;
+      issuerProfileReferenceHash: string;
+      representedCuitCommitment: string;
+      boundaryReceiptHash: string;
+      certificateFingerprintHash: string;
+      exportPointOfSale: number | null;
+      domesticPointOfSale: number | null;
+      idempotencyKey: string;
+    }>
   | Readonly<{
       kind: 'complete_login_handoff';
       browserSessionReferenceHash: string;
@@ -156,9 +170,18 @@ export type ArcaOnboardingCommand =
       idempotencyKey: string;
     }>
   | Readonly<{
+      kind: 'record_service_api_verification';
+      service: ArcaWebService;
+      activePointOfSale: number;
+      observedAt: IsoDateTime;
+      receiptHash: string;
+      idempotencyKey: string;
+    }>
+  | Readonly<{
       kind: 'record_api_verification';
       verifiedServices: Readonly<Record<ArcaWebService, boolean>>;
       activeExportPointOfSale: number;
+      activeDomesticPointOfSale?: number;
       observedAt: IsoDateTime;
       wsfexReceiptHash: string | null;
       wsfeReceiptHash: string | null;
@@ -217,12 +240,14 @@ export function createArcaOnboardingRun(input: Readonly<{
       updatedAt: input.occurredAt,
       steps: ARCA_ONBOARDING_STEPS.map(step => initialStep(step)),
       pointOfSale: { number: null, source: null, active: false },
+      domesticPointOfSale: { number: null, active: false },
       delegation: { wsfex: false, wsfe: false },
       authorityBinding: {
         issuerProfileReferenceHash: null,
         representedCuitCommitment: null,
       },
       apiVerification: { wsfex: false, wsfe: false, observedAt: null },
+      apiVerificationReceipts: { wsfex: null, wsfe: null },
       reclaimSession: null,
       humanAuth: {
         capturePolicy: HUMAN_AUTH_CAPTURE_POLICY,
@@ -254,6 +279,47 @@ export function applyArcaOnboardingCommand(
   let safeMetadata: Readonly<Record<string, string | number | boolean | null>> = {};
 
   switch (command.kind) {
+    case 'record_existing_issuer_setup': {
+      requireCurrentStep(run, 'login_handoff');
+      if (run.environment !== 'homologation' || command.confirmedExistingSetup !== true)
+        throw new Error('ARCA_EXISTING_ISSUER_HOMOLOGATION_ONLY');
+      if (command.taxpayerReferenceHash !== run.taxpayerReferenceHash)
+        throw new Error('ARCA_EXISTING_ISSUER_TAXPAYER_MISMATCH');
+      assertHash(command.issuerProfileReferenceHash, 'ARCA_EXISTING_ISSUER_PROFILE_HASH_INVALID');
+      assertHash(command.representedCuitCommitment, 'ARCA_EXISTING_ISSUER_CUIT_COMMITMENT_INVALID');
+      assertHash(command.boundaryReceiptHash, 'ARCA_EXISTING_ISSUER_BOUNDARY_RECEIPT_INVALID');
+      assertHash(command.certificateFingerprintHash, 'ARCA_EXISTING_ISSUER_CERTIFICATE_HASH_INVALID');
+      if (run.requestedServices.includes('wsfex')) assertPointOfSale(command.exportPointOfSale, false);
+      else if (command.exportPointOfSale !== null) throw new Error('ARCA_WSFEX_NOT_REQUESTED');
+      if (run.requestedServices.includes('wsfe')) assertPointOfSale(command.domesticPointOfSale, false);
+      else if (command.domesticPointOfSale !== null) throw new Error('ARCA_WSFE_NOT_REQUESTED');
+      const selectedPoint = run.requestedServices.includes('wsfex')
+        ? command.exportPointOfSale : command.domesticPointOfSale;
+      if (selectedPoint === null) throw new Error('ARCA_POINT_OF_SALE_REQUIRED');
+      const skipped = ['login_handoff', 'human_auth', 'service_adherence',
+        'point_of_sale_discovery', 'point_of_sale_creation'] as const;
+      let steps = run.steps;
+      for (const step of skipped) {
+        steps = updateStep(steps, step, { state: 'skipped', completedAt: occurredAt,
+          safeMetadata: { reason: 'preexisting_setup_not_observed_by_bufi' } });
+      }
+      steps = updateStep(steps, 'ws_delegation', { state: 'completed', completedAt: occurredAt,
+        evidenceHashes: [command.boundaryReceiptHash, command.certificateFingerprintHash],
+        safeMetadata: { source: 'live_certificate_boundary' } });
+      steps = updateStep(steps, 'api_verification', { state: 'action_required' });
+      next = { ...run, currentStep: 'api_verification', steps,
+        pointOfSale: { number: selectedPoint, source: 'discovered', active: true },
+        domesticPointOfSale: { number: command.domesticPointOfSale,
+          active: run.requestedServices.includes('wsfe') },
+        delegation: { wsfex: run.requestedServices.includes('wsfex'),
+          wsfe: run.requestedServices.includes('wsfe') },
+        authorityBinding: {
+          issuerProfileReferenceHash: command.issuerProfileReferenceHash,
+          representedCuitCommitment: command.representedCuitCommitment,
+        } };
+      safeMetadata = { preexistingIssuer: true, requestedServiceCount: run.requestedServices.length };
+      break;
+    }
     case 'complete_login_handoff':
       requireCurrentStep(run, 'login_handoff');
       assertHash(command.browserSessionReferenceHash, 'BROWSER_SESSION_REFERENCE_HASH_INVALID');
@@ -400,13 +466,47 @@ export function applyArcaOnboardingCommand(
       };
       safeMetadata = { delegatedServiceCount: run.requestedServices.length };
       break;
+    case 'record_service_api_verification': {
+      requireCurrentStep(run, 'api_verification');
+      if (!run.requestedServices.includes(command.service)) throw new Error('ARCA_SERVICE_NOT_REQUESTED');
+      if (!run.authorityBinding?.issuerProfileReferenceHash || !run.authorityBinding?.representedCuitCommitment)
+        throw new Error('ARCA_AUTHORITY_BINDING_REQUIRED');
+      assertHash(command.receiptHash, 'ARCA_API_RECEIPT_HASH_INVALID');
+      assertPointOfSale(command.activePointOfSale, false);
+      if (command.service === 'wsfex' && (command.activePointOfSale !== run.pointOfSale.number || !run.pointOfSale.active))
+        throw new Error('ARCA_POINT_OF_SALE_VERIFICATION_MISMATCH');
+      if (command.service === 'wsfe' && !run.requestedServices.includes('wsfex')
+        && (command.activePointOfSale !== run.pointOfSale.number || !run.pointOfSale.active))
+        throw new Error('ARCA_POINT_OF_SALE_VERIFICATION_MISMATCH');
+      const verifiedServices = { ...run.apiVerification, [command.service]: true, observedAt: command.observedAt };
+      const receipts = { wsfex: run.apiVerificationReceipts?.wsfex ?? null, wsfe: run.apiVerificationReceipts?.wsfe ?? null, [command.service]: command.receiptHash };
+      next = {
+        ...run,
+        apiVerification: verifiedServices,
+        apiVerificationReceipts: receipts,
+        ...(command.service === 'wsfe'
+          ? { domesticPointOfSale: { number: command.activePointOfSale, active: true } }
+          : run.domesticPointOfSale ? { domesticPointOfSale: run.domesticPointOfSale } : {}),
+      };
+      if (requestedServicesSatisfied(run.requestedServices, verifiedServices)) {
+        next = completeStep(next, 'api_verification', occurredAt, [receipts.wsfex, receipts.wsfe].filter((value): value is string => value !== null), {
+          exportPointOfSale: run.pointOfSale.number,
+          domesticPointOfSale: next.domesticPointOfSale?.number ?? null,
+          wsfexVerified: verifiedServices.wsfex,
+          wsfeVerified: verifiedServices.wsfe,
+        });
+      }
+      safeMetadata = { verifiedService: command.service, allRequestedServicesVerified: next.currentStep !== 'api_verification' };
+      break;
+    }
     case 'record_api_verification':
       requireCurrentStep(run, 'api_verification');
-      if (run.requestedServices.includes('wsfex') && (
+      if (run.requestedServices.length > 0 && (
         !run.authorityBinding?.issuerProfileReferenceHash
         || !run.authorityBinding?.representedCuitCommitment
       )) throw new Error('ARCA_WSFEX_AUTHORITY_BINDING_REQUIRED');
       assertPointOfSale(command.activeExportPointOfSale, false);
+      if (run.requestedServices.includes('wsfe')) assertPointOfSale(command.activeDomesticPointOfSale ?? null, false);
       assertRequestedReceiptHash(run.requestedServices, 'wsfex', command.wsfexReceiptHash, 'WSFEX_RECEIPT_HASH_INVALID');
       assertRequestedReceiptHash(run.requestedServices, 'wsfe', command.wsfeReceiptHash, 'WSFE_RECEIPT_HASH_INVALID');
       if (command.activeExportPointOfSale !== run.pointOfSale.number || !run.pointOfSale.active) {
@@ -417,12 +517,15 @@ export function applyArcaOnboardingCommand(
       }
       next = completeStep(run, 'api_verification', occurredAt, [command.wsfexReceiptHash, command.wsfeReceiptHash].filter((value): value is string => value !== null), {
         exportPointOfSale: command.activeExportPointOfSale,
+        domesticPointOfSale: command.activeDomesticPointOfSale ?? null,
         wsfexVerified: command.verifiedServices.wsfex,
         wsfeVerified: command.verifiedServices.wsfe,
       });
       next = {
         ...next,
+        domesticPointOfSale: { number: command.activeDomesticPointOfSale ?? null, active: command.activeDomesticPointOfSale !== undefined },
         apiVerification: { ...command.verifiedServices, observedAt: command.observedAt },
+        apiVerificationReceipts: { wsfex: command.wsfexReceiptHash, wsfe: command.wsfeReceiptHash },
       };
       safeMetadata = { authoritativeApiVerification: true };
       break;
@@ -504,7 +607,9 @@ export function arcaOnboardingNextActions(run: ArcaOnboardingRunV1): readonly st
       : ['DISCOVER_EXPORT_POINT_OF_SALE'];
     case 'point_of_sale_creation': return ['USER_CONFIRM_POINT_OF_SALE_CREATION'];
     case 'ws_delegation': return ['USER_CONFIRM_WEB_SERVICE_DELEGATION'];
-    case 'api_verification': return ['VERIFY_WSFEX_AND_WSFE'];
+    case 'api_verification': return run.apiVerification.wsfex || run.apiVerification.wsfe
+      ? run.requestedServices.filter(service => !run.apiVerification[service]).map(service => `VERIFY_${service.toUpperCase()}_API`)
+      : ['VERIFY_WSFEX_AND_WSFE'];
     case 'zk_evidence': return ['CAPTURE_RECLAIM_WITNESS_PROOF'];
     case 'ready': return [];
   }

@@ -3,11 +3,74 @@ import { describe, expect, test } from 'bun:test';
 import { createBoundaryHandler } from './http';
 import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
-import { authorityPayload, NOW } from './test-fixtures';
+import { authorityPayload, certificateBundle, CUIT, NOW, WSFE_RECEPTOR_CUIT } from './test-fixtures';
 
-const tokens = { payloadWriter: 'writer-token', payloadResolver: 'resolver-token', wsaa: 'wsaa-token', admin: 'admin-token' };
+const tokens = { payloadWriter: 'writer-token', payloadResolver: 'resolver-token', wsaa: 'wsaa-token', status: 'status-token', admin: 'admin-token', issuerRevoke: 'revoke-token', padron: 'padron-token' };
 
 describe('ARCA boundary HTTP scopes', () => {
+  test('reports only tenant-scoped issuer status without claiming authority readiness', async () => {
+    const store = new ArcaBoundaryStore(Buffer.alloc(32, 9), ':memory:');
+    const service = new ArcaBoundaryService(store, {
+      async login() {
+        return { token: 'secret-token', sign: 'secret-sign', expiresAt: '2026-07-11T20:00:00.000Z', safeReceiptHash: 'a'.repeat(64) };
+      },
+    }, undefined, Buffer.alloc(32, 7));
+    const handler = createBoundaryHandler(service, tokens, 'homologation', () => NOW);
+    const url = 'http://boundary/v1/wsaa/issuers/status?workspaceId=workspace-1&issuerProfileRef=issuer-1&environment=homologation';
+    const request = (token: string, target = url) => new Request(target, { headers: { authorization: `Bearer ${token}` } });
+    expect((await handler(request(tokens.wsaa))).status).toBe(401);
+    expect((await handler(request(tokens.admin))).status).toBe(401);
+    expect((await handler(request(tokens.status, url.replace('homologation', 'production')))).status).toBe(400);
+    expect((await handler(request(tokens.status, `${url}&workspaceId=workspace-other`))).status).toBe(400);
+    const empty = await handler(request(tokens.status));
+    expect(await empty.json()).toEqual(expect.objectContaining({ configured: false, active: false }));
+
+    const bundle = certificateBundle();
+    const provisioned = service.provisionIssuer({
+      version: 'wsaa-issuer-provision-v1', workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1', environment: 'homologation',
+      certificateHolderCuit: CUIT, representedCuit: CUIT, ...bundle, delegationConfirmed: true, replaceCertificateFingerprint: null,
+    }, NOW.toISOString());
+    const first = await handler(request(tokens.status));
+    const firstStatus = await first.json() as any;
+    expect(firstStatus).toEqual(expect.objectContaining({ configured: true, active: true, delegationConfirmed: true, certificateFingerprint: provisioned.certificateFingerprint }));
+    expect(firstStatus.certificate.current).toBe(true);
+    expect(firstStatus.representedCuitMasked).toBe(`${CUIT.slice(0, 2)}******${CUIT.slice(-3)}`);
+    expect(firstStatus.representedCuitLast4).toBe(CUIT.slice(-4));
+    expect(firstStatus.representedCuitCommitment).toBe(provisioned.representedCuitCommitment);
+    expect(firstStatus.taxpayerReferenceHash).toBe('376ec16044bd66fceca7ddd3d1499a7867b643bdab2f74ead3fe0627d4a8784b');
+    expect(firstStatus.services.wsfe).toEqual({ wsaaTicketCached: false, authorityStatus: 'not_checked' });
+    const delegation = {
+      version: 'wsaa-issuer-delegation-v1', templateWorkspaceId: 'workspace-1',
+      templateIssuerProfileRef: 'issuer-1', workspaceId: 'personal:other',
+      issuerProfileRef: 'issuer://other', environment: 'homologation',
+      representedCuit: WSFE_RECEPTOR_CUIT,
+    };
+    expect((await handler(post('/v1/wsaa/issuers/delegations', tokens.status, delegation))).status).toBe(401);
+    expect((await handler(post('/v1/wsaa/issuers/delegations', tokens.admin, delegation))).status).toBe(201);
+    expect((await handler(post('/v1/padron/issuer-prefill', tokens.status, {
+      version: 'arca-issuer-padron-request-v1', templateWorkspaceId: 'workspace-1',
+      templateIssuerProfileRef: 'issuer-1', cuit: CUIT,
+    }))).status).toBe(401);
+    await service.getTicket({ version: 'wsaa-ticket-request-v1', service: 'wsfe', environment: 'homologation', workspaceId: 'workspace-1', issuerProfileRef: 'issuer-1' }, NOW.toISOString());
+    const second = await handler(request(tokens.status));
+    const secondStatus = await second.json() as any;
+    expect(secondStatus.services.wsfe).toEqual({ wsaaTicketCached: true, authorityStatus: 'not_checked' });
+    expect(secondStatus.services.wsfex.wsaaTicketCached).toBe(false);
+    const body = JSON.stringify(secondStatus);
+    for (const secret of [CUIT, bundle.certificatePem, bundle.privateKeyPem, 'secret-token', 'secret-sign']) expect(body).not.toContain(secret);
+    const wrongTenant = await handler(request(tokens.status, url.replace('workspace-1', 'workspace-other')));
+    expect(await wrongTenant.json()).toEqual(expect.objectContaining({ configured: false, representedCuitMasked: null, taxpayerReferenceHash: null }));
+    const revokeBody = {
+      version: 'wsaa-issuer-revoke-v1', issuerProfileRef: 'issuer-1',
+      certificateFingerprint: provisioned.certificateFingerprint,
+    };
+    expect((await handler(post('/v1/wsaa/issuers/revoke', tokens.admin, revokeBody))).status).toBe(401);
+    expect((await handler(post('/v1/wsaa/issuers', tokens.issuerRevoke, revokeBody))).status).toBe(401);
+    expect((await handler(post('/v1/wsaa/issuers/revoke', tokens.issuerRevoke, revokeBody))).status).toBe(200);
+    const revoked = await handler(request(tokens.status));
+    expect(await revoked.json()).toEqual(expect.objectContaining({ configured: true, active: false, delegationConfirmed: false }));
+  });
+
   test('keeps payload write, payload resolve, and WSAA health credentials separate', async () => {
     const handler = createBoundaryHandler(
       new ArcaBoundaryService(new ArcaBoundaryStore(Buffer.alloc(32, 3), ':memory:')),

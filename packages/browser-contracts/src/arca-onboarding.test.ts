@@ -22,6 +22,7 @@ describe('browser-safe ARCA onboarding contract', () => {
 
     expect(arcaOnboardingBrowserMutationV1Schema.parse(projected)).toEqual(projected);
     expect(projected.run.currentStep).toBe('login_handoff');
+    expect(projected.run.domesticPointOfSale).toEqual({ number: null, active: false });
     expect(projected.run.steps.map(step => step.step)).toEqual([
       'login_handoff',
       'human_auth',
@@ -50,6 +51,17 @@ describe('browser-safe ARCA onboarding contract', () => {
         humanAuth: { ...input.humanAuth, completedAt: new Date().toISOString() },
       })
     ).toThrow();
+  });
+
+  test('projects the verified domestic point separately from export', () => {
+    const projected = projectArcaOnboardingBrowserRunV1({
+      ...internalRun(),
+      pointOfSale: { number: 2, source: 'created', active: true },
+      domesticPointOfSale: { number: 1, active: true },
+      apiVerification: { wsfex: true, wsfe: true, observedAt: '2026-07-16T12:00:00.000Z' },
+    });
+    expect(projected.pointOfSale.number).toBe(2);
+    expect(projected.domesticPointOfSale).toEqual({ number: 1, active: true });
   });
 
   test('returns only browser capability URLs for a Reclaim handoff', () => {

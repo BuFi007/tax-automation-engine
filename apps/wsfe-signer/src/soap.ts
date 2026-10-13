@@ -16,8 +16,8 @@ const ENDPOINTS = {
 const NOT_FOUND_ERROR_CODE = '602';
 
 type SoapFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-type XmlValue = string | number | boolean | null | XmlNode | XmlValue[];
-type XmlNode = { [key: string]: XmlValue };
+export type XmlValue = string | number | boolean | null | XmlNode | XmlValue[];
+export type XmlNode = { [key: string]: XmlValue };
 
 export type { DocumentType };
 export type Concept = 1 | 2 | 3;
@@ -71,11 +71,14 @@ export type WsfeRetrievedDocument = Readonly<{
   rawResponseHash: string;
 }>;
 
+export type WsfePointOfSaleDiscovery = Readonly<{ activePoints: readonly number[]; listedCount: number; rawResponseHash: string }>;
+
 export interface WsfeAuthorityClient {
   authorize(ticket: WsfeAccessTicket, payload: AuthorityPayload): Promise<WsfeAuthorizationResult>;
   getLastInvoiceNumber(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number): Promise<string>;
   getDocument(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number, invoiceNumber: string): Promise<WsfeRetrievedDocument | null>;
   assertPointOfSaleActive(ticket: WsfeAccessTicket, pointOfSale: number): Promise<void>;
+  getPointsOfSale(ticket: WsfeAccessTicket): Promise<WsfePointOfSaleDiscovery>;
   dummy(): Promise<Readonly<{ appServer: string; dbServer: string; authServer: string }>>;
 }
 
@@ -89,6 +92,65 @@ export class SoapWsfeAuthorityClient implements WsfeAuthorityClient {
 
   async authorize(ticket: WsfeAccessTicket, payload: AuthorityPayload): Promise<WsfeAuthorizationResult> {
     const response = await this.call('FECAESolicitar', `<Auth>${authXml(ticket)}</Auth>${caeRequestXml(payload, ticket.representedCuit)}`);
+    return normalizeWsfeAuthorization(response, payload);
+  }
+
+  async getLastInvoiceNumber(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number): Promise<string> {
+    const response = await this.call('FECompUltimoAutorizado', `<Auth>${authXml(ticket)}</Auth><PtoVta>${pointOfSale}</PtoVta><CbteTipo>${documentType}</CbteTipo>`);
+    return normalizeWsfeLastInvoiceNumber(response);
+  }
+
+  async getDocument(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number, invoiceNumber: string): Promise<WsfeRetrievedDocument | null> {
+    const response = await this.call(
+      'FECompConsultar',
+      `<Auth>${authXml(ticket)}</Auth><FeCompConsReq><CbteTipo>${documentType}</CbteTipo><CbteNro>${escapeXml(invoiceNumber)}</CbteNro><PtoVta>${pointOfSale}</PtoVta></FeCompConsReq>`
+    );
+    return normalizeWsfeDocument(response);
+  }
+
+  async assertPointOfSaleActive(ticket: WsfeAccessTicket, pointOfSale: number): Promise<void> {
+    const discovery = await this.getPointsOfSale(ticket);
+    if (!discovery.activePoints.includes(pointOfSale)) throw new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+  }
+
+  async getPointsOfSale(ticket: WsfeAccessTicket): Promise<WsfePointOfSaleDiscovery> {
+    const response = await this.call('FEParamGetPtosVenta', `<Auth>${authXml(ticket)}</Auth>`);
+    return normalizeWsfePointsOfSale(response);
+  }
+
+  async dummy(): Promise<Readonly<{ appServer: string; dbServer: string; authServer: string }>> {
+    const response = await this.call('FEDummy', '');
+    const result = node(response.parsed.FEDummyResult);
+    return { appServer: text(result.AppServer), dbServer: text(result.DbServer), authServer: text(result.AuthServer) };
+  }
+
+  private async call(action: string, body: string): Promise<Readonly<{ parsed: XmlNode; rawHash: string }>> {
+    const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${action} xmlns="${NAMESPACE}">${body}</${action}></soap:Body></soap:Envelope>`;
+    let response: Response;
+    try {
+      response = await this.fetcher(ENDPOINTS[this.environment], {
+        method: 'POST',
+        headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: `"${NAMESPACE}${action}"` },
+        body: envelope,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      throw new WsfeAmbiguousTransportError(hashCanonical({ action, requestHash: hashCanonical(envelope), errorType: error instanceof Error ? error.name : 'unknown' }));
+    }
+    const raw = await response.text();
+    if (Buffer.byteLength(raw) > 2_097_152) throw new Error('WSFE_RESPONSE_TOO_LARGE');
+    const rawHash = hashCanonical(raw);
+    if (response.status >= 500) throw new WsfeAmbiguousTransportError(hashCanonical({ action, status: response.status, rawHash }));
+    if (!response.ok) throw new Error(`WSFE_HTTP_REJECTED_${response.status}`);
+    const parsedEnvelope = node(this.#parser.parse(raw));
+    const soapBody = node(node(parsedEnvelope.Envelope).Body);
+    if (soapBody.Fault) throw new Error('WSFE_SOAP_FAULT');
+    const actionResponse = node(soapBody[`${action}Response`]);
+    return { parsed: actionResponse, rawHash };
+  }
+}
+
+export function normalizeWsfeAuthorization(response: Readonly<{ parsed: XmlNode; rawHash: string }>, payload: AuthorityPayload): WsfeAuthorizationResult {
     const result = node(response.parsed.FECAESolicitarResult);
     const header = node(result.FeCabResp);
     const detail = firstNode(node(result.FeDetResp).FECAEDetResponse) ?? {};
@@ -130,20 +192,15 @@ export class SoapWsfeAuthorityClient implements WsfeAuthorityClient {
       ],
       rawResponseHash: response.rawHash,
     };
-  }
+}
 
-  async getLastInvoiceNumber(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number): Promise<string> {
-    const response = await this.call('FECompUltimoAutorizado', `<Auth>${authXml(ticket)}</Auth><PtoVta>${pointOfSale}</PtoVta><CbteTipo>${documentType}</CbteTipo>`);
+export function normalizeWsfeLastInvoiceNumber(response: Readonly<{ parsed: XmlNode; rawHash: string }>): string {
     const result = node(response.parsed.FECompUltimoAutorizadoResult);
     assertNoError(result.Errors);
     return text(result.CbteNro) || '0';
-  }
+}
 
-  async getDocument(ticket: WsfeAccessTicket, documentType: DocumentType, pointOfSale: number, invoiceNumber: string): Promise<WsfeRetrievedDocument | null> {
-    const response = await this.call(
-      'FECompConsultar',
-      `<Auth>${authXml(ticket)}</Auth><FeCompConsReq><CbteTipo>${documentType}</CbteTipo><CbteNro>${escapeXml(invoiceNumber)}</CbteNro><PtoVta>${pointOfSale}</PtoVta></FeCompConsReq>`
-    );
+export function normalizeWsfeDocument(response: Readonly<{ parsed: XmlNode; rawHash: string }>): WsfeRetrievedDocument | null {
     const result = node(response.parsed.FECompConsultarResult);
     if (firstErrorMatches(result.Errors, NOT_FOUND_ERROR_CODE)) return null;
     assertNoError(result.Errors);
@@ -181,47 +238,16 @@ export class SoapWsfeAuthorityClient implements WsfeAuthorityClient {
       caeExpiry: arcaDateToIso(requiredText(got.FchVto, 'WSFE_RETRIEVED_CAE_EXPIRY_REQUIRED')),
       rawResponseHash: response.rawHash,
     };
-  }
+}
 
-  async assertPointOfSaleActive(ticket: WsfeAccessTicket, pointOfSale: number): Promise<void> {
-    const response = await this.call('FEParamGetPtosVenta', `<Auth>${authXml(ticket)}</Auth>`);
+export function normalizeWsfePointsOfSale(response: Readonly<{ parsed: XmlNode; rawHash: string }>): WsfePointOfSaleDiscovery {
     const result = node(response.parsed.FEParamGetPtosVentaResult);
+    if (firstErrorMatches(result.Errors, '602')) return { activePoints: [], listedCount: 0, rawResponseHash: response.rawHash };
     assertNoError(result.Errors);
     const entries = asArray(node(result.ResultGet).PtoVenta);
-    const active = entries.map(node).some(entry => Number(text(entry.Nro)) === pointOfSale && text(entry.Bloqueado) !== 'S' && !nullableText(entry.FchBaja));
-    if (!active) throw new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');
-  }
-
-  async dummy(): Promise<Readonly<{ appServer: string; dbServer: string; authServer: string }>> {
-    const response = await this.call('FEDummy', '');
-    const result = node(response.parsed.FEDummyResult);
-    return { appServer: text(result.AppServer), dbServer: text(result.DbServer), authServer: text(result.AuthServer) };
-  }
-
-  private async call(action: string, body: string): Promise<Readonly<{ parsed: XmlNode; rawHash: string }>> {
-    const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${action} xmlns="${NAMESPACE}">${body}</${action}></soap:Body></soap:Envelope>`;
-    let response: Response;
-    try {
-      response = await this.fetcher(ENDPOINTS[this.environment], {
-        method: 'POST',
-        headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: `"${NAMESPACE}${action}"` },
-        body: envelope,
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch (error) {
-      throw new WsfeAmbiguousTransportError(hashCanonical({ action, requestHash: hashCanonical(envelope), errorType: error instanceof Error ? error.name : 'unknown' }));
-    }
-    const raw = await response.text();
-    if (Buffer.byteLength(raw) > 2_097_152) throw new Error('WSFE_RESPONSE_TOO_LARGE');
-    const rawHash = hashCanonical(raw);
-    if (response.status >= 500) throw new WsfeAmbiguousTransportError(hashCanonical({ action, status: response.status, rawHash }));
-    if (!response.ok) throw new Error(`WSFE_HTTP_REJECTED_${response.status}`);
-    const parsedEnvelope = node(this.#parser.parse(raw));
-    const soapBody = node(node(parsedEnvelope.Envelope).Body);
-    if (soapBody.Fault) throw new Error('WSFE_SOAP_FAULT');
-    const actionResponse = node(soapBody[`${action}Response`]);
-    return { parsed: actionResponse, rawHash };
-  }
+    const activePoints = entries.map(node).filter(entry => text(entry.Bloqueado) !== 'S' && !nullableText(entry.FchBaja))
+      .map(entry => positiveNumber(entry.Nro, 'WSFE_POINT_OF_SALE_NUMBER_INVALID'));
+    return { activePoints: [...new Set(activePoints)].sort((left, right) => left - right), listedCount: entries.length, rawResponseHash: response.rawHash };
 }
 
 // FECAEDetRequest, ordered per the published FEV1 XSD sequence:

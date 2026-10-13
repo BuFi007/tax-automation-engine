@@ -18,7 +18,14 @@ const environmentSchema = z.enum(['homologation', 'production']);
 // (Factura de Crédito Electrónica MiPyMEs read-only lifecycle). Ticket issuance
 // only — the read-only wsfecred client stores no authority payload, so the
 // vault referenceSchema above stays scoped to the two issuing services.
-export const wsaaServiceSchema = z.enum(['wsfex', 'wsfe', 'wsfecred']);
+export const wsaaServiceSchema = z.enum(['wsfex', 'wsfe', 'wsfecred', 'ws_sr_constancia_inscripcion']);
+
+export const issuerPadronRequestSchema = z.object({
+  version: z.literal('arca-issuer-padron-request-v1'),
+  templateWorkspaceId: z.string().min(1).max(200),
+  templateIssuerProfileRef: z.string().min(1).max(500),
+  cuit: z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' }),
+}).strict();
 export type WsaaService = z.infer<typeof wsaaServiceSchema>;
 
 export const payloadStoreRequestSchema = z.object({
@@ -92,6 +99,17 @@ export const issuerProvisionRequestSchema = z.object({
   replaceCertificateFingerprint: sha256Schema.nullable(),
 }).strict();
 
+/** Bind a represented taxpayer to a certificate already sealed in this boundary. */
+export const issuerDelegationRequestSchema = z.object({
+  version: z.literal('wsaa-issuer-delegation-v1'),
+  templateWorkspaceId: z.string().min(1).max(200),
+  templateIssuerProfileRef: z.string().min(1).max(500),
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: z.string().min(1).max(500),
+  environment: environmentSchema,
+  representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit, { message: 'CUIT_CHECK_DIGIT_INVALID' }),
+}).strict();
+
 export const issuerProvisionReceiptSchema = z.object({
   version: z.literal('wsaa-issuer-provision-receipt-v1'),
   issuerProfileRef: z.string(),
@@ -106,6 +124,12 @@ export const issuerRevokeRequestSchema = z.object({
   version: z.literal('wsaa-issuer-revoke-v1'),
   issuerProfileRef: z.string().min(1).max(500),
   certificateFingerprint: sha256Schema,
+}).strict();
+
+export const issuerStatusRequestSchema = z.object({
+  workspaceId: z.string().min(1).max(200),
+  issuerProfileRef: z.string().min(1).max(500),
+  environment: environmentSchema,
 }).strict();
 
 export const ticketRequestSchema = z.object({

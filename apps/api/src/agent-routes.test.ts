@@ -32,6 +32,10 @@ describe('Factura E agent HTTP tools', () => {
     service.requestApproval({ ...base, runId, idempotencyKey: 'mandate-request-approval' });
     const pending = service.getRun(runId);
     service.approveIntent({ ...base, actorId: 'user:owner', runId, intentHash: pending.intentHash!, idempotencyKey: 'mandate-user-approval' });
+    expect(() => service.approveIntentByAccountant({
+      ...base, actorId: 'user:owner', runId, intentHash: pending.intentHash!,
+      idempotencyKey: 'mandate-same-human-accountant',
+    })).toThrow('ACCOUNTANT_MUST_DIFFER_FROM_ISSUER');
 
     await expect(route(service, options, 'POST', `/v1/agent/runs/${runId}/accountant-approval`, {
       actorId: 'accountant:1', mandateId: 'mandate:missing', intentHash: pending.intentHash, idempotencyKey: 'mandate-accountant-missing',
@@ -105,6 +109,7 @@ describe('Factura E agent HTTP tools', () => {
       destinationCountryArcaCode: 200,
       pointOfSale: 4,
       issueDate: new Date().toISOString().slice(0, 10),
+      servicePeriod: { start: new Date().toISOString().slice(0, 10), end: new Date().toISOString().slice(0, 10) },
       paymentDate: new Date().toISOString().slice(0, 10),
       sameCurrencyPayment: true,
       exchangeRate: { decimal: '1200.25', sourceReferenceId: 'fx:bna:previous-day', observedForDate: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10), authorityRuleDecisionId: 'arca-fx-accountant-reviewed-v1' },
@@ -600,7 +605,7 @@ function intent(): FacturaEIntentV1 {
     version: 'factura-e-intent-v1', intentId: 'intent-api-1', workspaceId,
     taxpayerReferenceHash: hashCanonical('taxpayer'), foreignCustomerReferenceHash: hashCanonical('customer'), foreignCustomerSafeLabel: 'Foreign customer',
     destinationCountry: 'US', destinationCountryArcaCode: 200, documentType: 19, operationType: 2, pointOfSale: 4,
-    issueDate: new Date().toISOString().slice(0, 10), paymentDate: new Date().toISOString().slice(0, 10), sameCurrencyPayment: true,
+    issueDate: new Date().toISOString().slice(0, 10), servicePeriod: { start: new Date().toISOString().slice(0, 10), end: new Date().toISOString().slice(0, 10) }, paymentDate: new Date().toISOString().slice(0, 10), sameCurrencyPayment: true,
     exchangeRate: { decimal: '1200.25', sourceReferenceId: 'fx:bna:previous-day', observedForDate: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10), authorityRuleDecisionId: 'arca-fx-accountant-reviewed-v1' },
     lineItems: [{ description: 'Software services', quantity: '1', unitPrice: '1000.00', total: '1000.00', unitCode: 7 }],
     total: { decimal: '1000.00', currency: 'USD' }, serviceDescription: 'Software services used abroad', paymentTerms: 'Due on receipt',

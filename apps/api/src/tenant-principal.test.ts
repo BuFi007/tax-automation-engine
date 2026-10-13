@@ -5,11 +5,39 @@ import {
   requiredTaxTenantPrincipalCapability,
   taxTenantPrincipalSecretForCapability,
   verifyBoundTaxTenantPrincipal,
+  verifyBoundTaxTenantPrincipalForRawBody,
   verifyTaxTenantPrincipal,
   type TaxTenantCapability,
 } from './tenant-principal';
 
 describe('tax tenant principal', () => {
+  test('limits a Personal issue assertion to its exact operation and body', () => {
+    const body = '{"invoiceId":"11111111-1111-4111-8111-111111111111"}';
+    const encoded = Buffer.from(JSON.stringify({
+      version: 'tax-tenant-principal-v3',
+      workspaceId: 'personal:22222222-2222-4222-8222-222222222222',
+      actorId: '22222222-2222-4222-8222-222222222222',
+      capability: 'arca:issue', method: 'POST', path: '/v1/personal-wsfe/attempts',
+      bodyHash: createHash('sha256').update(body).digest('hex'),
+      expiresAt: '2026-09-23T12:01:00.000Z',
+    })).toString('base64url');
+    const request = new Request('https://tax.test/v1/personal-wsfe/attempts', { method: 'POST', headers: {
+      'x-tax-tenant-principal': encoded,
+      'x-tax-tenant-signature': createHmac('sha256', 'personal-issue-secret-at-least-32-bytes')
+        .update(encoded).digest('hex'),
+    }, body });
+    expect(requiredTaxTenantPrincipalCapability('POST', '/v1/personal-wsfe/attempts')).toBe('arca:issue');
+    expect(requiredTaxTenantPrincipalCapability('POST', '/v1/personal-wsfe/attempts/issue')).toBe('arca:issue');
+    expect(requiredTaxTenantPrincipalCapability('POST', '/v1/personal-wsfe/attempts/recover')).toBe('arca:issue');
+    expect(verifyBoundTaxTenantPrincipalForRawBody(request, body, 'personal-issue-secret-at-least-32-bytes',
+      'arca:issue', new Date('2026-09-23T12:00:00.000Z')).capability).toBe('arca:issue');
+    expect(() => verifyBoundTaxTenantPrincipalForRawBody(request, body + ' ',
+      'personal-issue-secret-at-least-32-bytes', 'arca:issue', new Date('2026-09-23T12:00:00.000Z')))
+      .toThrow('TAX_TENANT_PRINCIPAL_SCOPE_UNAUTHORIZED');
+    expect(() => verifyBoundTaxTenantPrincipalForRawBody(request, body,
+      'personal-issue-secret-at-least-32-bytes', 'arca:onboard', new Date('2026-09-23T12:00:00.000Z')))
+      .toThrow('TAX_TENANT_PRINCIPAL_CAPABILITY_UNAUTHORIZED');
+  });
   test('accepts the exact Desk evidence and consent publisher vectors', () => {
     const cases = [
       {

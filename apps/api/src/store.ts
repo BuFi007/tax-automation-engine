@@ -22,6 +22,7 @@ import type {
   ComplianceWorkspaceState,
   FacturaEAgentEventV1,
   FacturaEAgentRunV1,
+  FacturaEIssuancePath,
   ReclaimSessionReferenceV1,
   TaxConsentGrant,
   TaxEvidenceBatchReceiptV1,
@@ -68,6 +69,9 @@ export function resolveTaxEngineDatabasePath(
   nodeEnvironment: string | undefined = process.env.NODE_ENV,
 ): string {
   const path = configuredPath?.trim() || ':memory:';
+  if (process.env.ARCA_FISCAL_BETA_ENABLED === 'true' && isInMemorySqlitePath(path)) {
+    throw new Error('TAX_ENGINE_DURABLE_BETA_DB_CONFIGURATION_REQUIRED');
+  }
   if (nodeEnvironment === 'production' && isInMemorySqlitePath(path)) {
     throw new Error('TAX_ENGINE_DB_PATH_REQUIRED_IN_PRODUCTION');
   }
@@ -359,6 +363,16 @@ export class TaxProfileStore {
         command_hash TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
         PRIMARY KEY (run_id, idempotency_key)
+      );
+      CREATE TABLE IF NOT EXISTS factura_e_tax_case_bindings (
+        run_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        ledger_invoice_id TEXT NOT NULL,
+        issuance_path TEXT NOT NULL CHECK (issuance_path IN ('reclaim_copilot', 'wsfex_delegated')),
+        actor_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (ledger_invoice_id)
       );
       CREATE TABLE IF NOT EXISTS arca_onboarding_revisions (
         onboarding_id TEXT NOT NULL,
@@ -2306,6 +2320,71 @@ export class TaxProfileStore {
       'SELECT state_json FROM factura_e_agent_revisions WHERE run_id = ? ORDER BY revision DESC LIMIT 1'
     ).get(runId);
     return row ? JSON.parse(row.state_json) as FacturaEAgentRunV1 : null;
+  }
+
+  getFacturaETaxCaseBinding(runId: string): Readonly<{
+    runId: string;
+    workspaceId: string;
+    ledgerInvoiceId: string;
+    issuancePath: FacturaEIssuancePath;
+    actorId: string;
+    idempotencyKey: string;
+  }> | null {
+    const row = this.#db.query<{
+      run_id: string; workspace_id: string; ledger_invoice_id: string;
+      issuance_path: FacturaEIssuancePath; actor_id: string; idempotency_key: string;
+    }, [string]>(`
+      SELECT run_id, workspace_id, ledger_invoice_id, issuance_path, actor_id, idempotency_key
+      FROM factura_e_tax_case_bindings WHERE run_id = ?
+    `).get(runId);
+    return row ? {
+      runId: row.run_id, workspaceId: row.workspace_id,
+      ledgerInvoiceId: row.ledger_invoice_id, issuancePath: row.issuance_path,
+      actorId: row.actor_id, idempotencyKey: row.idempotency_key,
+    } : null;
+  }
+
+  createFacturaETaxCaseBinding(input: Readonly<{
+    runId: string;
+    workspaceId: string;
+    ledgerInvoiceId: string;
+    issuancePath: FacturaEIssuancePath;
+    actorId: string;
+    idempotencyKey: string;
+    createdAt: string;
+  }>, createRun: () => FacturaEAgentRunV1): Readonly<{ run: FacturaEAgentRunV1; replayed: boolean }> {
+    return this.#db.transaction(() => {
+      const existing = this.getFacturaETaxCaseBinding(input.runId);
+      if (existing) {
+        if (existing.workspaceId !== input.workspaceId
+          || existing.ledgerInvoiceId !== input.ledgerInvoiceId
+          || existing.issuancePath !== input.issuancePath
+          || existing.actorId !== input.actorId
+          || existing.idempotencyKey !== input.idempotencyKey)
+          throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
+        const run = this.getFacturaEAgentRun(input.runId);
+        if (!run || run.workspaceId !== input.workspaceId || run.issuancePath !== input.issuancePath)
+          throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
+        return { run, replayed: true };
+      }
+      if (this.getFacturaEAgentRun(input.runId)
+        || this.#db.query<{ run_id: string }, [string]>(`
+          SELECT run_id FROM factura_e_tax_case_bindings
+          WHERE ledger_invoice_id = ?
+        `).get(input.ledgerInvoiceId))
+        throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
+      this.#db.query(`
+        INSERT INTO factura_e_tax_case_bindings
+          (run_id, workspace_id, ledger_invoice_id, issuance_path, actor_id, idempotency_key, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.runId, input.workspaceId, input.ledgerInvoiceId,
+        input.issuancePath, input.actorId, input.idempotencyKey, input.createdAt);
+      const run = createRun();
+      if (run.runId !== input.runId || run.workspaceId !== input.workspaceId
+        || run.issuancePath !== input.issuancePath)
+        throw new Error('FACTURA_E_TAX_CASE_BINDING_CONFLICT');
+      return { run, replayed: false };
+    })();
   }
 
   getFacturaEAgentRunByIdempotency(runId: string, idempotencyKey: string, expectedCommandHash?: string): FacturaEAgentRunV1 | null {

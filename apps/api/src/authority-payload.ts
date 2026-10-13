@@ -1,8 +1,12 @@
 import { hashCanonical } from '@tax-engine/core';
-import { authorityPayloadSchema, type AuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
+import { authorityPayloadSchema as wsfeAuthorityPayloadSchema, type AuthorityPayload as WsfeAuthorityPayload } from '@tax-engine/wsfe-signer/contracts';
+import { authorityPayloadSchema as wsfexAuthorityPayloadSchema, type AuthorityPayload as WsfexAuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 import { z } from 'zod';
 
 import { readBoundedBody } from './bounded-body';
+
+type AuthorityPayload = WsfeAuthorityPayload | WsfexAuthorityPayload;
+const authorityPayloadSchema = z.union([wsfexAuthorityPayloadSchema, wsfeAuthorityPayloadSchema]);
 
 export type AuthorityPayloadReceipt = Readonly<{
   version: 'authority-payload-store-receipt-v1';
@@ -24,7 +28,7 @@ export type AuthorityPayloadTerminalReceipt = Readonly<{
 }>;
 
 export interface AuthorityPayloadWriter {
-  store(input: Readonly<{ workspaceId: string; payload: AuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt>;
+  store(input: Readonly<{ workspaceId: string; payload: WsfexAuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt>;
   markTerminal(input: Readonly<{
     workspaceId: string;
     reference: string;
@@ -41,7 +45,7 @@ const MAX_RECEIPT_BYTES = 32 * 1024;
 
 const receiptSchema = z.object({
   version: z.literal('authority-payload-store-receipt-v1'),
-  reference: z.string().regex(/^vault:\/\/wsfex\/[0-9a-f-]{36}$/),
+  reference: z.string().regex(/^vault:\/\/(?:wsfex|wsfe)\/[0-9a-f-]{36}$/),
   payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
   storedAt: z.iso.datetime({ offset: true }),
   expiresAt: z.iso.datetime({ offset: true }),
@@ -83,6 +87,8 @@ export class HttpAuthorityPayloadWriter implements AuthorityPayloadWriter {
     return baseUrl && token ? new HttpAuthorityPayloadWriter({ baseUrl, token, environment }) : null;
   }
 
+  store(input: Readonly<{ workspaceId: string; payload: WsfexAuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt>;
+  store(input: Readonly<{ workspaceId: string; payload: WsfeAuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt>;
   async store(input: Readonly<{ workspaceId: string; payload: AuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt> {
     const payload = authorityPayloadSchema.parse(input.payload);
     let response: Response;

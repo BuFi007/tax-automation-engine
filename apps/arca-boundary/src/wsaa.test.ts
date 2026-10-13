@@ -86,6 +86,15 @@ describe('official WSAA LoginCms transport', () => {
     }
   });
 
+  test('identifies an already-valid WSAA ticket without exposing the fault body', async () => {
+    const validated = credential();
+    const client = new SoapWsaaLoginClient(async () => new Response(
+      '<Fault><faultcode>coe.alreadyAuthenticated</faultcode><faultstring>secret detail</faultstring></Fault>',
+      { status: 500 }));
+    await expect(client.login({ credential: validated.credential, service: 'wsfe', now: NOW }))
+      .rejects.toThrow('WSAA_ALREADY_AUTHENTICATED');
+  });
+
   test('rejects embedded DTD/entity content before parsing the WSAA ticket', async () => {
     const validated = credential();
     const unsafe = '&lt;!DOCTYPE x [&lt;!ENTITY e "secret"&gt;]&gt;&lt;loginTicketResponse&gt;&amp;e;&lt;/loginTicketResponse&gt;';

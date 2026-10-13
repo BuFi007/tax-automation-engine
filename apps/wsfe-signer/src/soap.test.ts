@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { payload } from './test-fixtures';
 import { SoapWsfeAuthorityClient, WsfeAmbiguousTransportError } from './soap';
 
-const ticket = { token: 'token<&', sign: 'sign>&', representedCuit: '20123456786', expiresAt: '2099-01-01T00:00:00.000Z' };
+const ticket = { token: 'token<&', sign: 'sign>&', representedCuit: '20123456786', representedCuitCommitment: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' };
 const note = { documentType: 11 as const, pointOfSale: 4, invoiceNumber: '81' };
 
 describe('official WSFEV1 SOAP transport', () => {
@@ -87,7 +87,14 @@ describe('official WSFEV1 SOAP transport', () => {
     });
     await expect(client.assertPointOfSaleActive(ticket, 4)).resolves.toBeUndefined();
     await expect(client.assertPointOfSaleActive(ticket, 9)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+    await expect(client.getPointsOfSale(ticket)).resolves.toEqual(expect.objectContaining({ activePoints: [4], listedCount: 2 }));
     await expect(client.dummy()).resolves.toEqual({ appServer: 'OK', dbServer: 'OK', authServer: 'OK' });
+  });
+
+  test('treats homologation 602 as an empty listing, never as active proof', async () => {
+    const client = new SoapWsfeAuthorityClient('homologation', async () => xmlResponse('FEParamGetPtosVenta', '<Errors><Err><Code>602</Code><Msg>No registrado</Msg></Err></Errors>'));
+    await expect(client.getPointsOfSale(ticket)).resolves.toEqual(expect.objectContaining({ activePoints: [], listedCount: 0 }));
+    await expect(client.assertPointOfSaleActive(ticket, 1)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
   });
 
   test('classifies network failures and 5xx responses as ambiguous without exposing raw bodies', async () => {

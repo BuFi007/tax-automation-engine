@@ -23,9 +23,19 @@ The signer calls two separately authenticated HTTPS services:
   binds subject, intent, request id, document fields, exact total, service period,
   and association.
 - `POST /v1/wsaa/tickets` on the WSAA broker returns an ephemeral
-  `{ token, sign, representedCuit, expiresAt }` for service **`wsfe`** (the broker
+  `{ token, sign, representedCuit, representedCuitCommitment, expiresAt }` for service **`wsfe`** (the broker
   is shared with the Factura E signer; only the ARCA ticket service literal
   differs). The broker, not this process, owns the certificate and private key.
+
+Set `WSFE_AUTHORITY_PROVIDER=afipsdk` with `AFIPSDK_ACCESS_TOKEN` to route
+Factura C (type 11) through AFIP SDK `/requests` in the selected environment.
+The SDK receives only the broker's short-lived WSFE ticket, never the certificate
+or private key. Other WSFE classes retain direct authorization and readback;
+point-of-sale discovery uses the selected provider. The switch
+defaults to `direct` until a C invoice and its exact official readback pass in
+BUFI homologation; it does not enable production issuance.
+Enabling it also requires `AFIPSDK_WSAA_TICKET_TRANSFER_APPROVED=true` after
+the issuer authorizes sharing WSAA Token/Sign/CUIT with AFIP SDK.
 
 The local SQLite store contains request/intent/payload hashes, safe document
 coordinates, normalized status, and CAE. It never contains the receptor DocNro,
@@ -91,6 +101,11 @@ token/sign, represented CUIT, opaque payload reference, or raw SOAP XML.
 
 ## HTTP surface (pinned contract Motora calls)
 
+- `POST /v1/wsfev1/params/points-of-sale/discover` returns a scoped, hashed
+  official WSFE point-of-sale listing.
+- `POST /v1/wsfev1/params/points-of-sale/verify-readback` verifies only the
+  configured homologation C voucher (POS 1, Factura C 1, exact CAE) under the
+  broker ticket's issuer/CUIT when ARCA lists no points. It never issues one.
 - `POST /v1/wsfev1/invoices` — `Authorization: Bearer <token>`, `Idempotency-Key`
   header. The single idempotent endpoint issues, replays, and re-drives recovery.
   Response echoes the authorized frozen document:
@@ -125,12 +140,20 @@ WSFE_WSAA_BROKER_URL=https://...
 WSFE_WSAA_BROKER_TOKEN
 WSFE_SIGNER_DB_PATH=/data/wsfe-signer.sqlite
 WSFE_SIGNER_VERSION=0.1.0
+WSFE_AUTHORITY_PROVIDER=direct # afipsdk for Factura C only
+AFIPSDK_ACCESS_TOKEN= # required when provider is afipsdk
+AFIPSDK_WSAA_TICKET_TRANSFER_APPROVED=false
 WSFE_SIGNER_PRODUCTION_APPROVED=false
+# Homologation only: JSON with workspaceId, issuerProfileRef,
+# representedCuit, representedCuitCommitment, and exact accepted CAE.
+WSFE_HOMOLOGATION_POS_PROOF=
 # Optional: override the FCE MiPyME obligation threshold (desk-side helper only).
 FCE_MIPYME_THRESHOLD_ARS=5549862
 ```
 
-Production startup refuses to run unless `WSFE_SIGNER_PRODUCTION_APPROVED=true`.
+Both environments require a durable `WSFE_SIGNER_DB_PATH` so an uncertain CAE
+can be recovered after a restart. Production startup also refuses to run unless
+`WSFE_SIGNER_PRODUCTION_APPROVED=true`.
 This local flag is necessary but not sufficient: the repository homologation gate
 and explicit owner review still have to pass.
 

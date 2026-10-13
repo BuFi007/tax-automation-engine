@@ -17,6 +17,7 @@
         "@tax-engine/browser-contracts": "workspace:*",
         "@tax-engine/core": "workspace:*",
         "@tax-engine/erp": "workspace:*",
+        "@tax-engine/wsfe-signer": "workspace:*",
         "@tax-engine/wsfex-signer": "workspace:*",
         "zod": "^4.3.6",
       },
@@ -117,7 +118,7 @@
     },
     "packages/browser-contracts": {
       "name": "@tax-engine/browser-contracts",
-      "version": "0.2.0",
+      "version": "0.10.0",
       "dependencies": {
         "decimal.js": "^10.6.0",
         "zod": "^4.3.6",

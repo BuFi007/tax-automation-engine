@@ -20,6 +20,7 @@ const now = '2026-07-15T12:00:00.000Z';
 describe('Tax-owned WSFEX authority remote effect', () => {
   test('prepares privately, hash-binds the vault, and promotes only an independent read', async () => {
     const run = approvedRun();
+    let currentRun = run;
     const calls = { prepare: 0, store: 0, authorize: 0, recover: 0, reconcile: 0 };
     const preparations: FacturaEAuthorityPreparationGateway = {
       async prepare(input) {
@@ -65,8 +66,26 @@ describe('Tax-owned WSFEX authority remote effect', () => {
     let projected: Record<string, unknown> | null = null;
     const effect = new TaxWsfexAuthorityRemoteEffect(
       {
-        getRun: () => run,
-        recordAuthorityCorridorReconciliation(input) { projected = input; },
+        getRun: () => currentRun,
+        recordAuthorityCorridorReconciliation(input) {
+          projected = input;
+          currentRun = {
+            ...currentRun,
+            issuanceState: 'arca_authorized',
+            authority: {
+              requestId: input.requestId,
+              payloadReferenceHash: hashCanonical(input.authorityPayloadRef),
+              invoiceNumber: input.invoiceNumber,
+              cae: input.cae,
+              caeExpiry: input.caeExpiry,
+              currencyId: input.currencyId,
+              currencyQuote: input.currencyQuote,
+              receiptHash: input.receiptHash,
+              authorizedAt: input.occurredAt,
+              reprocessed: input.reprocessed,
+            },
+          };
+        },
       },
       preparations,
       payloads,
@@ -97,7 +116,11 @@ describe('Tax-owned WSFEX authority remote effect', () => {
       currencyId: 'DOL',
       actorId: 'authority:wsfex-reconciliation',
     });
-    expect(calls).toEqual({ prepare: 1, store: 1, authorize: 1, recover: 0, reconcile: 1 });
+    expect(await effect.reconcile(prepared)).toEqual(official);
+    await expect(effect.execute(prepared)).rejects.toThrow('TAX_AUTHORITY_REMOTE_EFFECT_RUN_BINDING_CONFLICT');
+    currentRun = { ...currentRun, authority: { ...currentRun.authority, receiptHash: 'f'.repeat(64) } };
+    await expect(effect.reconcile(prepared)).rejects.toThrow('TAX_AUTHORITY_RECONCILIATION_REPLAY_CONFLICT');
+    expect(calls).toEqual({ prepare: 1, store: 1, authorize: 1, recover: 0, reconcile: 3 });
   });
 
   test('never promotes an ambiguous independent read and rejects a rebound run', async () => {
@@ -148,6 +171,57 @@ describe('Tax-owned WSFEX authority remote effect', () => {
     await expect(effect.reconcile(preparation)).resolves.toMatchObject({ status: 'ambiguous' });
     await expect(effect.execute({ ...preparation, workspaceId: 'workspace-other' })).rejects
       .toThrow('TAX_AUTHORITY_REMOTE_EFFECT_RUN_BINDING_CONFLICT');
+  });
+
+  test('stores a renewed pre-dispatch payload under its own idempotency key', async () => {
+    const run = approvedRun();
+    const payloadKeys: string[] = [];
+    let renewal = false;
+    const effect = new TaxWsfexAuthorityRemoteEffect(
+      { getRun: () => run, recordAuthorityCorridorReconciliation() {} },
+      {
+        async prepare(input) {
+          const original = privatePreparation(run, input.executionId, input.idempotencyKey);
+          return renewal
+            ? {
+                ...original,
+                requestId: '102',
+                invoiceNumber: '7',
+                expiresAt: '2026-07-15T13:15:00.000Z',
+                preparationHash: 'e'.repeat(64),
+              }
+            : original;
+        },
+      },
+      {
+        async store(input) {
+          payloadKeys.push(input.idempotencyKey);
+          return {
+            version: 'authority-payload-store-receipt-v1',
+            reference: 'vault://wsfex/33333333-3333-4333-8333-333333333333',
+            payloadHash: hashCanonical(input.payload),
+            storedAt: now,
+            expiresAt: input.expiresAt,
+          };
+        },
+        async markTerminal() { throw new Error('NOT_USED'); },
+      },
+      fakeWsfex({ prepare: 0, store: 0, authorize: 0, recover: 0, reconcile: 0 }, run),
+      'production'
+    );
+    const input = {
+      executionId: '44444444-4444-4444-8444-444444444444',
+      workspaceId: run.workspaceId,
+      runId: run.runId,
+      intentHash: run.intentHash!,
+      idempotencyKey: 'execution-4444:prepare',
+    };
+    await effect.prepare(input);
+    await effect.prepare(input);
+    renewal = true;
+    await effect.prepare(input);
+    expect(payloadKeys[0]).toBe(payloadKeys[1]);
+    expect(payloadKeys[2]).not.toBe(payloadKeys[0]);
   });
 });
 

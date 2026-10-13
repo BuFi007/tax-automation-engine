@@ -66,7 +66,7 @@ describe('accountant mandate', () => {
     expect(JSON.stringify(projection)).not.toContain('amount');
   });
 
-  test('omits expired, revoked and non-review mandates from the portfolio', () => {
+  test('includes invoice approval mandates but omits expired mandates from the portfolio', () => {
     const projection = buildAccountantPortfolioProjection({
       accountantActorId: 'accountant:1',
       accountantOrganizationId: 'accounting-firm:1',
@@ -74,7 +74,7 @@ describe('accountant mandate', () => {
       mandates: [mandate, { ...mandate, mandateId: 'expired', workspaceId: 'workspace:2', scopes: ['review_tax_obligation'], expiresAt: '2026-07-10T00:00:00.000Z' }],
       clientCases: [clientCase('workspace:1', null, 1, 0, 0), clientCase('workspace:2', null, 1, 0, 0)],
     });
-    expect(projection.clients).toEqual([]);
+    expect(projection.clients.map(client => client.workspaceId)).toEqual(['workspace:1']);
   });
 });
 

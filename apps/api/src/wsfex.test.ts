@@ -5,12 +5,41 @@ import {
   hashWsfexAuthorityIdentity,
   hashWsfexReconciliationAttestation,
   pointOfSaleDiscoverySchema,
+  pointOfSaleReadbackSchema,
   signerResponseSchema,
 } from '@tax-engine/wsfex-signer/contracts';
 
 import { HttpWsfexGateway } from './wsfex';
 
 describe('HTTP WSFEX signer boundary', () => {
+  test('accepts only a hash-verified homologation readback bound to the requested issuer', async () => {
+    const input = { workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1', pointOfSale: 2 as const };
+    const material = {
+      version: 'arca-wsfex-point-of-sale-readback-v1' as const,
+      environment: 'homologation' as const,
+      workspaceId: input.workspaceId,
+      issuerProfileReferenceHash: hashCanonical(input.issuerProfileRef),
+      representedCuitCommitment: 'b'.repeat(64), pointOfSale: 2 as const,
+      documentType: 19 as const, invoiceNumber: '1' as const,
+      caeHash: 'c'.repeat(64), discoveryResponseHash: 'd'.repeat(64), authorityResponseHash: 'e'.repeat(64),
+      observedAt: '2026-07-15T12:00:00.000Z',
+    };
+    const gateway = new HttpWsfexGateway(
+      { baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' },
+      async (target, init) => {
+        expect(String(target)).toBe('https://signer.test/v1/wsfexv1/params/points-of-sale/verify-readback');
+        expect(JSON.parse(String(init?.body))).toEqual(input);
+        return Response.json(pointOfSaleReadbackSchema.parse({ ...material, evidenceHash: hashCanonical(material) }));
+      }
+    );
+    await expect(gateway.verifyPointOfSaleReadback(input)).resolves.toEqual(expect.objectContaining({ caeHash: material.caeHash }));
+    const wrong = new HttpWsfexGateway(
+      { baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' },
+      async () => Response.json({ ...material, issuerProfileReferenceHash: 'f'.repeat(64), evidenceHash: hashCanonical({ ...material, issuerProfileReferenceHash: 'f'.repeat(64) }) })
+    );
+    await expect(wrong.verifyPointOfSaleReadback(input)).rejects.toThrow('ARCA_POS_READBACK_BINDING_MISMATCH');
+  });
+
   test('discovers active FEEWS points only from an exactly bound signer receipt', async () => {
     const observedAt = '2026-07-15T12:00:00.000Z';
     const receiptWithoutHash = {

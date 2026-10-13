@@ -16,13 +16,15 @@
     "homologation:probe-wsfe-signer": "bun src/homologation-cli.ts probe-wsfe-signer",
     "homologation:probe-proof-vault": "bun src/homologation-cli.ts probe-proof-vault",
     "homologation:validate": "bun src/homologation-cli.ts validate-report",
-    "homologation:validate-live-smoke": "bun src/homologation-cli.ts validate-live-smoke"
+    "homologation:validate-live-smoke": "bun src/homologation-cli.ts validate-live-smoke",
+    "homologation:activate-delegation": "bun src/activate-delegated-issuer.ts"
   },
   "dependencies": {
     "@reclaimprotocol/js-sdk": "5.8.0",
     "@tax-engine/browser-contracts": "workspace:*",
     "@tax-engine/core": "workspace:*",
     "@tax-engine/erp": "workspace:*",
+    "@tax-engine/wsfe-signer": "workspace:*",
     "@tax-engine/wsfex-signer": "workspace:*",
     "zod": "^4.3.6"
   },

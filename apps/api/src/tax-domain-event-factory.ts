@@ -55,6 +55,7 @@ export function createArcaOnboardingTaxDomainEvent(input: Readonly<{
 }>): TaxDomainEventV1 | null {
   if (
     input.event.action !== 'record_api_verification'
+    && !(input.event.action === 'record_service_api_verification' && input.run.currentStep !== 'api_verification')
     && input.event.action !== 'record_zk_evidence'
   ) return null;
   assertCommitmentSecret(input.commitmentSecret);

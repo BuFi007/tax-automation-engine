@@ -36,6 +36,11 @@ describe('ARCA boundary master-key rotation', () => {
       ...certificateBundle(), delegationConfirmed: true,
     }, NOW);
     oldStore.provisionIssuer({ ...issuer, replaceCertificateFingerprint: null, occurredAt: NOW.toISOString() });
+    oldStore.storeTicket('ticket-cache-key', 'issuer://workspace-1/primary', {
+      token: 'rotation-token-secret', sign: 'rotation-sign-secret', representedCuit: CUIT,
+      representedCuitCommitment: oldStore.getIssuer('workspace-1', 'issuer://workspace-1/primary', 'homologation').representedCuitCommitment!,
+      expiresAt: '2026-07-11T20:00:00.000Z',
+    });
     oldStore.close();
 
     expect(rotateBoundaryMasterKey({ databasePath, oldMasterKey: oldKey, newMasterKey: newKey, occurredAt: NOW.toISOString(), dryRun: true }))
@@ -49,10 +54,12 @@ describe('ARCA boundary master-key rotation', () => {
     const rotatedStore = new ArcaBoundaryStore(newKey, databasePath, commitmentKey);
     expect(wsfexForeignTaxId(rotatedStore.resolvePayload(payloadReceipt.reference, NOW.toISOString()).payload)).toBe('FOREIGN-TAX-SECRET');
     expect(rotatedStore.getIssuer('workspace-1', 'issuer://workspace-1/primary', 'homologation').representedCuit).toBe(CUIT);
+    expect(rotatedStore.getTicket('ticket-cache-key', NOW.toISOString())?.token).toBe('rotation-token-secret');
     rotatedStore.close();
 
     const staleStore = new ArcaBoundaryStore(oldKey, databasePath, commitmentKey);
     expect(() => staleStore.resolvePayload(payloadReceipt.reference, NOW.toISOString())).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
+    expect(() => staleStore.getTicket('ticket-cache-key', NOW.toISOString())).toThrow('ARCA_BOUNDARY_CIPHERTEXT_AUTHENTICATION_FAILED');
     staleStore.close();
   });
 

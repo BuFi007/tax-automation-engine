@@ -1,6 +1,8 @@
 import { hashCanonical } from '@tax-engine/core';
+import { X509Certificate } from 'node:crypto';
 
 import type {
+  issuerDelegationRequestSchema,
   IssuerProvisionRequest,
   PayloadRetireReceipt,
   PayloadStoreRequest,
@@ -9,6 +11,8 @@ import type {
   TicketResponse,
   WsaaService,
 } from './contracts';
+import type { z } from 'zod';
+import { referenceRepresentedCuit } from './crypto';
 import { ArcaBoundaryStore } from './store';
 import { SoapWsaaLoginClient, type WsaaLoginClient, validateIssuerCredential } from './wsaa';
 
@@ -20,6 +24,7 @@ const MAX_REQUESTED_MINIMUM_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export class ArcaBoundaryService {
   readonly #tickets = new Map<string, TicketResponse>();
   readonly #pendingTickets = new Map<string, Promise<TicketResponse>>();
+  readonly #taxpayerReferenceKey: Buffer | null;
 
   constructor(
     private readonly store: ArcaBoundaryStore,
@@ -30,8 +35,12 @@ export class ArcaBoundaryService {
     }> = {
       retentionPolicyId: 'arca-authority-terminal-recovery-v1',
       terminalRetentionMs: 30 * 24 * 60 * 60_000,
-    }
+    },
+    taxpayerReferenceKey: Buffer | null = null
   ) {
+    if (taxpayerReferenceKey && taxpayerReferenceKey.length !== 32)
+      throw new Error('ARCA_BOUNDARY_TAXPAYER_REFERENCE_KEY_INVALID');
+    this.#taxpayerReferenceKey = taxpayerReferenceKey ? Buffer.from(taxpayerReferenceKey) : null;
     if (!/^[A-Za-z0-9._:-]{1,100}$/.test(retentionPolicy.retentionPolicyId))
       throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_INVALID');
     if (
@@ -91,6 +100,35 @@ export class ArcaBoundaryService {
     return receipt;
   }
 
+  delegateIssuerFromStoredCertificate(
+    input: z.infer<typeof issuerDelegationRequestSchema>, occurredAt: string,
+  ) {
+    if (input.templateIssuerProfileRef === input.issuerProfileRef)
+      throw new Error('WSAA_ISSUER_DELEGATION_TEMPLATE_MISMATCH');
+    const template = this.store.getIssuer(
+      input.templateWorkspaceId, input.templateIssuerProfileRef, input.environment,
+    );
+    if (!template.active || !template.delegationConfirmed || template.certificateHolderCuit !== template.representedCuit)
+      throw new Error('WSAA_ISSUER_DELEGATION_TEMPLATE_NOT_OWNED');
+    const validated = validateIssuerCredential({
+      workspaceId: input.workspaceId,
+      issuerProfileRef: input.issuerProfileRef,
+      environment: input.environment,
+      certificateHolderCuit: template.certificateHolderCuit,
+      representedCuit: input.representedCuit,
+      certificatePem: template.certificatePem,
+      privateKeyPem: template.privateKeyPem,
+      // Only an operator with the boundary admin token can attest that BUFI
+      // accepted the third-party designation. Official POS reads still gate readiness.
+      delegationConfirmed: true,
+    }, new Date(occurredAt));
+    const receipt = this.store.provisionIssuer({
+      ...validated, replaceCertificateFingerprint: null, occurredAt,
+    });
+    this.#tickets.clear();
+    return receipt;
+  }
+
   revokeIssuer(issuerProfileRef: string, certificateFingerprint: string, occurredAt: string): Readonly<{ revoked: true }> {
     this.store.revokeIssuer(issuerProfileRef, certificateFingerprint, occurredAt);
     this.#tickets.clear();
@@ -99,12 +137,20 @@ export class ArcaBoundaryService {
 
   async getTicket(input: TicketRequest, occurredAt: string): Promise<TicketResponse> {
     const credential = this.store.getIssuer(input.workspaceId, input.issuerProfileRef, input.environment);
+    validateIssuerCredential(credential, new Date(occurredAt));
     if (!credential.delegationConfirmed) throw new Error('WSAA_DELEGATION_NOT_CONFIRMED');
     if (!credential.representedCuitCommitment)
       throw new Error('WSAA_ISSUER_REPRESENTED_CUIT_UNBOUND');
     const key = ticketKey(input.environment, input.workspaceId, input.issuerProfileRef, input.service, credential.certificateFingerprint, credential.representedCuitCommitment);
     const cached = this.#tickets.get(key);
     if (cached && Date.parse(cached.expiresAt) > Date.parse(occurredAt) + 60_000) return cached;
+    const stored = this.store.getTicket(key, occurredAt);
+    if (stored) {
+      if (stored.representedCuitCommitment !== credential.representedCuitCommitment || stored.representedCuit !== credential.representedCuit)
+        throw new Error('WSAA_TICKET_BINDING_MISMATCH');
+      this.#tickets.set(key, stored);
+      return stored;
+    }
     const pending = this.#pendingTickets.get(key);
     if (pending) return pending;
     const request = this.obtainTicket(input, credential, occurredAt).finally(() => this.#pendingTickets.delete(key));
@@ -129,6 +175,43 @@ export class ArcaBoundaryService {
     }
   }
 
+  issuerStatus(workspaceId: string, issuerProfileRef: string, environment: 'homologation' | 'production', occurredAt: string) {
+    const credential = this.store.inspectIssuer(workspaceId, issuerProfileRef, environment);
+    const certificate = credential ? new X509Certificate(credential.certificatePem) : null;
+    const certificateValidFrom = certificate ? new Date(certificate.validFrom).toISOString() : null;
+    const certificateValidUntil = certificate ? new Date(certificate.validTo).toISOString() : null;
+    const certificateCurrent = Boolean(
+      certificate && Date.parse(certificate.validFrom) <= Date.parse(occurredAt)
+      && Date.parse(certificate.validTo) > Date.parse(occurredAt) + 60_000
+    );
+    const ticketCached = (service: WsaaService) => Boolean(
+      credential?.active && credential.delegationConfirmed && certificateCurrent
+      && credential.representedCuitCommitment
+      && this.store.hasValidTicket(ticketKey(environment, workspaceId, issuerProfileRef, service, credential.certificateFingerprint, credential.representedCuitCommitment), occurredAt)
+    );
+    return {
+      version: 'wsaa-issuer-status-v1' as const,
+      workspaceId,
+      issuerProfileRef,
+      environment,
+      configured: Boolean(credential),
+      active: Boolean(credential?.active),
+      delegationConfirmed: Boolean(credential?.delegationConfirmed),
+      certificateFingerprint: credential?.certificateFingerprint ?? null,
+      representedCuitCommitment: credential?.representedCuitCommitment ?? null,
+      taxpayerReferenceHash: credential && this.#taxpayerReferenceKey
+        ? referenceRepresentedCuit(this.#taxpayerReferenceKey, credential.representedCuit)
+        : null,
+      representedCuitLast4: credential?.representedCuit.slice(-4) ?? null,
+      representedCuitMasked: credential ? `${credential.representedCuit.slice(0, 2)}******${credential.representedCuit.slice(-3)}` : null,
+      certificate: { validFrom: certificateValidFrom, validUntil: certificateValidUntil, current: certificateCurrent },
+      services: Object.fromEntries((['wsfe', 'wsfex', 'wsfecred'] as const).map(service => [service, {
+        wsaaTicketCached: ticketCached(service),
+        authorityStatus: 'not_checked' as const,
+      }])),
+    };
+  }
+
   private async obtainTicket(input: TicketRequest, credential: ReturnType<ArcaBoundaryStore['getIssuer']>, occurredAt: string): Promise<TicketResponse> {
     const result = await this.wsaa.login({ credential, service: input.service, now: new Date(occurredAt) });
     const ticket: TicketResponse = {
@@ -138,7 +221,9 @@ export class ArcaBoundaryService {
       representedCuitCommitment: credential.representedCuitCommitment!,
       expiresAt: result.expiresAt,
     };
-    this.#tickets.set(ticketKey(input.environment, input.workspaceId, input.issuerProfileRef, input.service, credential.certificateFingerprint, credential.representedCuitCommitment!), ticket);
+    const key = ticketKey(input.environment, input.workspaceId, input.issuerProfileRef, input.service, credential.certificateFingerprint, credential.representedCuitCommitment!);
+    this.store.storeTicket(key, input.issuerProfileRef, ticket);
+    this.#tickets.set(key, ticket);
     this.store.appendTicketEvent(input.issuerProfileRef, hashCanonical({ safeReceiptHash: result.safeReceiptHash, expiresAt: result.expiresAt, representedCuitCommitment: credential.representedCuitCommitment }), occurredAt);
     return ticket;
   }
