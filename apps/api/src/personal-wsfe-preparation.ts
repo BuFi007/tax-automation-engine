@@ -27,7 +27,7 @@ const requestSchema = z.object({
   issueDate: z.iso.date(),
   receptor,
   servicePeriod: z.object({ from: z.iso.date(), to: z.iso.date(), paymentDueDate: z.iso.date() }).strict(),
-  total: z.object({ decimal: z.string().regex(/^[1-9]\d{0,14}\.\d{2}$/), currency: z.literal('ARS') }).strict(),
+  total: z.object({ decimal: z.string().regex(/^(?:0|[1-9]\d{0,14})\.\d{2}$/).refine(value => BigInt(value.replace('.', '')) > 0n), currency: z.literal('ARS') }).strict(),
   description: z.string().trim().min(1).max(4000),
   requestHash: sha256,
 }).strict();

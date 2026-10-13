@@ -85,3 +85,12 @@ Current C is type 11, concept 2 (services), ARS. Current E is USD export service
 with reviewed manual homologation quote. This is not general retail A/B or goods
 support. PDF and QR are produced by Desk only after official persistence; mock
 unit receipts do not establish a completed live ARCA end-to-end test.
+
+The isolated signer runtime may provide `WSFE_HOMOLOGATION_POS_PROOFS_JSON`
+and `WSFEX_HOMOLOGATION_POS_PROOFS_JSON` arrays for explicitly scoped aliases
+of an already controlled homologation issuer. Each entry has the same fields
+as the existing singular proof config. Exactly one workspace/profile entry must
+match; duplicate or mixed aliases fail closed, and production forbids the array.
+These are only coordinates for fresh independent official readback, never proof
+that a new voucher was authorized. Keep represented CUIT and known CAE values in
+protected process configuration.

@@ -18,15 +18,18 @@ const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
 const sequenceReservationsRequired = process.env.WSFEX_SEQUENCE_RESERVATIONS_REQUIRED !== 'false';
 if (environment === 'production' && process.env.WSFEX_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFEX_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
 if (environment === 'production' && process.env.WSFEX_HOMOLOGATION_POS_PROOF) throw new Error('WSFEX_HOMOLOGATION_POS_PROOF_FORBIDDEN');
+const homologationProofSchema = z.object({
+  workspaceId: z.string().min(1).max(200), issuerProfileRef: z.string().min(1).max(500),
+  representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+  representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
+  cae: z.string().regex(/^\d{14}$/),
+}).strict();
 const homologationPointOfSaleProof = process.env.WSFEX_HOMOLOGATION_POS_PROOF
-  ? z.object({
-      workspaceId: z.string().min(1).max(200),
-      issuerProfileRef: z.string().min(1).max(500),
-      representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
-      representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
-      cae: z.string().regex(/^\d{14}$/),
-    }).strict().parse(JSON.parse(process.env.WSFEX_HOMOLOGATION_POS_PROOF))
-  : undefined;
+  ? homologationProofSchema.parse(JSON.parse(process.env.WSFEX_HOMOLOGATION_POS_PROOF)) : undefined;
+const homologationPointOfSaleProofs = process.env.WSFEX_HOMOLOGATION_POS_PROOFS_JSON
+  ? z.array(homologationProofSchema).max(100).parse(JSON.parse(process.env.WSFEX_HOMOLOGATION_POS_PROOFS_JSON)) : undefined;
+if (environment === 'production' && homologationPointOfSaleProofs)
+  throw new Error('WSFEX_HOMOLOGATION_POS_PROOF_FORBIDDEN');
 if (environment === 'production' && !sequenceReservationsRequired) throw new Error('WSFEX_SEQUENCE_RESERVATIONS_REQUIRED');
 const signerDatabasePath = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:';
 if (signerDatabasePath === ':memory:') {
@@ -56,7 +59,7 @@ const service = new WsfexSignerService(
     environment,
     signerVersion: process.env.WSFEX_SIGNER_VERSION ?? '0.1.0',
     sequenceReservationsRequired,
-    ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}),
+    ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}), ...(homologationPointOfSaleProofs ? { homologationPointOfSaleProofs } : {}),
   },
   new SignerAttemptStore(signerDatabasePath),
   vault,

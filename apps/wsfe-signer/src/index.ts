@@ -17,15 +17,18 @@ const apiToken = requiredEnvironment('WSFE_SIGNER_API_TOKEN');
 const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
 if (environment === 'production' && process.env.WSFE_SIGNER_PRODUCTION_APPROVED !== 'true') throw new Error('WSFE_SIGNER_PRODUCTION_APPROVAL_REQUIRED');
 if (environment === 'production' && process.env.WSFE_HOMOLOGATION_POS_PROOF) throw new Error('WSFE_HOMOLOGATION_POS_PROOF_FORBIDDEN');
+const homologationProofSchema = z.object({
+  workspaceId: z.string().min(1).max(200), issuerProfileRef: z.string().min(1).max(500),
+  representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
+  representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
+  cae: z.string().regex(/^\d{14}$/),
+}).strict();
 const homologationPointOfSaleProof = process.env.WSFE_HOMOLOGATION_POS_PROOF
-  ? z.object({
-      workspaceId: z.string().min(1).max(200),
-      issuerProfileRef: z.string().min(1).max(500),
-      representedCuit: z.string().regex(/^\d{11}$/).refine(isValidCuit),
-      representedCuitCommitment: z.string().regex(/^[a-f0-9]{64}$/),
-      cae: z.string().regex(/^\d{14}$/),
-    }).strict().parse(JSON.parse(process.env.WSFE_HOMOLOGATION_POS_PROOF))
-  : undefined;
+  ? homologationProofSchema.parse(JSON.parse(process.env.WSFE_HOMOLOGATION_POS_PROOF)) : undefined;
+const homologationPointOfSaleProofs = process.env.WSFE_HOMOLOGATION_POS_PROOFS_JSON
+  ? z.array(homologationProofSchema).max(100).parse(JSON.parse(process.env.WSFE_HOMOLOGATION_POS_PROOFS_JSON)) : undefined;
+if (environment === 'production' && homologationPointOfSaleProofs)
+  throw new Error('WSFE_HOMOLOGATION_POS_PROOF_FORBIDDEN');
 const signerDatabasePath = process.env.WSFE_SIGNER_DB_PATH ?? ':memory:';
 if (signerDatabasePath === ':memory:') throw new Error('WSFE_SIGNER_DURABLE_DB_REQUIRED');
 const vault = new HttpAuthorityPayloadVault({
@@ -44,7 +47,7 @@ const authority = authorityProvider === 'afipsdk'
   ? new AfipSdkWsfeClient({ accessToken: requiredEnvironment('AFIPSDK_ACCESS_TOKEN'), environment })
   : new SoapWsfeAuthorityClient(environment);
 const service = new WsfeSignerService(
-  { environment, signerVersion: process.env.WSFE_SIGNER_VERSION ?? '0.1.0', ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}) },
+  { environment, signerVersion: process.env.WSFE_SIGNER_VERSION ?? '0.1.0', ...(homologationPointOfSaleProof ? { homologationPointOfSaleProof } : {}), ...(homologationPointOfSaleProofs ? { homologationPointOfSaleProofs } : {}) },
   new SignerAttemptStore(signerDatabasePath),
   vault,
   wsaa,

@@ -26,6 +26,7 @@ export class WsfeSignerService {
     private readonly config: Readonly<{
       environment: 'homologation' | 'production'; signerVersion: string;
       homologationPointOfSaleProof?: Readonly<{ workspaceId: string; issuerProfileRef: string; representedCuit: string; representedCuitCommitment: string; cae: string }>;
+      homologationPointOfSaleProofs?: ReadonlyArray<Readonly<{ workspaceId: string; issuerProfileRef: string; representedCuit: string; representedCuitCommitment: string; cae: string }>>;
     }>,
     private readonly store: SignerAttemptStore,
     private readonly vault: AuthorityPayloadVault,
@@ -259,7 +260,9 @@ export class WsfeSignerService {
   private async readbackKnownHomologationVoucher(
     ticket: WsfeAccessTicket, workspaceId: string, issuerProfileRef: string, pointOfSale: number, documentType: number
   ) {
-    const proof = this.config.homologationPointOfSaleProof;
+    const proofs = [...(this.config.homologationPointOfSaleProofs ?? []), ...(this.config.homologationPointOfSaleProof ? [this.config.homologationPointOfSaleProof] : [])]
+      .filter(candidate => candidate.workspaceId === workspaceId && candidate.issuerProfileRef === issuerProfileRef);
+    const proof = proofs.length === 1 ? proofs[0] : undefined;
     if (this.config.environment !== 'homologation' || !proof
       || workspaceId !== proof.workspaceId || issuerProfileRef !== proof.issuerProfileRef
       || ticket.representedCuit !== proof.representedCuit

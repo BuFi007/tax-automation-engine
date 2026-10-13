@@ -640,3 +640,15 @@ function retrieved(overrides: Partial<WsfexRetrievedDocument> = {}): WsfexRetrie
     ...overrides,
   };
 }
+
+test('E sandbox readback supports exact Personal/team aliases and rejects mixed alias or duplicate proof', async () => {
+  const personal = {workspaceId:'personal:pilot',issuerProfileRef:'issuer://personal',representedCuit:'20123456786',representedCuitCommitment:payload().representedCuitCommitment,cae:'12345678901234'};
+  const team = {...personal,workspaceId:'team:pilot',issuerProfileRef:'issuer://team'};
+  const fixture = setup({recoveredDocuments:[retrieved({pointOfSale:2,invoiceNumber:'1'}),retrieved({pointOfSale:2,invoiceNumber:'1'})]});fixture.authority.pointOfSaleDiscovery = {activePoints:[],listedCount:0,rawResponseHash:hashCanonical('empty')};
+  const service = new WsfexSignerService({environment:'homologation',signerVersion:'test',homologationPointOfSaleProofs:[personal,team]},fixture.store,fixture.vault,new FakeWsaa(personal.representedCuitCommitment),fixture.authority);
+  for (const alias of [personal,team]) expect((await service.verifyPointOfSaleReadback({workspaceId:alias.workspaceId,issuerProfileRef:alias.issuerProfileRef,pointOfSale:2},occurredAt)).workspaceId).toBe(alias.workspaceId);
+  await expect(service.verifyPointOfSaleReadback({workspaceId:team.workspaceId,issuerProfileRef:personal.issuerProfileRef,pointOfSale:2},occurredAt)).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+  const ambiguous = new WsfexSignerService({environment:'homologation',signerVersion:'test',homologationPointOfSaleProofs:[team,team]},fixture.store,fixture.vault,new FakeWsaa(personal.representedCuitCommitment),fixture.authority);
+  await expect(ambiguous.verifyPointOfSaleReadback({workspaceId:team.workspaceId,issuerProfileRef:team.issuerProfileRef,pointOfSale:2},occurredAt)).rejects.toThrow('WSFEX_POINT_OF_SALE_NOT_ACTIVE');
+  expect(fixture.authority.authorizeCalls).toBe(0);
+});

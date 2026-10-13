@@ -159,3 +159,24 @@ test('returns a rejected C attempt with evidence and no CAE', async () => {
   expect(attempts.get(request.invoiceId)?.claimState).toBe('rejected');
   attempts.close();
 });
+
+test('C preparation permits canonical positive sub-peso totals and rejects zero without effects', async () => {
+  const attempts = new PersonalWsfeAttemptStore(join(directory, 'sub-peso.sqlite'));
+  let reads = 0;
+  const signer = { getNextVoucher: async () => { reads++; return { version: 'arca-wsfe-next-voucher-v1' as const, environment: 'homologation' as const, workspaceId, issuerProfileReferenceHash: hashCanonical(material.issuerProfileRef), representedCuitCommitment: commitment, documentType: 11 as const, pointOfSale: 1, lastInvoiceNumber: '5', nextInvoiceNumber: '6', observedAt: material.invoiceUpdatedAt, evidenceHash: 'c'.repeat(64) }; } };
+  const vault = new HttpAuthorityPayloadWriter({ baseUrl: 'https://boundary.test', token: 'secret', environment: 'homologation' }, async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    expect(body.payload.total.decimal).toBe('0.50');
+    return Response.json({ version: 'authority-payload-store-receipt-v1', reference: 'vault://wsfe/66666666-6666-4666-8666-666666666666', payloadHash: hashCanonical(body.payload), storedAt: material.invoiceUpdatedAt, expiresAt: body.expiresAt });
+  });
+  const now = new Date('2026-09-23T12:01:00.000Z');
+  for (const decimal of ['0.00', '00.50', '0.5', '-0.50']) {
+    const changed = { ...material, total: { decimal, currency: 'ARS' as const } };
+    await expect(preparePersonalWsfeAttempt({ ...changed, requestHash: hashCanonical(changed) }, workspaceId, projection, attempts, signer, vault, now)).rejects.toThrow();
+  }
+  expect(reads).toBe(0);
+  const halfPeso = { ...material, total: { decimal: '0.50', currency: 'ARS' as const } };
+  expect((await preparePersonalWsfeAttempt({ ...halfPeso, requestHash: hashCanonical(halfPeso) }, workspaceId, projection, attempts, signer, vault, now)).data.status).toBe('prepared');
+  expect(reads).toBe(1);
+  attempts.close();
+});

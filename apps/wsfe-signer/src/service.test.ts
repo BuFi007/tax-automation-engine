@@ -287,3 +287,15 @@ function retrieved(overrides: Partial<WsfeRetrievedDocument> = {}): WsfeRetrieve
     associatedDocument: null, result: 'A', cae: '71234567890123', caeExpiry: '2026-07-21', rawResponseHash: hashCanonical('retrieved'), ...overrides,
   };
 }
+
+test('C sandbox readback supports two explicitly configured aliases and denies mixed alias or duplicate proof', async () => {
+  const personal = { workspaceId: 'personal:pilot', issuerProfileRef: 'issuer://personal', representedCuit: '20123456786', representedCuitCommitment: hashCanonical('represented-cuit'), cae: '71234567890123' };
+  const team = { ...personal, workspaceId: 'team:pilot', issuerProfileRef: 'issuer://team' };
+  const fixture = setup(); fixture.authority.pointOfSaleError = new Error('WSFE_POINT_OF_SALE_NOT_ACTIVE');fixture.authority.proofDocument = retrieved({ pointOfSale: 1, invoiceNumber: '1' });
+  const service = new WsfeSignerService({ environment: 'homologation', signerVersion:'test', homologationPointOfSaleProofs:[personal,team] },fixture.store,fixture.vault,new FakeWsaa(),fixture.authority);
+  for (const alias of [personal,team]) expect((await service.verifyPointOfSaleReadback({workspaceId:alias.workspaceId,issuerProfileRef:alias.issuerProfileRef,pointOfSale:1},occurredAt)).workspaceId).toBe(alias.workspaceId);
+  await expect(service.verifyPointOfSaleReadback({workspaceId:team.workspaceId,issuerProfileRef:personal.issuerProfileRef,pointOfSale:1},occurredAt)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+  const ambiguous = new WsfeSignerService({environment:'homologation',signerVersion:'test',homologationPointOfSaleProofs:[team,team]},fixture.store,fixture.vault,new FakeWsaa(),fixture.authority);
+  await expect(ambiguous.verifyPointOfSaleReadback({workspaceId:team.workspaceId,issuerProfileRef:team.issuerProfileRef,pointOfSale:1},occurredAt)).rejects.toThrow('WSFE_POINT_OF_SALE_NOT_ACTIVE');
+  expect(fixture.authority.authorizeCalls).toBe(0);
+});
