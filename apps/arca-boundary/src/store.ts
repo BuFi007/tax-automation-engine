@@ -431,6 +431,27 @@ export class ArcaBoundaryStore {
     return ticket;
   }
 
+  /** Reuse an authority-identical homologation ticket across enrolled aliases only. */
+  reusableAliasTicket(credential: IssuerCredential, service: string, occurredAt: string, allowedWorkspaces: ReadonlySet<string>): TicketResponse | null {
+    if (credential.environment !== 'homologation' || !allowedWorkspaces.has(credential.workspaceId)) return null;
+    const rows = this.#db.query<IssuerRow, [string, string, string]>(`
+      SELECT * FROM issuer_credentials WHERE environment = ? AND certificate_fingerprint = ?
+        AND represented_cuit_commitment = ? AND active = 1 AND delegation_confirmed = 1
+    `).all(credential.environment, credential.certificateFingerprint, credential.representedCuitCommitment!);
+    for (const row of rows) {
+      const source = this.openIssuer(row);
+      if (!allowedWorkspaces.has(source.workspaceId) || source.representedCuit !== credential.representedCuit
+        || source.certificateHolderCuit !== credential.certificateHolderCuit) continue;
+      const key = hashCanonical({ environment: source.environment, workspaceId: source.workspaceId,
+        issuerProfileRef: source.issuerProfileRef, service, certificateFingerprint: source.certificateFingerprint,
+        representedCuitCommitment: source.representedCuitCommitment });
+      const ticket = this.getTicket(key, occurredAt);
+      if (ticket && ticket.representedCuit === credential.representedCuit
+        && ticket.representedCuitCommitment === credential.representedCuitCommitment) return ticket;
+    }
+    return null;
+  }
+
   storeTicket(cacheKey: string, issuerProfileRef: string, ticket: TicketResponse): void {
     const validated = ticketResponseSchema.parse(ticket);
     this.#db.query(`

@@ -179,3 +179,20 @@ function provisionRequest() {
     replaceCertificateFingerprint: null,
   };
 }
+
+test('enrolled homologation aliases reuse only the same issuer/certificate/service ticket', async () => {
+  const fixture = boundary();
+  const service = new ArcaBoundaryService(fixture.store,fixture.wsaa,undefined,null,new Set(['workspace-1','workspace-team','workspace-other-taxpayer']));
+  service.provisionIssuer(provisionRequest(),NOW.toISOString());
+  const request = {version:'wsaa-ticket-request-v1' as const,service:'wsfe' as const,environment:'homologation' as const,workspaceId:'workspace-1',issuerProfileRef:'issuer://workspace-1/primary'};
+  const original = await service.getTicket(request,NOW.toISOString());
+  service.delegateIssuerFromStoredCertificate({version:'wsaa-issuer-delegation-v1',templateWorkspaceId:'workspace-1',templateIssuerProfileRef:request.issuerProfileRef,workspaceId:'workspace-team',issuerProfileRef:'issuer://team',environment:'homologation',representedCuit:CUIT},NOW.toISOString());
+  expect(await service.getTicket({...request,workspaceId:'workspace-team',issuerProfileRef:'issuer://team'},NOW.toISOString())).toEqual(original);
+  expect(fixture.wsaa.calls).toBe(1);
+  await service.getTicket({...request,service:'wsfex',workspaceId:'workspace-team',issuerProfileRef:'issuer://team'},NOW.toISOString());
+  expect(fixture.wsaa.calls).toBe(2);
+  service.delegateIssuerFromStoredCertificate({version:'wsaa-issuer-delegation-v1',templateWorkspaceId:'workspace-1',templateIssuerProfileRef:request.issuerProfileRef,workspaceId:'workspace-other-taxpayer',issuerProfileRef:'issuer://other-taxpayer',environment:'homologation',representedCuit:WSFE_RECEPTOR_CUIT},NOW.toISOString());
+  const other = await service.getTicket({...request,workspaceId:'workspace-other-taxpayer',issuerProfileRef:'issuer://other-taxpayer'},NOW.toISOString());
+  expect(other.representedCuitCommitment).not.toBe(original.representedCuitCommitment);expect(fixture.wsaa.calls).toBe(3);
+  await expect(service.getTicket({...request,workspaceId:'workspace-ungranted',issuerProfileRef:'issuer://team'},NOW.toISOString())).rejects.toThrow('WSAA_ISSUER_NOT_FOUND');
+});

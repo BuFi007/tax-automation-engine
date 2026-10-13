@@ -45,7 +45,11 @@ const service = new ArcaBoundaryService(
   new ArcaBoundaryStore(masterKey, databasePath, representedCuitCommitmentKey),
   wsaa,
   retentionPolicy,
-  taxpayerReferenceKey
+  taxpayerReferenceKey,
+  process.env.ARCA_FISCAL_BETA_ENABLED === 'true'
+    && process.env.TAX_DEPLOYMENT_ENVIRONMENT === 'development'
+    && environment === 'homologation'
+    ? new Set((process.env.ARCA_FISCAL_BETA_WORKSPACE_IDS ?? '').split(',').map(v => v.trim()).filter(Boolean)) : null
 );
 masterKey.fill(0);
 representedCuitCommitmentKey.fill(0);

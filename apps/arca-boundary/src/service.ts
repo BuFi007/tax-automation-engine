@@ -36,7 +36,8 @@ export class ArcaBoundaryService {
       retentionPolicyId: 'arca-authority-terminal-recovery-v1',
       terminalRetentionMs: 30 * 24 * 60 * 60_000,
     },
-    taxpayerReferenceKey: Buffer | null = null
+    taxpayerReferenceKey: Buffer | null = null,
+    private readonly betaAliasWorkspaceIds: ReadonlySet<string> | null = null
   ) {
     if (taxpayerReferenceKey && taxpayerReferenceKey.length !== 32)
       throw new Error('ARCA_BOUNDARY_TAXPAYER_REFERENCE_KEY_INVALID');
@@ -150,6 +151,14 @@ export class ArcaBoundaryService {
         throw new Error('WSAA_TICKET_BINDING_MISMATCH');
       this.#tickets.set(key, stored);
       return stored;
+    }
+    if (input.environment === 'homologation' && this.betaAliasWorkspaceIds?.has(input.workspaceId)) {
+      const reused = this.store.reusableAliasTicket(credential, input.service, occurredAt, this.betaAliasWorkspaceIds);
+      if (reused) {
+        this.store.storeTicket(key, input.issuerProfileRef, reused);
+        this.#tickets.set(key, reused);
+        return reused;
+      }
     }
     const pending = this.#pendingTickets.get(key);
     if (pending) return pending;
