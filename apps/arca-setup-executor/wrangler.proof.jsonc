@@ -1,0 +1,17 @@
+{
+  "name": "bufi-arca-setup-proof",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "browser": { "binding": "BROWSER" },
+  "durable_objects": { "bindings": [{ "name": "ARCA_SETUP_SESSION", "class_name": "ArcaSetupSession" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ArcaSetupSession"] }],
+  "vars": {
+    "ARCA_ENVIRONMENT": "homologation",
+    "PUBLIC_BASE_URL": "https://bufi-arca-setup-proof.<your-subdomain>.workers.dev",
+    "TAX_RECEIPT_URL": "https://tax.example.invalid/v1/arca-setup/receipts",
+    "ARCA_BOUNDARY_URL": "https://arca-boundary.example.invalid",
+    "PROOF_ROUTES_ENABLED": "true"
+  }
+}

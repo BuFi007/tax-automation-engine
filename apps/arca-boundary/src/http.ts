@@ -16,6 +16,7 @@ import { readBoundedBody } from './bounded-body';
 import { safeTokenEqual } from './crypto';
 import type { ArcaBoundaryService } from './service';
 import { queryIssuerPadron } from './padron';
+import type { ArcaSetupBoundary } from './setup';
 
 export type BoundaryTokens = Readonly<{
   payloadWriter: string;
@@ -25,13 +26,28 @@ export type BoundaryTokens = Readonly<{
   admin: string;
   padron?: string | undefined;
   issuerRevoke?: string | undefined;
+  /** Tax engine automation: opens setup sessions, requests enrollment, provisions. */
+  setup?: string | undefined;
+  /** Browser executor: reports the observed taxpayer, reads the CSR, imports the certificate. */
+  setupExecutor?: string | undefined;
 }>;
+
+const SETUP_ROUTES: Readonly<Record<string, Readonly<{ scope: 'setup' | 'setupExecutor'; method: keyof ArcaSetupBoundary }>>> = {
+  '/v1/setup/sessions': { scope: 'setup', method: 'createSession' },
+  '/v1/setup/sessions/enrollment': { scope: 'setup', method: 'createEnrollment' },
+  '/v1/setup/sessions/provision': { scope: 'setup', method: 'provision' },
+  '/v1/setup/sessions/status': { scope: 'setup', method: 'status' },
+  '/v1/setup/executor/taxpayer-match': { scope: 'setupExecutor', method: 'matchTaxpayer' },
+  '/v1/setup/executor/csr': { scope: 'setupExecutor', method: 'readCsr' },
+  '/v1/setup/executor/certificate': { scope: 'setupExecutor', method: 'importCertificate' },
+};
 
 export function createBoundaryHandler(
   service: ArcaBoundaryService,
   tokens: BoundaryTokens,
   environment: 'homologation' | 'production',
-  clock: () => Date = () => new Date()
+  clock: () => Date = () => new Date(),
+  setup: ArcaSetupBoundary | null = null,
 ) {
   return async (request: Request): Promise<Response> => {
     try {
@@ -52,6 +68,15 @@ export function createBoundaryHandler(
         return json(service.issuerStatus(input.workspaceId, input.issuerProfileRef, input.environment, occurredAt));
       }
       if (request.method !== 'POST') return json({ error: 'NOT_FOUND' }, 404);
+      const setupRoute = SETUP_ROUTES[url.pathname];
+      if (setupRoute) {
+        const scopeToken = tokens[setupRoute.scope];
+        if (!setup || !scopeToken) return json({ error: 'ARCA_SETUP_NOT_CONFIGURED' }, 503);
+        if (!authorized(request, scopeToken)) return json({ error: 'UNAUTHORIZED' }, 401);
+        const setupBody: unknown = JSON.parse(await readBoundedBody(request, 65_536, 'ARCA_BOUNDARY_REQUEST_TOO_LARGE'));
+        const handler = setup[setupRoute.method] as (raw: unknown, occurredAt: string) => unknown;
+        return json(handler.call(setup, setupBody, occurredAt));
+      }
       const requiredToken = tokenForPath(url.pathname, tokens);
       if (!requiredToken) return json({ error: 'NOT_FOUND' }, 404);
       if (!authorized(request, requiredToken)) return json({ error: 'UNAUTHORIZED' }, 401);
@@ -146,6 +171,7 @@ function statusFor(code: string): number {
   if (code.endsWith('_NOT_FOUND')) return 404;
   if (code.includes('IDEMPOTENCY_CONFLICT') || code.includes('PRECONDITION')) return 409;
   if (code.includes('EXPIRED')) return 410;
+  if (code.includes('_CONFLICT') || code.includes('ALREADY_IMPORTED') || code.includes('TAXPAYER_CHANGED')) return 409;
   if (code.includes('TOO_LARGE')) return 413;
   if (code.includes('TRANSPORT') || code.includes('HTTP_REJECTED') || code.includes('SOAP_FAULT')) return 502;
   return 400;

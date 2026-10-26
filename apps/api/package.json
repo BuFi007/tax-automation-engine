@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@reclaimprotocol/js-sdk": "5.8.0",
+    "@tax-engine/arca-setup-contract": "workspace:*",
     "@tax-engine/browser-contracts": "workspace:*",
     "@tax-engine/core": "workspace:*",
     "@tax-engine/erp": "workspace:*",

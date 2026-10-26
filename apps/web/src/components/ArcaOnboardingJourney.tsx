@@ -71,7 +71,7 @@ export function ArcaOnboardingJourney({
         <div>
           <p className="eyebrow">Argentina · Authority setup</p>
           <h2 id="arca-onboarding-heading">Connect ARCA without sharing your Clave Fiscal</h2>
-          <p>One guided setup per taxpayer. After delegation, Motora signs API calls with its own certificate on behalf of that CUIT.</p>
+          <p>One setup per taxpayer, guided or automatic. In the automatic setup you sign in to ARCA yourself inside a hosted browser session; BUFI never sees what you type and continues once you are in. After delegation, BUFI signs API calls with its own certificate on behalf of that CUIT, or with a certificate created for your CUIT whose private key stays in BUFI's encrypted boundary.</p>
         </div>
       </div>
 

@@ -8,6 +8,12 @@ import {
 } from './agent-principal';
 
 import type { FacturaEAgentService } from './factura-e-agent';
+import {
+  ARCA_CONNECTION_AGENT_TOOLS,
+  invokeArcaConnectionAgentTool,
+  isArcaConnectionAgentTool,
+} from './arca-connection-agent-tools';
+import type { ArcaSetupAutomationService } from './arca-setup-automation';
 import type { AccountantMandateScope } from '@tax-engine/core';
 
 type AccountantMandateAuthorizer = Readonly<{
@@ -248,6 +254,8 @@ export async function handleAgentRoute(
     /** Retired compatibility input; never authorizes an ARCA effect. */
     authorityPayloadToken?: string | null;
     legacyEvidenceAppendEnabled?: boolean;
+    /** Automated ARCA connection. Absent means its tools answer configuration-required. */
+    arcaSetup?: ArcaSetupAutomationService | null;
   }>
 ): Promise<Response | null> {
   if (request.method === 'POST' && url.pathname === '/v1/reclaim/callback') {
@@ -277,7 +285,10 @@ export async function handleAgentRoute(
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/agent/tools') {
-    return json({ data: { capabilities: service.capabilities(), tools: FACTURA_E_AGENT_TOOLS } });
+    return json({ data: {
+      capabilities: { ...service.capabilities(), arcaConnection: options.arcaSetup?.capabilities() ?? { executor: 'configuration_required' } },
+      tools: [...FACTURA_E_AGENT_TOOLS, ...ARCA_CONNECTION_AGENT_TOOLS],
+    } });
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/evidence/append') {
@@ -306,6 +317,13 @@ export async function handleAgentRoute(
       idempotencyKey: body.idempotencyKey,
       secret: options.agentPrincipalSecret,
     });
+    if (isArcaConnectionAgentTool(toolId)) {
+      return json({ data: await invokeArcaConnectionAgentTool(toolId, body.input, {
+        actorId: body.actorId,
+        idempotencyKey: body.idempotencyKey,
+        principalWorkspaceId: principal.workspaceId,
+      }, options.arcaSetup ?? null) });
+    }
     assertAgentInvocationScope(toolId, body, principal, service);
     return json({ data: await invokeTool(toolId, body, service) });
   }

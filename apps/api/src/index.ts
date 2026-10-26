@@ -22,6 +22,10 @@ import { ArcaOnboardingService } from './arca-onboarding';
 import { HttpArcaWorkbenchPublisher } from './arca-workbench';
 import { ReclaimArcaOnboardingGateway } from './arca-onboarding-reclaim';
 import { handleArcaOnboardingRoute } from './arca-onboarding-routes';
+import { ArcaSetupAutomationService } from './arca-setup-automation';
+import { HttpArcaSetupBoundaryGateway, HttpArcaSetupExecutorGateway } from './arca-setup-clients';
+import { handleArcaSetupProviderRoute, handleArcaSetupReceiptRoute, handleArcaSetupUserRoute, isArcaSetupUserPath } from './arca-setup-routes';
+import { ArcaSetupStore } from './arca-setup-store';
 import { HttpArcaBoundaryStatusReader, issuerAcceptanceForPrincipal, latestArcaConnectionProjectionForPrincipal, latestPrivateArcaConnectionProjection, privateArcaConnectionProjection, revokeArcaConnectionForPrincipal } from './arca-connection-projection';
 import { PersonalWsfeAttemptStore } from './personal-wsfe-attempt';
 import { handleWsfeAttemptRoute } from './wsfe-attempt-routes';
@@ -497,6 +501,34 @@ const arcaOnboarding = new ArcaOnboardingService(
   wsfePointOfSaleGateway,
   HttpArcaWorkbenchPublisher.fromEnvironment(),
 );
+const arcaSetupEnabled = process.env.TAX_ARCA_SETUP_ENABLED === 'true';
+const arcaSetupSecrets = [
+  process.env.ARCA_SETUP_ORDER_SECRET,
+  process.env.ARCA_SETUP_RECEIPT_SECRET,
+  process.env.ARCA_SETUP_HANDOFF_SECRET,
+  process.env.TAX_ENGINE_ARCA_PROVIDER_OPERATOR_TOKEN,
+  process.env.ARCA_BOUNDARY_SETUP_TOKEN,
+];
+if (arcaSetupEnabled && (
+  arcaSetupSecrets.some(secret => !secret || secret.length < 32)
+  || new Set(arcaSetupSecrets).size !== arcaSetupSecrets.length
+)) throw new Error('TAX_ARCA_SETUP_SECRETS_REQUIRED_AND_DISTINCT');
+if (arcaSetupEnabled && process.env.NODE_ENV === 'production'
+  && (!process.env.TAX_ARCA_SETUP_DB_PATH && !process.env.TAX_ENGINE_DB_PATH))
+  throw new Error('TAX_ARCA_SETUP_DURABLE_STORE_REQUIRED');
+const arcaSetup = arcaSetupEnabled
+  ? new ArcaSetupAutomationService({
+      store: new ArcaSetupStore(),
+      onboarding: arcaOnboarding,
+      executor: HttpArcaSetupExecutorGateway.fromEnvironment(),
+      boundary: HttpArcaSetupBoundaryGateway.fromEnvironment(),
+      handoffSecret: process.env.ARCA_SETUP_HANDOFF_SECRET ?? null,
+      receiptSecret: process.env.ARCA_SETUP_RECEIPT_SECRET ?? null,
+      providerDelegationAvailable: process.env.ARCA_SETUP_PROVIDER_DELEGATION_ENABLED === 'true',
+      reclaimAvailable: ReclaimArcaOnboardingGateway.fromEnvironment() !== null,
+    })
+  : null;
+const arcaProviderOperatorToken = process.env.TAX_ENGINE_ARCA_PROVIDER_OPERATOR_TOKEN ?? null;
 const jurisdictionSchema = z.enum(['AR', 'US', 'AE']);
 const founderResidencySchema = z.enum(['local', 'foreign']);
 const profileSchema = z.object({
@@ -549,6 +581,10 @@ export const server = Bun.serve({
         issuerProfileRegistry.bind(run.workspaceId, body.issuerProfileRef, new Date().toISOString());
         return applyCors(json({ data: { bound: true, workspaceId: run.workspaceId } }), request);
       }
+      const arcaSetupReceipt = await handleArcaSetupReceiptRoute(request, url, arcaSetup);
+      if (arcaSetupReceipt) return applyCors(arcaSetupReceipt, request);
+      const arcaSetupProvider = await handleArcaSetupProviderRoute(request, url, arcaSetup, arcaProviderOperatorToken);
+      if (arcaSetupProvider) return applyCors(arcaSetupProvider, request);
       if (url.pathname === '/v1/reclaim/arca-onboarding/callback') {
         const callbackResponse = await handleArcaOnboardingRoute(request, url, arcaOnboarding, { userApprovalToken, evidenceIngestToken });
         return applyCors(callbackResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
@@ -637,6 +673,16 @@ export const server = Bun.serve({
         /^\/v1\/arca-onboarding(?:\/|$)/.test(url.pathname)
         && request.headers.has('x-tax-tenant-principal')
       ) {
+        if (isArcaSetupUserPath(url.pathname)) {
+          const rawBody = request.method === 'GET'
+            ? ''
+            : await readBoundedBody(request, 64 * 1024, 'ARCA_SETUP_REQUEST_TOO_LARGE');
+          const automationPrincipal = verifyBoundTaxTenantPrincipalForRawBody(
+            request, rawBody, motoraOnboardingPrincipalSecret, 'arca:onboard',
+          );
+          const automationResponse = await handleArcaSetupUserRoute(request, url, arcaSetup, automationPrincipal, rawBody);
+          return applyCors(automationResponse ?? json({ error: 'NOT_FOUND' }, 404), request);
+        }
         const scopedPrincipal = await verifyBoundTaxTenantPrincipal(
           request,
           motoraOnboardingPrincipalSecret,
@@ -788,7 +834,7 @@ export const server = Bun.serve({
       if (evidenceResponse) return applyCors(evidenceResponse, request);
       const settlementResponse = await handleInvoiceSettlementAdapterRoute(request, url, store, deskInvoiceSettlementPrincipalSecret);
       if (settlementResponse) return applyCors(settlementResponse, request);
-      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled });
+      const agentResponse = await handleAgentRoute(request, url, facturaEAgent, { userApprovalToken, accountantApprovalToken, evidenceIngestToken, agentPrincipalSecret: [deskAgentPrincipalSecret, openAgentsAgentPrincipalSecret], accountantMandates: store, legacyEvidenceAppendEnabled, arcaSetup });
       if (agentResponse) return applyCors(agentResponse, request);
       if (request.method === 'GET' && url.pathname === '/health') {
         return applyCors(json({
@@ -812,6 +858,7 @@ export const server = Bun.serve({
             : { remoteEffects: 'dark', downstreamEligibility: 'blocked' },
           agent: facturaEAgent.capabilities(),
           arcaOnboarding: arcaOnboarding.capabilities(),
+          arcaSetup: arcaSetup ? arcaSetup.capabilities() : { state: 'dark' },
           facturaEFeaturePublication: facturaEFeatureEnabled
             ? {
                 state: 'armed',
@@ -1002,4 +1049,16 @@ if (taxDomainEventDeliveryEnabled) {
   );
   timer.unref();
   void tickTaxDomainEvents();
+}
+
+let arcaSetupTickRunning = false;
+if (arcaSetup) {
+  const interval = Number(process.env.TAX_ARCA_SETUP_TICK_MS ?? 30_000);
+  const timer = setInterval(() => {
+    if (arcaSetupTickRunning) return;
+    arcaSetupTickRunning = true;
+    void arcaSetup.tick().catch(error => console.error('ARCA setup tick failed:', classifyApiError(error).code))
+      .finally(() => { arcaSetupTickRunning = false; });
+  }, Number.isInteger(interval) && interval >= 5_000 ? interval : 30_000);
+  timer.unref();
 }

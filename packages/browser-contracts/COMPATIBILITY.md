@@ -116,3 +116,10 @@ The browser-safe export boundary is unchanged; consumers must refresh their
 compiled tarball/provenance instead of relabeling an older archive.
 The delegated accountant final-approval queue is a server API read model and
 does not add authority credentials or capabilities to this package.
+
+Package `0.12.0` adds the automated ARCA connection contracts on the
+`./arca-onboarding` entrypoint: `arcaSetupProgressV1Schema`
+(`arca-setup-progress-v1`) and `arcaSetupHandoffLinkV1Schema`. This is additive:
+existing onboarding run bytes and both frozen fixture digests are unchanged.
+The handoff link is a short-lived credential for the signed-in customer's
+browser; consumers must never log it, cache it, or pass it to an agent.

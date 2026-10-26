@@ -7,6 +7,9 @@ import { AfipSdkWsaaLoginClient } from './afipsdk-wsaa';
 import { createBoundaryHandler } from './http';
 import { ArcaBoundaryService } from './service';
 import { ArcaBoundaryStore } from './store';
+import { ArcaSetupBoundary } from './setup';
+import { deriveDomainKey } from './crypto';
+import { readFileSync } from 'node:fs';
 
 const port = Number(process.env.PORT ?? 4300);
 const hostname = process.env.ARCA_BOUNDARY_HOST ?? '127.0.0.1';
@@ -25,7 +28,13 @@ const tokens = {
     ? requiredToken('ARCA_BOUNDARY_PADRON_TOKEN') : undefined,
   issuerRevoke: process.env.ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN
     ? requiredToken('ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN') : undefined,
+  setup: process.env.ARCA_BOUNDARY_SETUP_TOKEN
+    ? requiredToken('ARCA_BOUNDARY_SETUP_TOKEN') : undefined,
+  setupExecutor: process.env.ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN
+    ? requiredToken('ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN') : undefined,
 };
+if (Boolean(tokens.setup) !== Boolean(tokens.setupExecutor))
+  throw new Error('ARCA_BOUNDARY_SETUP_TOKENS_REQUIRED_TOGETHER');
 const configuredTokens = Object.values(tokens).filter((token): token is string => !!token);
 if (new Set(configuredTokens).size !== configuredTokens.length)
   throw new Error('ARCA_BOUNDARY_TOKENS_MUST_BE_DISTINCT');
@@ -41,8 +50,26 @@ if (authProvider === 'afipsdk' && process.env.ARCA_AFIPSDK_KEY_TRANSFER_APPROVED
 const wsaa = authProvider === 'afipsdk'
   ? new AfipSdkWsaaLoginClient(requiredToken('AFIPSDK_ACCESS_TOKEN'))
   : undefined;
+const issuerStore = new ArcaBoundaryStore(masterKey, databasePath, representedCuitCommitmentKey);
+const setup = tokens.setup
+  ? new ArcaSetupBoundary({
+      databasePath,
+      sealKey: deriveDomainKey(masterKey, 'setup-sessions'),
+      commitmentKey: representedCuitCommitmentKey,
+      taxpayerReferenceKey,
+      issuers: issuerStore,
+      environment,
+      providerTemplate: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_WORKSPACE_ID && process.env.ARCA_SETUP_PROVIDER_TEMPLATE_PROFILE_REF
+        ? {
+            workspaceId: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_WORKSPACE_ID,
+            issuerProfileRef: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_PROFILE_REF,
+          }
+        : null,
+      trustedIssuers: loadTrustedIssuers(process.env.ARCA_SETUP_TRUSTED_ISSUERS_FILE),
+    })
+  : null;
 const service = new ArcaBoundaryService(
-  new ArcaBoundaryStore(masterKey, databasePath, representedCuitCommitmentKey),
+  issuerStore,
   wsaa,
   retentionPolicy,
   taxpayerReferenceKey,
@@ -54,7 +81,7 @@ const service = new ArcaBoundaryService(
 masterKey.fill(0);
 representedCuitCommitmentKey.fill(0);
 taxpayerReferenceKey.fill(0);
-const handler = createBoundaryHandler(service, tokens, environment);
+const handler = createBoundaryHandler(service, tokens, environment, undefined, setup);
 
 export const server = Bun.serve({
   hostname,
@@ -93,3 +120,10 @@ function loadRetentionPolicy(environment: 'homologation' | 'production') {
 }
 
 if (import.meta.main) console.info(`ARCA authority boundary listening on ${hostname}:${server.port}; environment=${environment}; secrets remain encrypted and outside agent context`);
+
+/** PEM bundle of ARCA's computer-certificate CAs (the official "cadena de certificación"). */
+function loadTrustedIssuers(path: string | undefined): readonly string[] {
+  if (!path) return [];
+  const bundle = readFileSync(path, 'utf8');
+  return bundle.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
+}

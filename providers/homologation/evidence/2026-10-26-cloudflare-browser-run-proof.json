@@ -1,0 +1,63 @@
+{
+  "version": "arca-setup-browser-run-proof-v1",
+  "observedAt": "2026-10-26",
+  "runtime": "cloudflare-worker",
+  "package": "@cloudflare/playwright@1.3.6",
+  "worker": "temporary proof Worker (deleted after the run), compatibility_date 2026-10-20, nodejs_compat",
+  "fileTransfer": {
+    "uploadFromBytes": true,
+    "uploadedHash": "11cad282ba935f36f236d89d6c88c88bb93921a0f8247715ea3b45ecf8ffb375",
+    "expectedUploadHash": "11cad282ba935f36f236d89d6c88c88bb93921a0f8247715ea3b45ecf8ffb375",
+    "aliveAfterDisconnect": true,
+    "downloadGetLink": true,
+    "downloadFormPost": true,
+    "strategies": {
+      "downloadEvent": true,
+      "suggestedFilename": "bufi-proof.crt",
+      "failure": null,
+      "streamEvents": false,
+      "streamEventsBytes": 0,
+      "inPageAuthenticatedFetch": true,
+      "contextRequest": false
+    },
+    "downloadedHash": "5f301d8b921f0b330f0974b5bf11084c5771d6e87107f3c46b6c9a8f054c0d86",
+    "expectedDownloadHash": "5f301d8b921f0b330f0974b5bf11084c5771d6e87107f3c46b6c9a8f054c0d86",
+    "session": {
+      "closed": true,
+      "verifiedGone": true,
+      "method": "binding"
+    }
+  },
+  "handoff": {
+    "liveViewHost": "live.browser.run",
+    "liveViewModeTab": true,
+    "handoffIdIssued": true,
+    "activeDuring": true,
+    "completionObserved": true,
+    "completionSuccess": false,
+    "completionReason": "Handoff timeout reached",
+    "activeAfter": false,
+    "session": {
+      "closed": true,
+      "verifiedGone": true,
+      "method": "binding"
+    }
+  },
+  "arcaLoginReachability": {
+    "status": 200,
+    "finalHost": "auth.afip.gob.ar",
+    "title": "Acceso con Clave Fiscal - ARCA",
+    "loginFormPresent": true,
+    "cuitFieldPresent": true,
+    "blockedSignals": false,
+    "session": {
+      "closed": true,
+      "verifiedGone": true,
+      "method": "binding"
+    }
+  },
+  "notes": [
+    "Live View links were generated and discarded; none is recorded here.",
+    "No ARCA credentials were used; reachability loads the public login page only."
+  ]
+}

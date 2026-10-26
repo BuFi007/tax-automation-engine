@@ -75,3 +75,68 @@ function assertExactKeys(value: object, expected: readonly string[]): void {
     throw new Error('HUMAN_AUTH_MALFORMED_PAYLOAD');
   }
 }
+
+/**
+ * Hosted authentication policy for a customer signing in to ARCA inside a
+ * remote browser session that BUFI automates afterwards.
+ *
+ * Version 2 keeps every v1 capture prohibition for the automation, agent and
+ * observability side, and adds the one thing v1 never addressed: a private
+ * human display. The customer sees the live remote tab through a single-use,
+ * short-lived view link delivered only over their authenticated BUFI session.
+ * Seeing that tab is display, not capture: nothing renders to a model, a trace,
+ * a recording, a screenshot or a tax-domain event, and automation is paused
+ * while the customer types.
+ */
+export type HostedHumanAuthPolicyV2 = Readonly<{
+  version: 'hosted-human-auth-policy-v2';
+  /** The v1 prohibitions bind the automation and agent side unchanged. */
+  agentCapture: HumanAuthCapturePolicyV1;
+  agentCapturePolicyHash: typeof HUMAN_AUTH_CAPTURE_POLICY_HASH;
+  humanDisplay: Readonly<{
+    channel: 'private_live_view';
+    audience: 'authenticated_customer_only';
+    deliveredThrough: 'bufi_authenticated_ui';
+    viewLinkSingleUse: true;
+    viewLinkMaxTtlSeconds: 120;
+    viewModes: readonly ['tab'];
+  }>;
+  duringCredentialEntry: Readonly<{
+    automationPaused: true;
+    pageObservationPaused: true;
+  }>;
+  forbiddenSinks: readonly [
+    'model_context',
+    'tool_results',
+    'analytics',
+    'tax_domain_events',
+    'session_recording',
+    'logs',
+  ];
+}>;
+
+export const HOSTED_HUMAN_AUTH_POLICY_V2: HostedHumanAuthPolicyV2 = Object.freeze({
+  version: 'hosted-human-auth-policy-v2',
+  agentCapture: HUMAN_AUTH_CAPTURE_POLICY,
+  agentCapturePolicyHash: HUMAN_AUTH_CAPTURE_POLICY_HASH,
+  humanDisplay: Object.freeze({
+    channel: 'private_live_view',
+    audience: 'authenticated_customer_only',
+    deliveredThrough: 'bufi_authenticated_ui',
+    viewLinkSingleUse: true,
+    viewLinkMaxTtlSeconds: 120,
+    viewModes: Object.freeze(['tab'] as const),
+  }),
+  duringCredentialEntry: Object.freeze({ automationPaused: true, pageObservationPaused: true }),
+  forbiddenSinks: Object.freeze([
+    'model_context',
+    'tool_results',
+    'analytics',
+    'tax_domain_events',
+    'session_recording',
+    'logs',
+  ] as const),
+}) as HostedHumanAuthPolicyV2;
+
+/** SHA-256 of the canonical JSON policy above; pinned for executor/server parity. */
+export const HOSTED_HUMAN_AUTH_POLICY_V2_HASH = '4c22ba96fd4b4bbaf4d1a7f751b2a40e6f0e9f73c9c553d633b3d173192eb8d3';

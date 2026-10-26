@@ -1,0 +1,41 @@
+{
+  // ARCA setup executor: one Durable Object per automated ARCA connection.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bufi-arca-setup-executor-homologation",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "browser": { "binding": "BROWSER" },
+  "durable_objects": {
+    "bindings": [{ "name": "ARCA_SETUP_SESSION", "class_name": "ArcaSetupSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ArcaSetupSession"] }],
+  // Workers logs are on for operations; the executor never logs page text, links or secrets.
+  "observability": { "enabled": true },
+  "vars": {
+    "ARCA_ENVIRONMENT": "homologation",
+    "PUBLIC_BASE_URL": "https://bufi-arca-setup-executor-homologation.example.workers.dev",
+    "TAX_RECEIPT_URL": "https://tax.example.invalid/v1/arca-setup/receipts",
+    "ARCA_BOUNDARY_URL": "https://arca-boundary.example.invalid",
+    "PROOF_ROUTES_ENABLED": "false"
+  },
+  // Secrets (wrangler secret put): ARCA_SETUP_ORDER_SECRET, ARCA_SETUP_RECEIPT_SECRET,
+  // ARCA_SETUP_HANDOFF_SECRET, ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN, PROOF_TOKEN (non-production only).
+  "env": {
+    "production": {
+      "name": "bufi-arca-setup-executor",
+      "vars": {
+        "ARCA_ENVIRONMENT": "production",
+        "PUBLIC_BASE_URL": "https://arca-setup.bu.finance",
+        "TAX_RECEIPT_URL": "https://tax.bu.finance/v1/arca-setup/receipts",
+        "ARCA_BOUNDARY_URL": "https://arca-boundary.bu.finance",
+        "PROOF_ROUTES_ENABLED": "false"
+      },
+      "browser": { "binding": "BROWSER" },
+      "durable_objects": {
+        "bindings": [{ "name": "ARCA_SETUP_SESSION", "class_name": "ArcaSetupSession" }]
+      }
+    }
+  }
+}

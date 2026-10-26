@@ -131,6 +131,16 @@ See [authority boundary operations](apps/arca-boundary/README.md) and
 
 ## API surface
 
+Automated ARCA connection ([docs/arca-setup-executor.md](docs/arca-setup-executor.md)):
+
+- `POST|GET /v1/arca-onboarding/runs/:onboardingId/automation` (request-bound `arca:onboard` principal)
+- `GET /v1/arca-onboarding/automation/:executionId`
+- `POST /v1/arca-onboarding/automation/:executionId/{authorization,handoff-link,decision,retry,cancel}`
+- `POST /v1/arca-setup/receipts` (executor receipt HMAC)
+- `GET /v1/arca-setup/provider/queue`, `POST /v1/arca-setup/provider/:executionId/{accept,handoff-link}` (BUFI operator token)
+- Agent tools `tax_ar_arca_connection_{start,get_status,resume,cancel}`
+
+
 - `GET /health`
 - `GET /v1/catalogues`
 - `GET /v1/snapshots/demo?jurisdiction=AR|US`

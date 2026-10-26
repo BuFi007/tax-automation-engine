@@ -434,3 +434,76 @@ export function projectArcaOnboardingBrowserHistoryV1(input: Readonly<{
     }),
   });
 }
+
+/**
+ * Automated ARCA connection progress (package 0.12.0, additive).
+ * The same safe view the agent receives: no links, tickets, ARCA text or IDs.
+ */
+export const arcaSetupOperationsV1 = [
+  'authenticate',
+  'inspect',
+  'adhere_services',
+  'create_point_of_sale',
+  'enroll_certificate',
+  'authorize_web_services',
+  'delegate_to_provider',
+  'provider_accept',
+  'close_session',
+] as const;
+
+export const arcaSetupPhasesV1 = [
+  'awaiting_user_authorization',
+  'awaiting_user_authentication',
+  'running',
+  'awaiting_user_decision',
+  'awaiting_provider_acceptance',
+  'waiting_for_propagation',
+  'waiting_for_verification',
+  'waiting_for_proof',
+  'recoverable_action_required',
+  'connected',
+  'cancelled',
+  'failed',
+] as const;
+
+const arcaSetupDecisionKindSchema = z.enum(['export_point_of_sale', 'domestic_point_of_sale', 'certificate_replacement']);
+
+export const arcaSetupProgressV1Schema = z
+  .object({
+    version: z.literal('arca-setup-progress-v1'),
+    executionId: z.uuid(),
+    onboardingId: z.uuid(),
+    workspaceId: safeReferenceSchema,
+    environment: z.enum(['homologation', 'production']),
+    mode: z.enum(['provider_delegation', 'customer_certificate']),
+    phase: z.enum(arcaSetupPhasesV1),
+    revision: z.number().int().positive(),
+    updatedAt: isoDateTimeSchema,
+    completedOperations: z.array(z.enum(arcaSetupOperationsV1)).max(20),
+    currentOperation: z.enum(arcaSetupOperationsV1).nullable(),
+    userAction: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('authorize_setup') }).strict(),
+      z.object({ kind: z.literal('sign_in_to_arca'), channel: z.literal('bufi_app') }).strict(),
+      z.object({
+        kind: z.literal('choose'),
+        decision: arcaSetupDecisionKindSchema,
+        options: z.array(z.union([pointOfSaleSchema, z.enum(['replace', 'keep'])])).min(1).max(100),
+      }).strict(),
+      z.object({ kind: z.literal('complete_proof_on_device'), channel: z.literal('bufi_app') }).strict(),
+      z.object({ kind: z.literal('retry'), code: z.string().regex(/^[A-Z0-9_]{3,120}$/) }).strict(),
+      z.object({ kind: z.literal('none') }).strict(),
+    ]),
+    blocker: z.object({ code: z.string().regex(/^[A-Z0-9_]{3,120}$/), retryable: z.boolean() }).strict().nullable(),
+    waitingOn: z.enum(['customer', 'bufi', 'arca', 'nobody']),
+  })
+  .strict();
+export type ArcaSetupProgressBrowserV1 = z.infer<typeof arcaSetupProgressV1Schema>;
+
+/** The hosted-browser link: a two-minute, single-use credential for the signed-in customer. */
+export const arcaSetupHandoffLinkV1Schema = z
+  .object({
+    url: z.url().refine(value => new URL(value).protocol === 'https:' && new URL(value).pathname.startsWith('/handoff/'), 'HANDOFF_URL_INVALID'),
+    expiresAt: isoDateTimeSchema,
+  })
+  .strict();
+export type ArcaSetupHandoffLinkV1 = z.infer<typeof arcaSetupHandoffLinkV1Schema>;

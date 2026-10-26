@@ -67,7 +67,13 @@ describe('Factura E agent HTTP tools', () => {
     const manifest = await route(service, options, 'GET', '/v1/agent/tools');
     expect(manifest.status).toBe(200);
     const manifestJson = await manifest.json() as any;
-    expect(manifestJson.data.tools).toHaveLength(13);
+    expect(manifestJson.data.tools).toHaveLength(17);
+    expect(manifestJson.data.tools.map((candidate: any) => candidate.function.name)).toEqual(expect.arrayContaining([
+      'tax_ar_arca_connection_start',
+      'tax_ar_arca_connection_get_status',
+      'tax_ar_arca_connection_resume',
+      'tax_ar_arca_connection_cancel',
+    ]));
     expect(JSON.stringify(manifestJson)).not.toContain('approveIntent');
     expect(JSON.stringify(manifestJson)).not.toContain('submit_wsfex');
     expect(JSON.stringify(manifestJson)).not.toContain('recover_wsfex');
