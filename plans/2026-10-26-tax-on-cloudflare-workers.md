@@ -1035,3 +1035,32 @@ Second review, 2026-10-27, after the spike results:
 - Phase 0's throwaway Worker was named `tax-workers-spike-tmp`, not
   `tax-spike-homologation`, and used wrangler 4.97.0, not the executor's pinned
   4.151.3. The phases pin 4.151.3.
+
+Pre-deploy review, 2026-10-27, after Phase 4b:
+
+- `nextWakeAt` is now the pure `computeNextWakeAt` (`apps/api/src/next-wake.ts`),
+  tested alone and through the real `createTaxApi` over a fake DO database:
+  open ARCA setup session, pending setup cleanup and pending tax-domain outbox
+  row each return a wake; idle returns `null`; every positive test fails if the
+  function returns `null` (mutation-checked).
+- Factura E outbox work wakes at the row's next claimable time, not every poll,
+  and no Factura E wake is scheduled while
+  `TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED` is off. Enabling it on Workers is
+  a Phase 7 cost blocker (projection candidates still poll).
+- Real workerd (`wrangler dev --local`, dummy local-only `.dev.vars`, deleted
+  afterwards): `TaxProfileStore` (incl. `pragma_index_list` /
+  `pragma_index_info` and `sqlite_master` reads), the boundary store and both
+  signer stores construct on a fresh DO and again on the persisted one. `/health`:
+  API 200, boundary 200 (WSAA token), wsfe-signer 200 (through the boundary
+  binding), wsfex-signer 401 unauthenticated (constructed). The DO authorizer
+  refused none of those queries, so no replacement query was needed.
+- **Phase 5 blocker found by that run:** workerd's `fetch` rejects
+  `redirect: 'error'` (`TypeError: Invalid redirect value, must be one of
+  "follow" or "manual"`), for service bindings too. wsfex-signer `/health`
+  returns 400 `INVALID_REQUEST` because `HttpWsaaTicketBroker.health`
+  (`wsfex-signer/src/wsaa.ts:71-73`) sets it. About 37 non-test call sites in
+  `apps/api`, `apps/arca-boundary`, both signers, `apps/arca-setup-executor`
+  (already deployed: `boundary-client.ts:59`, `session.ts:422`) and
+  `packages/erp` set it. Fix before the E2E: `redirect: 'manual'`, and treat any
+  3xx as a failure at each site (most already fail on `!response.ok`; check
+  each), with a test per client that a 3xx is refused.

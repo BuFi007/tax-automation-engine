@@ -11,3 +11,4 @@ coverage/
 .gstack/
 secrets/
 .wrangler/
+.dev.vars*
