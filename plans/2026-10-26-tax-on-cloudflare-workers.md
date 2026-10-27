@@ -792,8 +792,15 @@ the E2E NOT done):
     request (Worker + DO), no alarm.
   - Executor `/health` 200. VM `https://tax.104-154-28-207.sslip.io/health`
     401 without key (still answering).
-- Not done, in order: fix the probe schema; executor binding rewire + API
-  pass 2 (at cutover); re-import the provider template credential and
+- Code for the cutover landed (not deployed): probe schema accepts
+  `sequenceReservationsRequired` (`e74dd8a`); executor reaches the boundary
+  `ExecutorEntrypoint` via `ARCA_BOUNDARY` and posts receipts via `TAX`
+  (`bindings.ts`, synthetic URL vars, missing bindings → 503
+  `CONFIGURATION_REQUIRED`, `preview_urls: false`), and the API config carries
+  `ARCA_SETUP_EXECUTOR` (`513bec1`). `wrangler.proof.jsonc` has no bindings,
+  so the proof Worker now answers 503 until it gets them.
+- Not done, in order: deploy the executor (no `--var` overrides), then API
+  pass 2; re-import the provider template credential and
   `homologation:activate-delegation` through the proxy; setup E2E to
   `connected`; one Factura C and one Factura E with the VM stopped; the DO
   duration measurement. Then repoint Motora dev `TAX_AUTHORITY_URL` and the
