@@ -22,7 +22,7 @@
   ],
   "vars": {
     "ARCA_ENVIRONMENT": "homologation",
-    "PUBLIC_BASE_URL": "https://bufi-arca-setup-executor-homologation.example.workers.dev",
+    "PUBLIC_BASE_URL": "https://bufi-arca-setup-executor-homologation.tomas-cordero-esp.workers.dev",
     "TAX_RECEIPT_URL": "https://tax-api.internal/v1/arca-setup/receipts",
     "ARCA_BOUNDARY_URL": "https://arca-boundary.internal",
     "PROOF_ROUTES_ENABLED": "false"

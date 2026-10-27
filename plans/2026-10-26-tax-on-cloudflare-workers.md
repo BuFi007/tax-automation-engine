@@ -807,6 +807,56 @@ the E2E NOT done):
   Shiva dev `TAX_AUTOMATION_ENGINE_CONFIG` url to
   `https://bufi-tax-api-homologation.tomas-cordero-esp.workers.dev`.
 
+As built, 2026-10-27, cutover (owner: "ok cut over then"):
+- Executor deployed from config with **no** `--var` (`b0281849`); its
+  `PUBLIC_BASE_URL` var now carries the real workers.dev host, not the
+  `example` placeholder. Bindings: `ARCA_BOUNDARY` →
+  `bufi-arca-boundary-homologation#ExecutorEntrypoint`, `TAX` →
+  `bufi-tax-api-homologation`. Its four shared secrets were re-streamed from
+  Secret Manager so the linked values are provably the API's/boundary's:
+  `ARCA_SETUP_{ORDER,RECEIPT,HANDOFF}_SECRET` (api env),
+  `ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN` (boundary env). Active `62a0a328`.
+  **From here the VM Tax API's setup path is broken by design**: its executor
+  now talks to the Worker boundary and posts receipts to the Worker API.
+- API pass 2 deployed (`17c140a4`, binds `ARCA_SETUP_EXECUTOR`). The operator
+  proxy token and both signer API tokens were rotated again in one process
+  (they live only in Cloudflare). Actives after rotation: API `30adb633`,
+  wsfe-signer `95e09b27`, wsfex-signer `c965112a`, boundary `bda80079`.
+- Verified: executor `/health` 200; executor preview hosts (`62a0a328-…`,
+  `b0281849-…`) 404 `1042`; executor `POST /v1/wsaa/issuers` and
+  `/v1/setup/executor/x` 404 (it is not a boundary proxy; the binding filter is
+  `ExecutorEntrypoint`'s); executor `/v1/orders` unsigned 401
+  `ARCA_SETUP_SIGNATURE_INVALID`; API `/health` 401 / 200 with key, reporting
+  `arcaSetup.executor=available`, `boundarySetup=available`,
+  `modes=["customer_certificate"]`, `reclaimWitness=configuration_required`;
+  API receipts unsigned 401; operator proxy admin/escape checks unchanged.
+  `probe-signer` / `probe-wsfe-signer` now pass the schema (the
+  `sequenceReservationsRequired` rejection is gone) and fail only on
+  `certificateDelegationConfigured=false`, `wsaaReady=false`: the fresh
+  boundary has no `delegation_confirmed` issuer. Idle: 75 s tail after a
+  request, one event, no alarm. The executor→API and API→executor bindings are
+  only exercised end to end by a setup order (no non-mutating route calls the
+  executor; `arcaSetup.executor` reports configuration, not reachability).
+- **Blocker for `connected`:** `connected` requires the Reclaim proof step.
+  `RECLAIM_APP_ID`, `RECLAIM_APP_SECRET`, `RECLAIM_CALLBACK_BASE_URL`,
+  `RECLAIM_ARCA_ONBOARDING_PROVIDER_ID` are absent from
+  `tax-homologation-api-env` (so the VM never had them either). A setup run
+  stops at `waiting_for_proof` with `RECLAIM_ARCA_ONBOARDING_CONFIGURATION_REQUIRED`.
+- Delegation re-provisioning is **not** needed for `customer_certificate`
+  (`ARCA_SETUP_PROVIDER_DELEGATION_ENABLED=false`): the setup imports the
+  customer's own certificate in `provision_boundary`. It is needed only for
+  `provider_delegation`, and then needs: BUFI's homologation template
+  certificate + key (lost with the VM data), `ARCA_BUFI_TEMPLATE_WORKSPACE_ID`
+  / `ARCA_BUFI_TEMPLATE_PROFILE_REF`, `TAX_ARCA_ISSUER_BINDING_ADMIN_TOKEN` on
+  the API (absent from Secret Manager and the Worker), and the flag flipped.
+- Not done: Motora dev `TAX_AUTHORITY_URL` and Shiva dev
+  `TAX_AUTOMATION_ENGINE_CONFIG` repoint (agents are blocked from writing
+  those secrets; the owner runs them). Only the URL changes: the Worker API
+  holds the same `TAX_ENGINE_API_KEY`, `TAX_ENGINE_DESK_AGENT_PRINCIPAL_HMAC_SECRET`
+  and `TAX_ENGINE_MOTORA_ONBOARDING_PRINCIPAL_HMAC_SECRET` as the VM (both
+  load `tax-homologation-api-env` latest). Then the E2E, both invoices with the
+  VM stopped, and the DO duration measurement.
+
 - `apps/arca-setup-executor/wrangler.jsonc`:
   - add `services: [{ binding: "ARCA_BOUNDARY", service: "bufi-arca-boundary-homologation", entrypoint: "ExecutorEntrypoint" }, { binding: "TAX", service: "bufi-tax-api-homologation" }]`;
   - set the vars `ARCA_BOUNDARY_URL` and `TAX_RECEIPT_URL` to synthetic https
