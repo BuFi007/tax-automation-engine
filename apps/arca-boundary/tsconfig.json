@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/worker.ts", "src/worker.test.ts"]
 }

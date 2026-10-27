@@ -1,0 +1,43 @@
+{
+  // ARCA boundary: one SQLite-backed Durable Object (`BoundaryState`) holds the
+  // issuer store and the keys. No public surface: no workers.dev, no preview
+  // URLs, no routes. Callers use Service Bindings only (default entrypoint for
+  // the Tax API; ExecutorEntrypoint, SignerEntrypoint, AdminEntrypoint filter).
+  // Deploy with `wrangler deploy` only, never `wrangler versions upload`.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bufi-arca-boundary-homologation",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  // Stores open a file only on Bun; the Worker always injects the Durable Object database.
+  "alias": { "bun:sqlite": "../../packages/sql-store/src/bun-sqlite-unavailable.ts" },
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "BOUNDARY_STATE", "class_name": "BoundaryState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoundaryState"] }],
+  "observability": { "enabled": true },
+  "vars": {
+    "ARCA_ENVIRONMENT": "homologation",
+    "NODE_ENV": "production"
+  },
+  // Secrets (wrangler secret bulk): ARCA_BOUNDARY_MASTER_KEY,
+  // ARCA_BOUNDARY_CUIT_COMMITMENT_KEY, ARCA_BOUNDARY_TAXPAYER_REFERENCE_KEY and the
+  // ARCA_BOUNDARY_*_TOKEN set. They live on this Worker only.
+  "env": {
+    // Not deployed by the Workers plan; see its Phase 7 prerequisites.
+    "production": {
+      "name": "bufi-arca-boundary",
+      "workers_dev": false,
+      "preview_urls": false,
+      "durable_objects": {
+        "bindings": [{ "name": "BOUNDARY_STATE", "class_name": "BoundaryState" }]
+      },
+      "vars": {
+        "ARCA_ENVIRONMENT": "production",
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

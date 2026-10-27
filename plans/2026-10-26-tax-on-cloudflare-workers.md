@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0, 0b, 1, 2 and 3 DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 4.
+Status: Phase 0, 0b, 1, 2, 3 and 4 DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 4b.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -656,6 +656,17 @@ with no pending work no alarm is set (`getAlarm()` returns `null`). Every
 existing api test still passes under Bun.
 
 ### Phase 4: Boundary Worker · 0.5 day
+
+As built: `wrangler.jsonc` carries the same `bun:sqlite` alias as Phase 3, and
+the production env repeats `workers_dev: false` / `preview_urls: false`. The
+entrypoints rebuild nothing: an allowed request is passed to the DO unchanged,
+anything else is a 404 before the DO is touched. The `BoundaryState` builds
+`createBoundary` lazily on the first request, with no `trustedIssuersPem`
+(homologation, as on the VM). Measured: dry-run bundle 1,612 KiB /
+**295 KiB gzip**; the bundle exports `BoundaryState`, `ExecutorEntrypoint`,
+`SignerEntrypoint` and `AdminEntrypoint`. Not run: `wrangler dev`, which would
+need the boundary keys and tokens (Phase 5 deploys them).
+
 
 - `apps/arca-boundary/wrangler.jsonc` (new): `name:
   bufi-arca-boundary-homologation`, **`workers_dev: false`, `preview_urls:
