@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0 DONE (gates passed, one crypto fallback chosen; see "Spike
-results") · next: Phase 0b residual checks, then Phase 1.
+Status: Phase 0 and 0b DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 1.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -159,7 +159,7 @@ probed) still has a decided home at $0.
 
 | If this fails | Fallback | Status after Phase 0 |
 |---|---|---|
-| Workers outbound TLS to `wsaahomo.afip.gov.ar` / `wsaa.afip.gov.ar` / `awshomo.arca.gob.ar` / the WSFE and WSFEX hosts | A stateless egress relay on **Cloud Run with min-instances=0** that forwards the already-signed SOAP body to ARCA. It holds no keys and no state: the boundary still signs the CMS, and the relay only pipes bytes. Only the SOAP base URLs change. ($0 inside the Cloud Run free tier.) | **Not needed** for `wsaahomo.afip.gov.ar` and `wswhomo.afip.gov.ar` (TLS OK from Cloudflare egress). `awshomo.arca.gob.ar` (padrón, `padron.ts:6`) not yet probed: Phase 0b. Production hosts `wsaa.afip.gov.ar` / `servicios1.afip.gov.ar` not probed: Phase 7. |
+| Workers outbound TLS to `wsaahomo.afip.gov.ar` / `wsaa.afip.gov.ar` / `awshomo.arca.gob.ar` / the WSFE and WSFEX hosts | A stateless egress relay on **Cloud Run with min-instances=0** that forwards the already-signed SOAP body to ARCA. It holds no keys and no state: the boundary still signs the CMS, and the relay only pipes bytes. Only the SOAP base URLs change. ($0 inside the Cloud Run free tier.) | **Not needed** for `wsaahomo.afip.gov.ar` and `wswhomo.afip.gov.ar` (TLS OK from Cloudflare egress). `awshomo.arca.gob.ar` (padrón, `padron.ts:6`): TLS OK (Phase 0b). Production hosts `wsaa.afip.gov.ar` / `servicios1.afip.gov.ar` not probed: Phase 7. |
 | `@reclaimprotocol/js-sdk` 5.8.0 does not bundle or run in workerd, or exceeds startup CPU | Move `verifyProof` / `ReclaimProofRequest` behind the same kind of scale-to-zero Cloud Run endpoint, or behind the existing `reclaim-proof-vault` if it already runs elsewhere. ($0.) | **Not needed.** 5.8.0 bundles (+~1,380 KiB raw / +~297 KiB gzip) and evaluates at module scope; startup 38 ms. |
 | `generateKeyPairSync('rsa')` is missing or differs in workerd | Use node-forge's **synchronous** `pki.rsa.generateKeyPair({ bits: 2048 })` and `pki.privateKeyToPem` (wrapped to pkcs8). forge is already used by `createCsr` in `setup.ts`. Do **not** use `crypto.subtle.generateKey`: it is async, and `createEnrollment` (`setup.ts:280`) and its callers are synchronous. | **Not needed.** `generateKeyPairSync('rsa')` works in workerd (78–107 ms CPU); signatures byte-identical to Bun/Node. |
 | `X509Certificate` fields differ in workerd (subject, `fingerprint256`, `validFrom`/`validTo`) | Parse with node-forge and compute the fingerprint from the DER, producing the exact Bun/Node formats. | **Not needed.** subject, `fingerprint256`, `validFrom`/`validTo` + `Date.parse`, `checkIssued`, `verify` all identical. |
@@ -267,7 +267,7 @@ the matching fallback from "What stays off Workers" and continue. If 5 shows
 idle duration is billed for much longer than 140 s, re-check the "Cost" table
 before continuing.
 
-### Phase 0b: Residual checks · 0.25 day
+### Phase 0b: Residual checks · 0.25 day · DONE 2026-10-27
 
 Same throwaway recipe as Phase 0 (scratch dir outside the repo, deploy, delete,
 record pass/fail only, never secret values). Each item names its fallback, so
@@ -842,7 +842,7 @@ bun run homologation:probe-signer && bun run homologation:probe-wsfe-signer
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| ARCA hosts refuse Workers TLS (legacy DH/ciphers) | Low (wsaahomo/wswhomo proven) | `awshomo` in Phase 0b, production hosts in Phase 7. Fallback is the scale-to-zero Cloud Run stateless relay. |
+| ARCA hosts refuse Workers TLS (legacy DH/ciphers) | Low (wsaahomo/wswhomo/awshomo proven) | Production hosts in Phase 7. Fallback is the scale-to-zero Cloud Run stateless relay. |
 | workerd `X509Certificate` differs, so CUIT matching or expiry checks silently fail | Retired | Spike 2b: identical. The one broken method (`checkPrivateKey`) is replaced by an SPKI DER compare in Phase 1. |
 | A rejected PRAGMA hidden inside a migration `exec` string fails a store constructor in workerd only | Medium | Phase 1 cuts every rejected PRAGMA out of the strings; the fake `SqlStorage` rejects them, so the Bun contract suite catches a missed one. |
 | Nested `transactionSync` / `user_version` unsupported | Retired | Spike 1c: nesting works. `user_version` is rejected, so it lives in `_sql_store_meta`. |
@@ -905,7 +905,21 @@ advance during synchronous CPU, so they read 0).
 | Original spike 5 (env, idle billing, same-account fetch) | NOT RUN | env + same-account fetch → Phase 0b; idle billed duration → measured in Phase 5. |
 | Original spike 6 (secret sizes) | MOOT | Trusted issuers and launch policy ship as bundled text modules (Phase 2), and neither is set in homologation. |
 
-Phase 0b results: (fill in.)
+Phase 0b ran 2026-10-27 on a throwaway Worker `tax-workers-spike0b-tmp`
+(wrangler 4.151.3, `compatibility_date: 2026-10-20`, `nodejs_compat`), built in
+the session scratchpad outside the repo, deployed to account `67f97ad5…` and
+deleted afterwards (workers.dev 404, `deployments list` → code 10007 "does not
+exist"). The secret was a dummy string; only booleans/counts were returned.
+
+| Item | Result | Evidence → consequence |
+|---|---|---|
+| 1a `ALTER TABLE ... ADD COLUMN` | PASS | `ADD COLUMN note TEXT NOT NULL DEFAULT ''`; `PRAGMA table_info` then lists it. |
+| 1b partial unique index | PASS | `CREATE UNIQUE INDEX ... ON t(ws) WHERE state = 'active'`: two `retired` rows for one `ws` accepted, a second `active` row refused (`UNIQUE constraint failed: t.ws: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)`). |
+| 1c `ON CONFLICT(id) DO UPDATE SET ... WHERE` | PASS | With bindings: `WHERE excluded.n > t.n` false → value kept (5), `changes()` 0; true → updated (9), `changes()` 1. |
+| 1d `changes()` / `last_insert_rowid()` as a separate `exec` | PASS | After INSERT: `changes()` 1, `last_insert_rowid()` 1 then 2; UPDATE of 2 rows → 2, of 0 rows → 0; DELETE of 2 → 2; inside `transactionSync` → 1 and the new rowid (4). `rowsWritten` again 2 for one INSERT. → adapter's `run()` uses `SELECT changes(), last_insert_rowid()`; the `RETURNING 1` fallback is **not needed**. |
+| 2 `awshomo.arca.gob.ar` TLS | PASS | GET `/sr-padron/webservices/personaServiceA5?WSDL` → 200, `PersonaServiceA5` WSDL, 98 ms. → no relay for padrón. |
+| 3 `process.env` | PASS | At module evaluation and inside `fetch`, both global `process.env` and `import process from 'node:process'` see the var and the secret; `process.env.X === env.X` for the secret. → the DO-constructor `process.env` fallback is **not needed**. |
+| 4 Worker → another Worker's `*.workers.dev` | **FAIL by default** | GET the executor's `/health` on workers.dev from the spike → 404 `error code: 1042` (the same URL from outside → 200). With the extra flag `global_fetch_strictly_public` it → 200 (executor JSON). → No owner-set Tax API outbound URL may point at a same-account `*.workers.dev`; the plan's fallback (a service binding for that target) stands. None is set today, so nothing changes now. |
 
 Phase 5 measurements: (fill in: DO requests and GB-s for the E2E day, billed
 duration of one idle wake.)
