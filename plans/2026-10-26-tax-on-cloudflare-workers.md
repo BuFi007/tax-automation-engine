@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0, 0b, 1, 2, 3 and 4 DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 4b.
+Status: Phase 0, 0b, 1, 2, 3, 4 and 4b DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 5.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -706,7 +706,17 @@ cd apps/arca-boundary && bun run typecheck && bun test src && bunx wrangler depl
 ```
 **Done:** the dry-run builds, and the entrypoint filter tests pass.
 
-### Phase 4b: Signer Workers · 0.5 day
+### Phase 4b: Signer Workers · 0.5 day · DONE 2026-10-27
+
+As built: each `wrangler.jsonc` carries the same `bun:sqlite` alias as Phase 3;
+the production env repeats `workers_dev: false` / `preview_urls: false` and
+binds `SignerEntrypoint` on `bufi-arca-boundary`. No `NODE_ENV` var: neither
+signer reads it. The DO passes only string env values to `create*Signer`, as
+the boundary does. Bun keeps type-checking without `worker.ts`; a
+`tsconfig.worker.json` checks it with workers-types. Measured dry-runs:
+wsfe-signer 990 KiB / **182 KiB gzip**, wsfex-signer 1,004 KiB / **186 KiB
+gzip**; each bundle exports its `*SignerState` and the default entry. Not run:
+`wrangler dev` (needs the signer tokens and the boundary, Phase 5).
 
 For each of `apps/wsfe-signer` and `apps/wsfex-signer`:
 - `wrangler.jsonc` (new): `name: bufi-wsfe-signer-homologation` /
