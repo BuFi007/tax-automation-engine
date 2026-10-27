@@ -121,6 +121,32 @@ describe('ARCA homologation acceptance harness', () => {
     )).rejects.toThrow();
   });
 
+  test('accepts the health the WSFEX signer actually returns, including sequenceReservationsRequired', async () => {
+    // Shape of WsfexSignerService.health() (apps/wsfex-signer/src/service.ts).
+    const signerHealth = {
+      version: 'motora-wsfex-signer-health-v1',
+      environment: 'homologation',
+      signerVersion: '1.0.0',
+      wsfexVersion: '3.1.1',
+      certificateDelegationConfigured: true,
+      wsaaReady: true,
+      sequenceReservationsRequired: false,
+    };
+    const report = await probeWsfexHomologationSigner(
+      { baseUrl: 'https://signer.example.test', token: 'signer-token' },
+      async () => Response.json(signerHealth)
+    );
+    expect(report.state).toBe('ready');
+    expect(probeWsfexHomologationSigner(
+      { baseUrl: 'https://signer.example.test', token: 'signer-token' },
+      async () => Response.json({ ...signerHealth, sequenceReservationsRequired: 'yes' })
+    )).rejects.toThrow();
+    expect(probeWsfexHomologationSigner(
+      { baseUrl: 'https://signer.example.test', token: 'signer-token' },
+      async () => Response.json({ ...signerHealth, unexpected: true })
+    )).rejects.toThrow();
+  });
+
   test('probes only a homologation WSFE signer reporting delegated certificate and WSAA readiness', async () => {
     const report = await probeWsfeHomologationSigner(
       { baseUrl: 'https://wsfe-signer.example.test', token: 'wsfe-token' },

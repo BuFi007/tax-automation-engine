@@ -94,6 +94,8 @@ const signerHealthSchema = z.object({
   wsfexVersion: z.string().min(1),
   certificateDelegationConfigured: z.literal(true),
   wsaaReady: z.literal(true),
+  // Reported by WsfexSignerService.health(); optional for signers that predate it.
+  sequenceReservationsRequired: z.boolean().optional(),
 }).strict();
 const wsfeSignerHealthSchema = z.object({
   schema: z.literal('motora-wsfe-signer-health-v1'),
