@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { ArcaOnboardingRunV1, ArcaOnboardingStep } from '@tax-engine/core';
+import { refuseRedirect } from './bounded-body';
 
 const SOURCE = 'tax_engine';
 const WORKFLOW = 'arca-credentialless-onboarding';
@@ -126,8 +127,8 @@ export class HttpArcaWorkbenchPublisher implements ArcaWorkbenchPublisher {
               : undefined,
         }),
         signal: AbortSignal.timeout(1_500),
-        redirect: 'error',
-      });
+        redirect: 'manual',
+      }).then(refuseRedirect);
       if (!response.ok) throw new Error('TAX_WORKBENCH_INGEST_REJECTED');
     }
   }

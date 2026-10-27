@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { hashCanonical } from '@tax-engine/core';
 import { isValidCuit } from '@tax-engine/wsfex-signer/contracts';
 import { z } from 'zod';
+import { refuseRedirect } from './bounded-body';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_REFERENCE = /^[A-Za-z0-9._:/-]{1,500}$/;
@@ -111,7 +112,7 @@ export class HttpFacturaEAuthorityPreparationGateway
     try {
       response = await this.fetchImpl(this.endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           'content-type': 'application/json',
           'idempotency-key': input.idempotencyKey,
@@ -119,7 +120,7 @@ export class HttpFacturaEAuthorityPreparationGateway
         },
         body: rawBody,
         signal: AbortSignal.timeout(10_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('TAX_ARCA_PREPARATION_UPSTREAM_UNAVAILABLE');
     }

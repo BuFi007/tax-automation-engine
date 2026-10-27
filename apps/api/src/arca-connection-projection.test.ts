@@ -150,3 +150,8 @@ describe('private ARCA connection projection', () => {
     expect(rotated.data.wsfe.pointOfSale).toBeNull();
   });
 });
+
+test('refuses a boundary status redirect as a transport failure', async () => {
+  const redirecting = new HttpArcaBoundaryStatusReader('read-only-token', 'https://boundary.test', async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(redirecting.read(WORKSPACE, REF)).rejects.toThrow(/^ARCA_BOUNDARY_STATUS_TRANSPORT_FAILED$/);
+});

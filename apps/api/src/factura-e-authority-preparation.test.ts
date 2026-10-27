@@ -153,7 +153,7 @@ describe('private Factura E authority preparation gateway', () => {
       new URL('https://preparation.test/v1/factura-e/prepare'),
       secret,
       async (_request, init) => {
-        expect(init?.redirect).toBe('error');
+        expect(init?.redirect).toBe('manual');
         return new Response(new ReadableStream<Uint8Array>({
           pull(controller) {
             controller.enqueue(chunk);
@@ -169,4 +169,11 @@ describe('private Factura E authority preparation gateway', () => {
       .toThrow('TAX_ARCA_PREPARATION_RESPONSE_TOO_LARGE');
     expect(cancelled).toBe(true);
   });
+});
+
+test('refuses a preparation redirect as an unavailable upstream', async () => {
+  const gateway = new HttpFacturaEAuthorityPreparationGateway(
+    new URL('https://preparation.test/v1/factura-e/prepare'), secret, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }), () => now,
+  );
+  await expect(gateway.prepare(input)).rejects.toThrow(/^TAX_ARCA_PREPARATION_UPSTREAM_UNAVAILABLE$/);
 });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { BoundaryExecutorClient } from './operations';
+import { refuseRedirect } from './http';
 
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const matchSchema = z.object({
@@ -56,11 +57,11 @@ export class HttpBoundaryExecutorClient implements BoundaryExecutorClient {
     try {
       response = await this.fetcher(new URL(path, this.#origin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(20_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_BOUNDARY_UNAVAILABLE');
     }

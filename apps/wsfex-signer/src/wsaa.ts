@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { isValidCuit } from './contracts';
-import { parseBoundedJson, pinnedHttpsOrigin, readBoundedBody } from './bounded-body';
+import { parseBoundedJson, pinnedHttpsOrigin, readBoundedBody, refuseRedirect } from './bounded-body';
 
 export type WsfexAccessTicket = Readonly<{
   token: string;
@@ -46,11 +46,11 @@ export class HttpWsaaTicketBroker implements WsaaTicketBroker {
   async getTicket(input: Readonly<{ environment: 'homologation' | 'production'; workspaceId: string; issuerProfileRef: string }>): Promise<WsfexAccessTicket> {
     const response = await this.fetcher(new URL('/v1/wsaa/tickets', this.#baseOrigin), {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ version: 'wsaa-ticket-request-v1', service: 'wsfex', ...input }),
       signal: AbortSignal.timeout(15_000),
-    });
+    }).then(refuseRedirect);
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`WSAA_BROKER_REJECTED_${response.status}`);
@@ -70,10 +70,10 @@ export class HttpWsaaTicketBroker implements WsaaTicketBroker {
     endpoint.searchParams.set('environment', environment);
     const response = await this.fetcher(endpoint, {
       method: 'GET',
-      redirect: 'error',
+      redirect: 'manual',
       headers: { authorization: `Bearer ${this.config.token}` },
       signal: AbortSignal.timeout(10_000),
-    });
+    }).then(refuseRedirect);
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`WSAA_BROKER_HEALTH_REJECTED_${response.status}`);

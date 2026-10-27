@@ -3,7 +3,7 @@ import { authorityPayloadSchema as wsfeAuthorityPayloadSchema, type AuthorityPay
 import { authorityPayloadSchema as wsfexAuthorityPayloadSchema, type AuthorityPayload as WsfexAuthorityPayload } from '@tax-engine/wsfex-signer/contracts';
 import { z } from 'zod';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 
 type AuthorityPayload = WsfeAuthorityPayload | WsfexAuthorityPayload;
 const authorityPayloadSchema = z.union([wsfexAuthorityPayloadSchema, wsfeAuthorityPayloadSchema]);
@@ -95,11 +95,11 @@ export class HttpAuthorityPayloadWriter implements AuthorityPayloadWriter {
     try {
       response = await this.fetcher(new URL('/v1/authority-payloads', this.#baseOrigin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json', 'idempotency-key': input.idempotencyKey },
         body: JSON.stringify({ version: 'authority-payload-store-v1', workspaceId: input.workspaceId, payload, expiresAt: input.expiresAt }),
         signal: AbortSignal.timeout(15_000),
-      });
+      }).then(refuseRedirect);
     } catch (error) {
       throw new Error(`ARCA_BOUNDARY_TRANSPORT_FAILED_${error instanceof Error ? error.name.toUpperCase() : 'UNKNOWN'}`);
     }
@@ -135,7 +135,7 @@ export class HttpAuthorityPayloadWriter implements AuthorityPayloadWriter {
     try {
       response = await this.fetcher(new URL('/v1/authority-payloads/terminal', this.#baseOrigin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
@@ -145,7 +145,7 @@ export class HttpAuthorityPayloadWriter implements AuthorityPayloadWriter {
           ...input,
         }),
         signal: AbortSignal.timeout(15_000),
-      });
+      }).then(refuseRedirect);
     } catch (error) {
       throw new Error(`ARCA_BOUNDARY_TERMINAL_TRANSPORT_FAILED_${error instanceof Error ? error.name.toUpperCase() : 'UNKNOWN'}`);
     }

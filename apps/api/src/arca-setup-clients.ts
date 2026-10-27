@@ -9,6 +9,7 @@ import {
   type ArcaSetupWireOrder,
 } from '@tax-engine/arca-setup-contract';
 import { z } from 'zod';
+import { refuseRedirect } from './bounded-body';
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -76,11 +77,11 @@ export class HttpArcaSetupExecutorGateway implements ArcaSetupExecutorGateway {
     try {
       response = await this.fetcher(new URL('/v1/orders', this.#origin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.orderSecret, 'order', body)) },
         body,
         signal: AbortSignal.timeout(15_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_SETUP_EXECUTOR_UNAVAILABLE');
     }
@@ -96,11 +97,11 @@ export class HttpArcaSetupExecutorGateway implements ArcaSetupExecutorGateway {
     try {
       response = await this.fetcher(new URL('/v1/cancellations', this.#origin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.orderSecret, 'cancel', body)) },
         body,
         signal: AbortSignal.timeout(60_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_SETUP_EXECUTOR_UNAVAILABLE');
     }
@@ -131,11 +132,11 @@ export class HttpArcaSetupExecutorGateway implements ArcaSetupExecutorGateway {
     try {
       response = await this.fetcher(new URL(path, this.#origin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.orderSecret, 'control', body)) },
         body,
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_SETUP_EXECUTOR_UNAVAILABLE');
     }
@@ -194,11 +195,11 @@ export class HttpArcaSetupBoundaryGateway implements ArcaSetupBoundaryGateway {
     try {
       response = await this.fetcher(new URL(path, this.#origin), {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_BOUNDARY_SETUP_UNAVAILABLE');
     }

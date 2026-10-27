@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
 
+import { hashCanonical } from '@tax-engine/core';
+
 import { AfipSdkWsfeClient } from './afipsdk';
 import { payload } from './test-fixtures';
 import { WsfeAmbiguousTransportError, type WsfeAuthorityClient } from './soap';
@@ -76,4 +78,11 @@ test('rejects a provider CAE echo for another issuer before accepting it', async
     }] },
   } }));
   await expect(client.authorize(ticket, payload())).rejects.toBeInstanceOf(WsfeAmbiguousTransportError);
+});
+
+test('refuses an AFIP SDK redirect as the transport-ambiguous outcome, not an HTTP status', async () => {
+  const client = new AfipSdkWsfeClient(config, undefined, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  const error = await client.getPointsOfSale(ticket).catch(caught => caught);
+  expect(error).toBeInstanceOf(WsfeAmbiguousTransportError);
+  expect(error.receiptHash).toBe(hashCanonical({ method: 'FEParamGetPtosVenta', outcome: 'transport_ambiguous' }));
 });

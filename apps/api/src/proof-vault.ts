@@ -2,7 +2,7 @@ import { hashCanonical, type ArcaOnboardingReclaimSessionV1, type ArcaOnboarding
 import { z } from 'zod';
 
 import type { VerifiedArcaOnboardingProof } from './arca-onboarding-reclaim';
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 
 export interface ReclaimProofVault {
   storeVerifiedProof(input: Readonly<{
@@ -123,7 +123,7 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
     try {
       response = await this.fetcher(this.endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
@@ -143,7 +143,7 @@ export class HttpReclaimProofVault implements ReclaimProofVault {
         proofPayload: input.proofPayload,
         }),
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('RECLAIM_PROOF_VAULT_TRANSPORT_FAILED');
     }

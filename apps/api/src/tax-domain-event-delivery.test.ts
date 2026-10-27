@@ -208,3 +208,10 @@ describe('TaxDomainEvent durable delivery', () => {
       .rejects.toThrow('TAX_DOMAIN_EVENT_RECEIPT_MISMATCH');
   });
 });
+
+test('refuses a delivery redirect as an unavailable target', async () => {
+  const publisher = new HttpTaxDomainEventPublisher(
+    new URL('http://127.0.0.1:4400/api/bufi/tax-domain-event'), token, secret, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }), () => deliveryId,
+  );
+  await expect(publisher.publish(event(), T0.toISOString())).rejects.toThrow(/^TAX_DOMAIN_EVENT_TARGET_UNAVAILABLE$/);
+});

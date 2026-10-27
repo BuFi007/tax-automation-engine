@@ -9,6 +9,7 @@ import {
   type PointOfSaleReadback,
   type SequenceReservationReceipt,
 } from '@tax-engine/wsfex-signer/contracts';
+import { refuseRedirect } from './bounded-body';
 
 export type WsfexAuthorityResult = Readonly<{
   providerId: string;
@@ -151,7 +152,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     try {
       response = await this.fetcher(endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
@@ -159,7 +160,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_SEQUENCE_RESERVATION_UNAVAILABLE');
     }
@@ -204,14 +205,14 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     try {
       response = await this.fetcher(endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_POINT_OF_SALE_DISCOVERY_UNAVAILABLE');
     }
@@ -250,10 +251,10 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     let response: Response;
     try {
       response = await this.fetcher(endpoint, {
-        method: 'POST', redirect: 'error',
+        method: 'POST', redirect: 'manual',
         headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(input), signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch { throw new Error('ARCA_POS_READBACK_UNAVAILABLE'); }
     if (!response.ok) {
       await readBoundedResponseBody(response, 64 * 1024, 'ARCA_SIGNER_ERROR_RESPONSE_TOO_LARGE');
@@ -315,7 +316,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
       if (endpoint.origin !== this.#baseOrigin) throw new Error('ARCA_SIGNER_ORIGIN_MISMATCH');
       response = await this.fetcher(endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${this.config.token}`,
           'content-type': 'application/json',
@@ -323,7 +324,7 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
         },
         body: JSON.stringify(safeRequest),
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch (error) {
       return {
         providerId: this.providerId,

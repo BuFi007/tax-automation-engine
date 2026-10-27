@@ -1,7 +1,7 @@
 import { hashCanonical, type ArcaOnboardingRunV1 } from '@tax-engine/core';
 import { z } from 'zod';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import { assertTaxTenantPrincipalScope, type TaxTenantPrincipalV3 } from './tenant-principal';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -56,8 +56,8 @@ export class HttpArcaBoundaryStatusReader {
     let response: Response;
     try {
       response = await this.fetcher(url, {
-        method: 'GET', redirect: 'error', headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(15_000),
-      });
+        method: 'GET', redirect: 'manual', headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(15_000),
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_BOUNDARY_STATUS_TRANSPORT_FAILED');
     }
@@ -73,11 +73,11 @@ export class HttpArcaBoundaryStatusReader {
     let response: Response;
     try {
       response = await this.fetcher(new URL('/v1/wsaa/issuers/revoke', this.#origin), {
-        method: 'POST', redirect: 'error',
+        method: 'POST', redirect: 'manual',
         headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({ version: 'wsaa-issuer-revoke-v1', issuerProfileRef, certificateFingerprint }),
         signal: AbortSignal.timeout(15_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('ARCA_BOUNDARY_ISSUER_REVOKE_TRANSPORT_FAILED');
     }

@@ -15,6 +15,7 @@ import {
   type FacturaEAuthorityPrivatePreparation,
 } from './factura-e-authority-preparation';
 import type { WsfexSequenceGateway } from './wsfex';
+import { refuseRedirect } from './bounded-body';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_REFERENCE = /^[A-Za-z0-9._:/-]{1,500}$/;
@@ -166,7 +167,7 @@ export class HttpDeskFacturaEPrivateDataGateway implements FacturaEPrivateDataGa
     try {
       response = await this.fetchImpl(this.endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           'content-type': 'application/json',
           'idempotency-key': idempotencyKey,
@@ -174,7 +175,7 @@ export class HttpDeskFacturaEPrivateDataGateway implements FacturaEPrivateDataGa
         },
         body: rawBody,
         signal: AbortSignal.timeout(10_000),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('TAX_DESK_PRIVATE_DATA_UPSTREAM_UNAVAILABLE');
     }

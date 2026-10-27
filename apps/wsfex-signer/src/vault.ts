@@ -2,7 +2,7 @@ import { hashCanonical } from '@tax-engine/core';
 import { z } from 'zod';
 
 import { authorityPayloadSchema, type AuthorityPayload } from './contracts';
-import { parseBoundedJson, pinnedHttpsOrigin, readBoundedBody } from './bounded-body';
+import { parseBoundedJson, pinnedHttpsOrigin, readBoundedBody, refuseRedirect } from './bounded-body';
 
 export interface AuthorityPayloadVault {
   resolve(reference: string): Promise<Readonly<{ payload: AuthorityPayload; payloadHash: string }>>;
@@ -29,11 +29,11 @@ export class HttpAuthorityPayloadVault implements AuthorityPayloadVault {
     if (!reference) throw new Error('AUTHORITY_PAYLOAD_REFERENCE_REQUIRED');
     const response = await this.fetcher(new URL('/v1/authority-payloads/resolve', this.#baseOrigin), {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ version: 'authority-payload-resolve-v1', reference }),
       signal: AbortSignal.timeout(15_000),
-    });
+    }).then(refuseRedirect);
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`SIGNER_VAULT_REJECTED_${response.status}`);

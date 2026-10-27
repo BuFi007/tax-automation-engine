@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 
 export const OFFICIAL_WSFEX_HOMOLOGATION_WSDL =
   'https://wswhomo.afip.gov.ar/wsfexv1/service.asmx?WSDL';
@@ -108,10 +108,10 @@ export async function fetchAndVerifyOfficialWsfexWsdl(
   try {
     response = await fetcher(OFFICIAL_WSFEX_HOMOLOGATION_WSDL, {
       method: 'GET',
-      redirect: 'error',
+      redirect: 'manual',
       headers: { accept: 'text/xml, application/wsdl+xml' },
       signal: AbortSignal.timeout(20_000),
-    });
+    }).then(refuseRedirect);
   } catch {
     throw new Error('WSFEX_WSDL_TRANSPORT_FAILED');
   }

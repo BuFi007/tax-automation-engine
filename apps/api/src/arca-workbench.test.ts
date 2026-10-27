@@ -233,3 +233,13 @@ function apply(
     '2026-07-19T18:00:00.000Z'
   ).run;
 }
+
+test('refuses a workbench ingest redirect', async () => {
+  const created = createArcaOnboardingRun({
+    onboardingId: '70000000-0000-4000-8000-000000000009', workspaceId: 'workspace-private-1',
+    taxpayerReferenceHash: hashCanonical('20-96524039-0'), environment: 'homologation', requestedServices: ['wsfex', 'wsfe'],
+    actorId: 'user:private-owner', idempotencyKey: 'redirect-command-key', occurredAt: '2026-07-19T17:00:00.000Z',
+  });
+  const publisher = new HttpArcaWorkbenchPublisher(new URL('https://workbench.example/api/orchestrations/ingest'), secret, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(publisher.publish(created.run)).rejects.toThrow(/^HTTP_REDIRECT_REFUSED$/);
+});

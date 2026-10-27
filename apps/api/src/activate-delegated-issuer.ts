@@ -2,6 +2,7 @@
 import { isValidCuit } from '@tax-engine/wsfex-signer/contracts';
 import { z } from 'zod';
 import { assertArcaFiscalBeta } from './arca-fiscal-beta';
+import { refuseRedirect } from './bounded-body';
 
 const inputSchema = z.object({
   onboardingId: z.uuid(),
@@ -30,12 +31,12 @@ export function underBase(path: string, base: URL): URL {
   return new URL(path, base.href.endsWith('/') ? base : `${base.href}/`);
 }
 
-async function post(url: URL, token: string, body: unknown, headers: Record<string, string> = {}): Promise<unknown> {
+export async function post(url: URL, token: string, body: unknown, headers: Record<string, string> = {}): Promise<unknown> {
   const response = await fetch(url, {
-    method: 'POST', redirect: 'error',
+    method: 'POST', redirect: 'manual',
     headers: { ...headers, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
-  });
+  }).then(refuseRedirect);
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`ACTIVATION_STEP_FAILED_${response.status}`);

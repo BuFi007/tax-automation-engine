@@ -33,6 +33,7 @@ import { arcaGuardrailPolicy } from './guardrails';
 import { currentHandoff, TICKET_REFUSAL_MESSAGES, ticketRefusal } from './session-policy';
 import type { ExecutorEnv } from './env';
 import { runArcaSetupOperation, type ReceiptDraft } from './operations';
+import { refuseRedirect } from './http';
 
 type Role = 'customer' | 'provider';
 type Current = {
@@ -419,11 +420,11 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
       try {
         const response = await fetch(this.env.TAX_RECEIPT_URL, {
           method: 'POST',
-          redirect: 'error',
+          redirect: 'manual',
           headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.env.ARCA_SETUP_RECEIPT_SECRET, 'receipt', body)) },
           body,
           signal: AbortSignal.timeout(15_000),
-        });
+        }).then(refuseRedirect);
         // 409/400 mean the tax engine already decided this receipt; stop resending.
         if (response.ok || response.status === 409 || response.status === 400) {
           delivered.add(entry.receipt.receiptId);

@@ -176,3 +176,14 @@ describe('Tax-owned Factura E authority preparation', () => {
     })).rejects.toThrow('TAX_ARCA_READY_ONBOARDING_REQUIRED');
   });
 });
+
+test('refuses a Desk private-data redirect as an unavailable upstream', async () => {
+  const gateway = new HttpDeskFacturaEPrivateDataGateway(
+    new URL('https://desk.test/api/internal/tax/factura-e-private-data'), 'private-data-secret-'.padEnd(40, 's'), async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }),
+  );
+  await expect(gateway.getFrozenCommercialRequest({
+    workspaceId: '11111111-1111-4111-8111-111111111111', runId: '22222222-2222-4222-8222-222222222222',
+    ledgerInvoiceId: '33333333-3333-4333-8333-333333333333',
+    idempotencyKey: 'commercial-request:22222222-2222-4222-8222-222222222222',
+  })).rejects.toThrow(/^TAX_DESK_PRIVATE_DATA_UPSTREAM_UNAVAILABLE$/);
+});

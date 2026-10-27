@@ -11,6 +11,13 @@ import type { WsfeAccessTicket } from './wsaa';
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type Environment = 'homologation' | 'production';
 
+/** workerd rejects `redirect: 'error'`; fetch with 'manual' and refuse any 3xx here. */
+function refuseRedirect(response: Response): Response {
+  if (response.type !== 'opaqueredirect' && (response.status < 300 || response.status > 399)) return response;
+  void response.body?.cancel();
+  throw new Error('HTTP_REDIRECT_REFUSED');
+}
+
 // Factura C uses AFIP SDK's WSFE transport with the short-lived ticket from
 // our own WSAA boundary. The private signing key never leaves that boundary.
 export class AfipSdkWsfeClient implements WsfeAuthorityClient {
@@ -104,14 +111,14 @@ export class AfipSdkWsfeClient implements WsfeAuthorityClient {
     let raw: string;
     try {
       response = await this.fetcher('https://app.afipsdk.com/api/v1/afip/requests', {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(30_000),
         headers: { authorization: `Bearer ${this.config.accessToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           environment: this.config.environment === 'production' ? 'prod' : 'dev',
           wsid: 'wsfe', method,
           params: { Auth: { Token: ticket.token, Sign: ticket.sign, Cuit: ticket.representedCuit }, ...params },
         }),
-      });
+      }).then(refuseRedirect);
       raw = await boundedText(response);
     } catch {
       throw new WsfeAmbiguousTransportError(hashCanonical({ method, outcome: 'transport_ambiguous' }));

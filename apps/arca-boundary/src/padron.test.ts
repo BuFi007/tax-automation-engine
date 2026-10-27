@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { parseIssuerPadron } from './padron';
+import { parseIssuerPadron, queryIssuerPadron } from './padron';
 
 const now = '2026-09-28T12:00:00.000Z';
 const cuit = '20123456786';
@@ -22,4 +22,10 @@ test('does not interpret missing or inactive IVA enrollment as Responsable Inscr
     .toThrow('ARCA_PADRON_SOAP_FAULT');
   expect(() => parseIssuerPadron(`<Envelope><Body><getPersona_v2Response><personaReturn><datosGenerales><idPersona>${cuit}</idPersona></datosGenerales></personaReturn></getPersona_v2Response></Body></Envelope>`, cuit, now))
     .toThrow('ARCA_PADRON_RECORD_INCOMPLETE');
+});
+
+test('refuses a padron redirect as a transport failure', async () => {
+  const service = { getTicket: async () => ({ token: 'token', sign: 'sign', representedCuit: cuit }) } as never;
+  await expect(queryIssuerPadron(service, { templateWorkspaceId: 'workspace-1', templateIssuerProfileRef: 'issuer://template', cuit }, now, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } })))
+    .rejects.toThrow(/^ARCA_PADRON_TRANSPORT_FAILED$/);
 });

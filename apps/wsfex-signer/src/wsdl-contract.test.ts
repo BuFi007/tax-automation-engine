@@ -49,7 +49,7 @@ describe('official WSFEX WSDL activation contract', () => {
       return new Response(fixture(), { status: 200 });
     });
     expect(requestUrl).toBe(OFFICIAL_WSFEX_HOMOLOGATION_WSDL);
-    expect(redirect).toBe('error');
+    expect(redirect).toBe('manual');
     expect(receipt).toEqual(expect.objectContaining({
       contract: 'wsfexv1-fexgetcmp-exact-reconciliation-v1',
       url: OFFICIAL_WSFEX_HOMOLOGATION_WSDL,
@@ -67,4 +67,8 @@ describe('official WSFEX WSDL activation contract', () => {
       .rejects.toThrow('WSFEX_WSDL_TOO_LARGE');
     expect(cancelled).toBe(true);
   });
+});
+
+test('refuses a WSDL redirect as a transport failure', async () => {
+  await expect(fetchAndVerifyOfficialWsfexWsdl(async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }))).rejects.toThrow(/^WSFEX_WSDL_TRANSPORT_FAILED$/);
 });

@@ -8,6 +8,7 @@ import type {
   ClaimedFacturaEFeatureEvent,
   FacturaEFeaturePublicationStore,
 } from './factura-e-feature-publication';
+import { refuseRedirect } from './bounded-body';
 
 const MAX_RESPONSE_BYTES = 16 * 1024;
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -77,8 +78,8 @@ export class HttpFacturaEFeatureEventPublisher implements FacturaEFeatureEventPu
         },
         body: rawBody,
         signal: AbortSignal.timeout(10_000),
-        redirect: 'error',
-      });
+        redirect: 'manual',
+      }).then(refuseRedirect);
     } catch {
       throw new Error('TAX_FACTURA_E_FEATURE_EVENT_UPSTREAM_UNAVAILABLE');
     }

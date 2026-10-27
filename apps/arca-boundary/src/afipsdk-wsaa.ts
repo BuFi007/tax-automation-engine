@@ -1,7 +1,7 @@
 import { hashCanonical } from '@tax-engine/core';
 import { z } from 'zod';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import { type WsaaLoginClient, validateIssuerCredential } from './wsaa';
 
 const authResponse = z.object({
@@ -28,7 +28,7 @@ export class AfipSdkWsaaLoginClient implements WsaaLoginClient {
     try {
       response = await this.fetcher('https://app.afipsdk.com/api/v1/afip/auth', {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         signal: AbortSignal.timeout(20_000),
         headers: {
           authorization: `Bearer ${this.accessToken}`,
@@ -41,7 +41,7 @@ export class AfipSdkWsaaLoginClient implements WsaaLoginClient {
           cert: input.credential.certificatePem,
           key: input.credential.privateKeyPem,
         }),
-      });
+      }).then(refuseRedirect);
     } catch {
       throw new Error('AFIPSDK_AUTH_TRANSPORT_FAILED');
     }

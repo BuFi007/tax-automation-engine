@@ -1,6 +1,6 @@
 import { XMLParser } from 'fast-xml-parser';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import type { ArcaBoundaryService } from './service';
 
 const ENDPOINT = 'https://awshomo.arca.gob.ar/sr-padron/webservices/personaServiceA5';
@@ -25,10 +25,10 @@ export async function queryIssuerPadron(
   let response: Response;
   try {
     response = await fetcher(ENDPOINT, {
-      method: 'POST', redirect: 'error',
+      method: 'POST', redirect: 'manual',
       headers: { 'content-type': 'text/xml; charset=utf-8' },
       body: envelope, signal: AbortSignal.timeout(12_000),
-    });
+    }).then(refuseRedirect);
   } catch {
     throw new Error('ARCA_PADRON_TRANSPORT_FAILED');
   }

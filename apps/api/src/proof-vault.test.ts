@@ -11,7 +11,7 @@ describe('Reclaim proof vault boundary', () => {
       { baseUrl: 'https://proof-vault.test', token: 'vault-token', retentionPolicyId: 'tax-evidence-v1', environment: 'production' },
       async (url, init) => {
         expect(String(url)).toBe('https://proof-vault.test/v1/reclaim-proofs');
-        expect(init?.redirect).toBe('error');
+        expect(init?.redirect).toBe('manual');
         expect(new Headers(init?.headers).get('authorization')).toBe('Bearer vault-token');
         const body = JSON.parse(String(init?.body));
         expect(body.proofPayload).toEqual({ rawProofMarker: 'external-only' });
@@ -105,3 +105,12 @@ function readinessProof(): VerifiedReclaimProofV1 {
     claims: { regime: 'monotributo', category: 'H', exportActivityEnabled: true, exportPointOfSaleActive: true, exportPointOfSale: 4 },
   };
 }
+
+test('refuses a proof vault redirect as a transport failure', async () => {
+  const gateway = new HttpReclaimProofVault(
+    { baseUrl: 'https://proof-vault.test', token: 'vault-token', retentionPolicyId: 'tax-evidence-v1', environment: 'production' },
+    async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }),
+  );
+  await expect(gateway.storeVerifiedProof({ run: run(), session: session(), proof: readinessProof(), proofPayload: {} }))
+    .rejects.toThrow(/^RECLAIM_PROOF_VAULT_TRANSPORT_FAILED$/);
+});

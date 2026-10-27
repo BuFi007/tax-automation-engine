@@ -215,7 +215,7 @@ describe('Factura E feature outbox delivery', () => {
       async (_url, init) => {
         expect((init?.headers as Record<string, string>)['x-tax-feature-event-signature'])
           .toMatch(/^[a-f0-9]{64}$/);
-        expect(init?.redirect).toBe('error');
+        expect(init?.redirect).toBe('manual');
         return Response.json({
           version: 'factura-e-feature-event-receipt-v1',
           eventId: event.eventId,
@@ -273,4 +273,14 @@ describe('Factura E feature outbox delivery', () => {
     await expect(publisher.publish(event))
       .rejects.toThrow('TAX_FACTURA_E_FEATURE_EVENT_RESPONSE_TOO_LARGE');
   });
+});
+
+test('refuses an event receipt redirect as an unavailable upstream', async () => {
+  const publisher = new HttpFacturaEFeatureEventPublisher(
+    new URL('http://127.0.0.1:4400/v1/factoring/events'), 'event-purpose-secret-that-is-more-than-thirty-two-bytes', async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }),
+  );
+  await expect(publisher.publish({
+    version: 'factura-e-feature-event-envelope-v1', eventId: '11111111-1111-4111-8111-111111111111',
+    executionId: 'execution-1', workspaceId: 'workspace-1', feature: { featureHash: 'a'.repeat(64) } as never,
+  })).rejects.toThrow(/^TAX_FACTURA_E_FEATURE_EVENT_UPSTREAM_UNAVAILABLE$/);
 });

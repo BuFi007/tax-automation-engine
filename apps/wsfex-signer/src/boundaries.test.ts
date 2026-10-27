@@ -12,7 +12,7 @@ describe('signer external trust boundaries', () => {
     const authorityPayload = payload();
     const vault = new HttpAuthorityPayloadVault({ baseUrl: 'https://vault.test/', token: 'vault-secret' }, async (input, init) => {
       expect(String(input)).toBe('https://vault.test/v1/authority-payloads/resolve');
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer vault-secret');
       expect(JSON.parse(String(init?.body))).toEqual({ version: 'authority-payload-resolve-v1', reference: 'vault://payload/1' });
       return Response.json({ payload: authorityPayload, payloadHash: hashCanonical(authorityPayload) });
@@ -31,7 +31,7 @@ describe('signer external trust boundaries', () => {
       .toThrow('WSAA_BROKER_URL_INVALID');
     let cancelled = false;
     const vault = new HttpAuthorityPayloadVault({ baseUrl: 'https://vault.test', token: 'secret' }, async (_input, init) => {
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       return new Response(new ReadableStream({
         pull(controller) { controller.enqueue(new Uint8Array(600_000)); },
         cancel() { cancelled = true; },
@@ -46,7 +46,7 @@ describe('signer external trust boundaries', () => {
     const requests: string[] = [];
     const broker = new HttpWsaaTicketBroker({ baseUrl: 'https://wsaa.test', token: 'broker-secret' }, async (input, init) => {
       requests.push(String(input));
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer broker-secret');
       if (String(input).includes('/tickets')) {
         expect(JSON.parse(String(init?.body))).toEqual({

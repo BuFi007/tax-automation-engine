@@ -200,3 +200,8 @@ describe('live TaxDomainEventV1 corridor certification', () => {
     ).rejects.toThrow('TAX_DOMAIN_EVENT_CERTIFICATION_IDENTITY_MISMATCH');
   });
 });
+
+test('refuses a certification redirect as an unavailable target', async () => {
+  await expect(certifyTaxDomainEventCorridor(config(async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } })), certificationId))
+    .rejects.toThrow(/^TAX_DOMAIN_EVENT_CERTIFICATION_TARGET_UNAVAILABLE$/);
+});

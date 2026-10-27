@@ -10,7 +10,7 @@ describe('trusted authority payload writer', () => {
     const payload = invoicePayload();
     const writer = new HttpAuthorityPayloadWriter({ baseUrl: 'https://arca-boundary.test/', token: 'writer-secret', environment: 'homologation' }, async (input, init) => {
       expect(String(input)).toBe('https://arca-boundary.test/v1/authority-payloads');
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer writer-secret');
       expect(new Headers(init?.headers).get('idempotency-key')).toBe('payload-idempotency-1');
       const body = JSON.parse(String(init?.body));
@@ -51,7 +51,7 @@ describe('trusted authority payload writer', () => {
     const terminalEvidenceHash = hashCanonical('terminal-evidence');
     const writer = new HttpAuthorityPayloadWriter({ baseUrl: 'https://arca-boundary.test', token: 'writer-secret', environment: 'homologation' }, async (input, init) => {
       expect(String(input)).toBe('https://arca-boundary.test/v1/authority-payloads/terminal');
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(JSON.parse(String(init?.body))).toEqual({
         version: 'authority-payload-terminal-v1', workspaceId: 'workspace-1', reference, payloadHash,
         terminalState: 'officially_reconciled', authorityIdentityHash, terminalEvidenceHash,
@@ -113,3 +113,9 @@ function invoicePayload(): AuthorityPayload {
     items: [{ code: null, description: 'Software services', quantity: '1', unitCode: 7, unitPrice: '1000.00', discount: '0', total: '1000.00' }],
   };
 }
+
+test('refuses a vault redirect as a transport failure', async () => {
+  const writer = new HttpAuthorityPayloadWriter({ baseUrl: 'https://arca-boundary.test', token: 'secret', environment: 'homologation' }, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(writer.store({ workspaceId: 'workspace-1', payload: invoicePayload(), expiresAt: '2026-07-12T12:00:00.000Z', idempotencyKey: 'payload-idempotency-1' }))
+    .rejects.toThrow(/^ARCA_BOUNDARY_TRANSPORT_FAILED_ERROR$/);
+});

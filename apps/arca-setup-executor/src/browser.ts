@@ -10,6 +10,7 @@ import {
 } from '@cloudflare/playwright';
 
 import { ARCA_ALLOWED_DOMAINS, blockedByGuardrails, hostnameAllowed, validateGuardrailPolicy, type GuardrailPolicy } from './guardrails';
+import { refuseRedirect } from './http';
 
 export { ARCA_ALLOWED_DOMAINS };
 
@@ -112,12 +113,12 @@ export async function readonlyLiveViewUrl(
     `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(credentials.accountId)}/browser-run/devtools/browser/${encodeURIComponent(sessionId)}/live_view`,
     {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       headers: { authorization: `Bearer ${credentials.apiToken}`, 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'tab', expiresInMs: 60_000, targetId, guardrails: { mode: 'readonly' } }),
       signal: AbortSignal.timeout(15_000),
     },
-  );
+  ).then(refuseRedirect);
   const payload = await response.json().catch(() => null) as { result?: { devtoolsFrontendUrl?: unknown }; devtoolsFrontendUrl?: unknown } | null;
   const url = payload?.result?.devtoolsFrontendUrl ?? payload?.devtoolsFrontendUrl;
   if (!response.ok || typeof url !== 'string' || !url.startsWith('https://live.browser.run/'))

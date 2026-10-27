@@ -1,7 +1,7 @@
 import { hashCanonical } from '@tax-engine/core';
 import { XMLParser } from 'fast-xml-parser';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import type { AuthorityPayload } from './contracts';
 import type { WsfexAccessTicket } from './wsaa';
 
@@ -149,11 +149,11 @@ export class SoapWsfexAuthorityClient implements WsfexAuthorityClient {
     try {
       response = await this.fetcher(ENDPOINTS[this.environment], {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: `"${NAMESPACE}${action}"` },
         body: envelope,
         signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch (error) {
       throw new WsfexAmbiguousTransportError(hashCanonical({ action, requestHash: hashCanonical(envelope), errorType: error instanceof Error ? error.name : 'unknown' }));
     }

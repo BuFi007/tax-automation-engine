@@ -2,7 +2,7 @@ import { assertArcaFiscalBeta } from './arca-fiscal-beta';
 import { hashCanonical } from '@tax-engine/core';
 import { nextVoucherSchema, pointOfSaleDiscoverySchema, pointOfSaleReadbackSchema, signerRequestSchema, signerResponseSchema, type NextVoucher, type NextVoucherRequest, type PointOfSaleDiscovery, type PointOfSaleReadback, type SignerRequest, type SignerResponse } from '@tax-engine/wsfe-signer/contracts';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 
 export interface WsfePointOfSaleGateway {
   discoverPointsOfSale(input: Readonly<{ workspaceId: string; issuerProfileRef: string }>): Promise<PointOfSaleDiscovery>;
@@ -55,10 +55,10 @@ export class HttpWsfePointOfSaleGateway implements WsfePointOfSaleGateway {
     let response: Response;
     try {
       response = await this.fetcher(new URL('/v1/wsfev1/invoices', this.#origin), {
-        method: 'POST', redirect: 'error',
+        method: 'POST', redirect: 'manual',
         headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json', 'idempotency-key': request.requestId },
         body: JSON.stringify(request), signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch { throw new Error('ARCA_WSFE_ISSUE_OUTCOME_UNKNOWN'); }
     if (!response.ok) {
       await readBoundedBody(response, 64 * 1024, 'ARCA_WSFE_SIGNER_ERROR_RESPONSE_TOO_LARGE');
@@ -99,10 +99,10 @@ export class HttpWsfePointOfSaleGateway implements WsfePointOfSaleGateway {
     let response: Response;
     try {
       response = await this.fetcher(new URL(path, this.#origin), {
-        method: 'POST', redirect: 'error',
+        method: 'POST', redirect: 'manual',
         headers: { authorization: `Bearer ${this.config.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(input), signal: AbortSignal.timeout(30_000),
-      });
+      }).then(refuseRedirect);
     } catch { throw new Error('ARCA_WSFE_READ_UNAVAILABLE'); }
     if (!response.ok) {
       await readBoundedBody(response, 64 * 1024, 'ARCA_WSFE_SIGNER_ERROR_RESPONSE_TOO_LARGE');

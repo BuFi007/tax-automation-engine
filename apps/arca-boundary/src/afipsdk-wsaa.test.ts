@@ -19,7 +19,7 @@ test('sends only the selected issuer credential to AFIP SDK auth and returns a c
   const client = new AfipSdkWsaaLoginClient('provider-token-32-characters-long', async (url, init) => {
     calls++;
     expect(String(url)).toBe('https://app.afipsdk.com/api/v1/afip/auth');
-    expect(init?.redirect).toBe('error');
+    expect(init?.redirect).toBe('manual');
     const body = JSON.parse(String(init?.body));
     expect(body).toEqual({
       environment: 'dev', tax_id: CUIT, wsid: 'wsfe',
@@ -46,4 +46,9 @@ test('rejects provider errors without returning its body or accepting an expirin
       expiration: '2026-07-11T12:00:30.000Z' }));
   await expect(expiring.login({ credential, service: 'wsfex', now: NOW }))
     .rejects.toThrow('AFIPSDK_AUTH_TICKET_EXPIRED');
+});
+
+test('refuses an AFIP SDK auth redirect as a transport failure', async () => {
+  const client = new AfipSdkWsaaLoginClient('provider-token-32-characters-long', async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(client.login({ credential, service: 'wsfex', now: NOW })).rejects.toThrow(/^AFIPSDK_AUTH_TRANSPORT_FAILED$/);
 });

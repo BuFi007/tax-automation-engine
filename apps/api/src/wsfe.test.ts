@@ -118,3 +118,8 @@ describe('HTTP WSFE issuance boundary', () => {
     await expect(gateway.issueInvoice(request)).rejects.toThrow('ARCA_WSFE_ISSUE_BINDING_MISMATCH');
   });
 });
+
+test('refuses a signer redirect as an unknown issue outcome', async () => {
+  const gateway = new HttpWsfePointOfSaleGateway({ baseUrl: 'https://wsfe.test', token: 'secret', environment: 'homologation' }, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(gateway.issueInvoice(wsfeRequest())).rejects.toThrow(/^ARCA_WSFE_ISSUE_OUTCOME_UNKNOWN$/);
+});

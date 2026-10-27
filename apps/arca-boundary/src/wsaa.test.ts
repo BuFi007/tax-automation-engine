@@ -16,7 +16,7 @@ describe('official WSAA LoginCms transport', () => {
     const client = new SoapWsaaLoginClient(async (input, init) => {
       capturedUrl = String(input);
       capturedBody = String(init?.body);
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('soapaction')).toBe('""');
       return wsaaResponse({ token: 'token-secret', sign: 'sign-secret', expiresAt: '2026-07-11T20:00:00.000Z' });
     });
@@ -131,3 +131,12 @@ function wsaaResponse(input: Readonly<{ token: string; sign: string; expiresAt: 
   return new Response(`<?xml version="1.0"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><loginCmsResponse xmlns="http://wsaa.view.sua.dvadac.desein.afip.gov"><loginCmsReturn>${escaped}</loginCmsReturn></loginCmsResponse></soapenv:Body></soapenv:Envelope>`,
     { status: 200, headers: { 'content-type': 'text/xml' } });
 }
+
+test('refuses a WSAA redirect as a transport failure', async () => {
+  const { credential } = validateIssuerCredential({
+    workspaceId: 'workspace-1', issuerProfileRef: 'issuer://workspace-1/primary', environment: 'homologation',
+    certificateHolderCuit: CUIT, representedCuit: CUIT, ...certificateBundle(), delegationConfirmed: true,
+  }, NOW);
+  const client = new SoapWsaaLoginClient(async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(client.login({ credential, service: 'wsfex', now: NOW })).rejects.toThrow(/^WSAA_TRANSPORT_FAILED_ERROR$/);
+});

@@ -131,6 +131,14 @@ describe('Contabilium conformance boundary', () => {
     );
     await expect(timedOut.getImportCapabilities('tenant:a'))
       .rejects.toThrow('CONTABILIUM_TRANSPORT_FAILED');
+
+    const redirected = new ContabiliumRestSandboxProvider(
+      config,
+      fixedToken(),
+      async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }),
+    );
+    await expect(redirected.getImportCapabilities('tenant:a'))
+      .rejects.toThrow(/^CONTABILIUM_TRANSPORT_FAILED$/);
   });
 
   test('obtains and caches a bounded client-credentials token without exposing credentials', async () => {
@@ -141,7 +149,7 @@ describe('Contabilium conformance boundary', () => {
     }, async (input, init) => {
       calls += 1;
       expect(String(input)).toBe('https://rest.contabilium.com/token');
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       const body = init?.body as URLSearchParams;
       expect(body.get('grant_type')).toBe('client_credentials');
       expect(body.get('client_id')).toBe('account@example.test');

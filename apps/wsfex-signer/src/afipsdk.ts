@@ -1,7 +1,7 @@
 import { hashCanonical } from '@tax-engine/core';
 import { z } from 'zod';
 
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import { isValidCuit, type AuthorityPayload } from './contracts';
 import {
   normalizeWsfexAuthorization, normalizeWsfexCotizacion, normalizeWsfexDocument,
@@ -161,10 +161,10 @@ export class AfipSdkWsfexClient implements WsaaTicketBroker, WsfexAuthorityClien
     let raw: string;
     try {
       response = await this.fetcher(`https://app.afipsdk.com/api/v1/afip/${endpoint}`, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(30_000),
         headers: { authorization: `Bearer ${this.config.accessToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({ environment: this.config.environment === 'production' ? 'prod' : 'dev', wsid: 'wsfex', ...body }),
-      });
+      }).then(refuseRedirect);
       raw = await readBoundedBody(response, 2_097_152, 'AFIPSDK_RESPONSE_TOO_LARGE');
     } catch {
       // A provider error cannot prove that ARCA did not commit an invoice.

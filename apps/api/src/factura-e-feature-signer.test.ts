@@ -29,7 +29,7 @@ describe('Factura E feature signing gateway', () => {
         });
         expect((init?.headers as Record<string, string>)['x-tax-feature-request-signature'])
           .toMatch(/^[a-f0-9]{64}$/);
-        expect(init?.redirect).toBe('error');
+        expect(init?.redirect).toBe('manual');
         return Response.json({
           version: 'factura-e-feature-signature-receipt-v1',
           digestHex: digest,
@@ -153,4 +153,11 @@ describe('Factura E feature signing gateway', () => {
       privateKeyPem
     )).toThrow('TAX_FACTURA_E_FEATURE_SIGNER_PUBLIC_KEY_INVALID');
   });
+});
+
+test('refuses a signer redirect as an unavailable upstream', async () => {
+  const gateway = new HttpFacturaEFeatureSigningGateway(
+    new URL('http://127.0.0.1:4400/v1/signatures/factura-e-feature'), 'tax-feature-key-2026-01', secret, publicKeyPem, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }),
+  );
+  await expect(gateway.signDigest(digest)).rejects.toThrow(/^TAX_FACTURA_E_FEATURE_SIGNER_UPSTREAM_UNAVAILABLE$/);
 });

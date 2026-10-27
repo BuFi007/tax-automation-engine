@@ -11,6 +11,7 @@ import {
   drainTaxDomainEventOutbox,
   HttpTaxDomainEventPublisher,
 } from './tax-domain-event-outbox';
+import { refuseRedirect } from './bounded-body';
 
 const MAX_RESPONSE_BYTES = 16 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -219,8 +220,8 @@ async function startCertification(input: {
     },
     body: JSON.stringify({ certificationId: input.certificationId }),
     signal: AbortSignal.timeout(10_000),
-    redirect: 'error',
-  }).catch(() => {
+    redirect: 'manual',
+  }).then(refuseRedirect).catch(() => {
     throw new Error('TAX_DOMAIN_EVENT_CERTIFICATION_TARGET_UNAVAILABLE');
   });
   if (!response.ok)
@@ -240,8 +241,8 @@ async function readCertificationStatus(input: {
   const response = await input.fetchImpl(endpoint, {
     headers: { authorization: `Bearer ${input.secret}` },
     signal: AbortSignal.timeout(10_000),
-    redirect: 'error',
-  }).catch(() => {
+    redirect: 'manual',
+  }).then(refuseRedirect).catch(() => {
     throw new Error('TAX_DOMAIN_EVENT_CERTIFICATION_TARGET_UNAVAILABLE');
   });
   if (!response.ok)

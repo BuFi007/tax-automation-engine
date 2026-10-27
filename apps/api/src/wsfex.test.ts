@@ -132,7 +132,7 @@ describe('HTTP WSFEX signer boundary', () => {
       { baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' },
       async (target, init) => {
         expect(String(target)).toBe('https://signer.test/v1/wsfex/authorize');
-        expect(init?.redirect).toBe('error');
+        expect(init?.redirect).toBe('manual');
         return Response.json({
           requestId: '1',
           status: 'preflight_rejected',
@@ -422,3 +422,11 @@ function approvedRun(): FacturaEAgentRunV1 {
     issuanceState: 'ready_for_wsfex',
   };
 }
+
+test('refuses a signer redirect as an unavailable sequence reservation', async () => {
+  const gateway = new HttpWsfexGateway({ baseUrl: 'https://signer.test', token: 'secret', environment: 'homologation' }, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  await expect(gateway.reserveSequence({
+    workspaceId: 'workspace-1', issuerProfileRef: 'vault://issuer/profile-1', runId: '10000000-0000-4000-8000-000000000001',
+    intentHash: 'a'.repeat(64), subjectId: 'invoice-1', pointOfSale: 1, idempotencyKey: 'reservation-1',
+  })).rejects.toThrow(/^ARCA_SEQUENCE_RESERVATION_UNAVAILABLE$/);
+});

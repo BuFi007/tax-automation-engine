@@ -12,7 +12,7 @@ describe('official WSFEX SOAP transport', () => {
     const client = new SoapWsfexAuthorityClient('homologation', async (input, init) => {
       capturedUrl = String(input);
       capturedBody = String(init?.body);
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('soapaction')).toBe('"http://ar.gov.afip.dif.fexv1/FEXAuthorize"');
       return xmlResponse('FEXAuthorize', `
         <FEXResultAuth><Id>101</Id><Cbte_tipo>19</Cbte_tipo><Punto_vta>4</Punto_vta><Cbte_nro>6</Cbte_nro><Fch_cbte>20260711</Fch_cbte><Resultado>A</Resultado><Cae>12345678901234</Cae><Fch_venc_Cae>20260721</Fch_venc_Cae><Reproceso>N</Reproceso></FEXResultAuth>
@@ -169,3 +169,13 @@ function xmlResponse(action: string, result: string): Response {
       <soap:Body><${action}Response xmlns="http://ar.gov.afip.dif.fexv1/"><${action}Result>${result}</${action}Result></${action}Response></soap:Body>
     </soap:Envelope>`, { status: 200, headers: { 'content-type': 'text/xml' } });
 }
+
+test('refuses a WSFEX redirect before reading its body', async () => {
+  let bodyRead = false;
+  const client = new SoapWsfexAuthorityClient('homologation', async () => new Response(
+    new ReadableStream({ pull(controller) { bodyRead = true; controller.close(); } }, { highWaterMark: 0 }),
+    { status: 302, headers: { location: 'https://attacker.test/' } },
+  ));
+  await expect(client.authorize(ticket, payload())).rejects.toBeInstanceOf(WsfexAmbiguousTransportError);
+  expect(bodyRead).toBe(false);
+});

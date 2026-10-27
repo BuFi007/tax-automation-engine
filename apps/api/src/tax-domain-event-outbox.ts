@@ -6,6 +6,7 @@ import {
   type TaxDomainEventV1,
 } from '@tax-engine/core';
 import { z } from 'zod';
+import { refuseRedirect } from './bounded-body';
 
 const MAX_RESPONSE_BYTES = 16 * 1024;
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -102,8 +103,8 @@ export class HttpTaxDomainEventPublisher implements TaxDomainEventPublisher {
         },
         body: rawBody,
         signal: AbortSignal.timeout(10_000),
-        redirect: 'error',
-      });
+        redirect: 'manual',
+      }).then(refuseRedirect);
     } catch {
       throw new Error('TAX_DOMAIN_EVENT_TARGET_UNAVAILABLE');
     }

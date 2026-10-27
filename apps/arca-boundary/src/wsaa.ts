@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser';
 import * as forge from 'node-forge';
 
 import type { WsaaService } from './contracts';
-import { readBoundedBody } from './bounded-body';
+import { readBoundedBody, refuseRedirect } from './bounded-body';
 import { fingerprintDer } from './crypto';
 import type { IssuerCredential } from './store';
 
@@ -40,11 +40,11 @@ export class SoapWsaaLoginClient implements WsaaLoginClient {
     try {
       response = await this.fetcher(ENDPOINTS[input.credential.environment], {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { 'content-type': 'text/xml; charset=utf-8', soapaction: '""' },
         body: envelope,
         signal: AbortSignal.timeout(20_000),
-      });
+      }).then(refuseRedirect);
     } catch (error) {
       throw new Error(`WSAA_TRANSPORT_FAILED_${error instanceof Error ? error.name.toUpperCase() : 'UNKNOWN'}`);
     }

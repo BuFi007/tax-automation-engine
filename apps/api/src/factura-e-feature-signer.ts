@@ -9,6 +9,7 @@ import {
 import { z } from 'zod';
 
 import type { FacturaEFeatureSigningGateway } from '@tax-engine/core';
+import { refuseRedirect } from './bounded-body';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_REFERENCE = /^[A-Za-z0-9._:/-]{1,200}$/;
@@ -97,8 +98,8 @@ export class HttpFacturaEFeatureSigningGateway implements FacturaEFeatureSigning
         },
         body: rawBody,
         signal: AbortSignal.timeout(5_000),
-        redirect: 'error',
-      });
+        redirect: 'manual',
+      }).then(refuseRedirect);
     } catch {
       throw new Error('TAX_FACTURA_E_FEATURE_SIGNER_UPSTREAM_UNAVAILABLE');
     }

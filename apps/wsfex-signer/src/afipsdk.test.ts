@@ -61,7 +61,7 @@ describe('AFIP SDK WSFEX HTTPS adapter', () => {
   test('binds auth to a trusted issuer and sends complete JSON without local credentials', async () => {
     const bodies: any[] = [];
     const client = new AfipSdkWsfexClient({ accessToken: 'provider-token', environment: 'homologation' }, async () => issuer, async (url, init) => {
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer provider-token');
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
@@ -178,4 +178,11 @@ describe('AFIP SDK WSFEX HTTPS adapter', () => {
     expect(methods.filter(m => m === 'FEXAuthorize')).toHaveLength(1);
     expect(methods.filter(m => m === 'FEXGetCMP')).toHaveLength(4);
   });
+});
+
+test('refuses an AFIP SDK auth redirect as the transport-ambiguous outcome, not an HTTP status', async () => {
+  const client = new AfipSdkWsfexClient({ accessToken: 'provider-token', environment: 'homologation' }, async () => issuer, async () => new Response(null, { status: 302, headers: { location: 'https://attacker.test/' } }));
+  const error = await client.getTicket(scope).catch(caught => caught);
+  expect(error).toBeInstanceOf(WsfexAmbiguousTransportError);
+  expect(error.receiptHash).toBe(hashCanonical({ endpoint: 'auth', outcome: 'transport_ambiguous' }));
 });

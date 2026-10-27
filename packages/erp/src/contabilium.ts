@@ -508,9 +508,16 @@ function encodeCursor(page: number, offset: number) {
   return { value: `p:${page}:o:${offset}`, version: 'v1' as const };
 }
 
+/** workerd rejects `redirect: 'error'`; fetch with 'manual' and refuse any 3xx here. */
+function refuseRedirect(response: Response): Response {
+  if (response.type !== 'opaqueredirect' && (response.status < 300 || response.status > 399)) return response;
+  void response.body?.cancel();
+  throw new Error('HTTP_REDIRECT_REFUSED');
+}
+
 async function boundedFetch(fetcher: ContabiliumFetch, input: string | URL, init: RequestInit): Promise<Response> {
   try {
-    return await fetcher(input, { ...init, redirect: 'error', signal: AbortSignal.timeout(15_000) });
+    return await fetcher(input, { ...init, redirect: 'manual', signal: AbortSignal.timeout(15_000) }).then(refuseRedirect);
   } catch {
     throw new Error('CONTABILIUM_TRANSPORT_FAILED');
   }
