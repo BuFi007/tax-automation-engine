@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0, 0b and 1 DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 2.
+Status: Phase 0, 0b, 1 and 2 DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 3.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -441,7 +441,12 @@ bun test packages/sql-store
 and index in the feature-store tests. The adapter contract suite passes on both
 implementations, and the authority-execution FK test passes.
 
-### Phase 2: Split the composition roots from `Bun.serve` · 1 day
+### Phase 2: Split the composition roots from `Bun.serve` · 1 day · DONE 2026-10-27
+
+As built: `createTaxApi` returns `{ fetch, tick, loops, executionMode }`;
+`tick()` runs the three loop bodies once and `loops` drives the Bun
+`setInterval`s. `nextWakeAt` and the per-loop `nextDueAt` are Phase 3 work, as
+that phase specifies them.
 
 Env handling: about 120 `process.env` reads live outside `index.ts` (e.g.
 `arca-setup-store.ts:43`, `authority-execution.ts:147`, `wsfe-signer/src/contracts.ts:279`).

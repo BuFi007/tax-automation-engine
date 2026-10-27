@@ -44,10 +44,10 @@ export class HttpArcaBoundaryStatusReader {
     this.#origin = endpoint.origin;
   }
 
-  static fromEnvironment(): HttpArcaBoundaryStatusReader | null {
+  static fromEnvironment(fetcher?: Fetcher): HttpArcaBoundaryStatusReader | null {
     const baseUrl = process.env.ARCA_BOUNDARY_URL;
     const token = process.env.ARCA_BOUNDARY_STATUS_TOKEN;
-    return baseUrl && token ? new HttpArcaBoundaryStatusReader(token, baseUrl) : null;
+    return baseUrl && token ? new HttpArcaBoundaryStatusReader(token, baseUrl, fetcher) : null;
   }
 
   async read(workspaceId: string, issuerProfileRef: string): Promise<BoundaryStatus> {

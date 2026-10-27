@@ -63,11 +63,11 @@ export class HttpArcaSetupExecutorGateway implements ArcaSetupExecutorGateway {
       throw new Error('ARCA_SETUP_EXECUTOR_SECRETS_INVALID');
   }
 
-  static fromEnvironment(): HttpArcaSetupExecutorGateway | null {
+  static fromEnvironment(fetcher?: Fetcher): HttpArcaSetupExecutorGateway | null {
     const url = process.env.ARCA_SETUP_EXECUTOR_URL;
     const order = process.env.ARCA_SETUP_ORDER_SECRET;
     const receipt = process.env.ARCA_SETUP_RECEIPT_SECRET;
-    return url && order && receipt ? new HttpArcaSetupExecutorGateway(url, order, receipt) : null;
+    return url && order && receipt ? new HttpArcaSetupExecutorGateway(url, order, receipt, fetcher) : null;
   }
 
   async dispatch(order: ArcaSetupWireOrder): Promise<'accepted' | 'duplicate' | 'busy'> {
@@ -163,10 +163,10 @@ export class HttpArcaSetupBoundaryGateway implements ArcaSetupBoundaryGateway {
     if (token.length < 32) throw new Error('ARCA_BOUNDARY_SETUP_TOKEN_REQUIRED');
   }
 
-  static fromEnvironment(): HttpArcaSetupBoundaryGateway | null {
+  static fromEnvironment(fetcher?: Fetcher): HttpArcaSetupBoundaryGateway | null {
     const url = process.env.ARCA_BOUNDARY_URL;
     const token = process.env.ARCA_BOUNDARY_SETUP_TOKEN;
-    return url && token ? new HttpArcaSetupBoundaryGateway(url, token) : null;
+    return url && token ? new HttpArcaSetupBoundaryGateway(url, token, fetcher) : null;
   }
 
   async createSession(input: Parameters<ArcaSetupBoundaryGateway['createSession']>[0]) {

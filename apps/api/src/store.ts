@@ -83,6 +83,19 @@ export function resolveTaxEngineDatabasePath(
   return path;
 }
 
+/** The injected-database form of `resolveTaxEngineDatabasePath`'s durability checks. */
+export function assertTaxEngineDatabaseDurable(
+  database: SqlDatabase,
+  nodeEnvironment: string | undefined = process.env.NODE_ENV,
+): SqlDatabase {
+  if (database.durable) return database;
+  if (process.env.ARCA_FISCAL_BETA_ENABLED === 'true') {
+    throw new Error('TAX_ENGINE_DURABLE_BETA_DB_CONFIGURATION_REQUIRED');
+  }
+  if (nodeEnvironment === 'production') throw new Error('TAX_ENGINE_DB_PATH_REQUIRED_IN_PRODUCTION');
+  return database;
+}
+
 function isInMemorySqlitePath(path: string): boolean {
   const normalized = path.toLowerCase();
   return normalized === ':memory:'
@@ -134,7 +147,7 @@ export class TaxProfileStore {
     domainEventCommitmentSecret = resolveTaxDomainEventCommitmentSecret(),
   ) {
     this.#domainEventCommitmentSecret = domainEventCommitmentSecret;
-    this.#db = openSqlDatabase(typeof path === 'object' ? path : resolveTaxEngineDatabasePath(path));
+    this.#db = openSqlDatabase(typeof path === 'object' ? assertTaxEngineDatabaseDurable(path) : resolveTaxEngineDatabasePath(path));
     this.#db.configure({ wal: true });
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (

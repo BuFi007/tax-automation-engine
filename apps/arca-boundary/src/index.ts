@@ -1,129 +1,32 @@
-import {
-  loadMasterKey,
-  loadRepresentedCuitCommitmentKey,
-  loadTaxpayerReferenceKey,
-} from './crypto';
-import { AfipSdkWsaaLoginClient } from './afipsdk-wsaa';
-import { createBoundaryHandler } from './http';
-import { ArcaBoundaryService } from './service';
-import { ArcaBoundaryStore } from './store';
-import { ArcaSetupBoundary } from './setup';
-import { deriveDomainKey } from './crypto';
 import { readFileSync } from 'node:fs';
+
+import { createBoundary } from './app';
 
 const port = Number(process.env.PORT ?? 4300);
 const hostname = process.env.ARCA_BOUNDARY_HOST ?? '127.0.0.1';
-const environment = parseArcaEnvironment(process.env.ARCA_ENVIRONMENT);
-if (environment === 'production' && process.env.ARCA_BOUNDARY_PRODUCTION_APPROVED !== 'true') throw new Error('ARCA_BOUNDARY_PRODUCTION_APPROVAL_REQUIRED');
-const databasePath = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:';
-if (databasePath === ':memory:')
-  throw new Error('ARCA_BOUNDARY_DURABLE_STORE_REQUIRED');
-const tokens = {
-  payloadWriter: requiredToken('ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN'),
-  payloadResolver: requiredToken('ARCA_BOUNDARY_PAYLOAD_RESOLVE_TOKEN'),
-  wsaa: requiredToken('ARCA_BOUNDARY_WSAA_TOKEN'),
-  status: requiredToken('ARCA_BOUNDARY_STATUS_TOKEN'),
-  admin: requiredToken('ARCA_BOUNDARY_ADMIN_TOKEN'),
-  padron: process.env.ARCA_BOUNDARY_PADRON_TOKEN
-    ? requiredToken('ARCA_BOUNDARY_PADRON_TOKEN') : undefined,
-  issuerRevoke: process.env.ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN
-    ? requiredToken('ARCA_BOUNDARY_ISSUER_REVOKE_TOKEN') : undefined,
-  setup: process.env.ARCA_BOUNDARY_SETUP_TOKEN
-    ? requiredToken('ARCA_BOUNDARY_SETUP_TOKEN') : undefined,
-  setupExecutor: process.env.ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN
-    ? requiredToken('ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN') : undefined,
-};
-if (Boolean(tokens.setup) !== Boolean(tokens.setupExecutor))
-  throw new Error('ARCA_BOUNDARY_SETUP_TOKENS_REQUIRED_TOGETHER');
-const configuredTokens = Object.values(tokens).filter((token): token is string => !!token);
-if (new Set(configuredTokens).size !== configuredTokens.length)
-  throw new Error('ARCA_BOUNDARY_TOKENS_MUST_BE_DISTINCT');
-const masterKey = loadMasterKey();
-const representedCuitCommitmentKey = loadRepresentedCuitCommitmentKey();
-const taxpayerReferenceKey = loadTaxpayerReferenceKey();
-const retentionPolicy = loadRetentionPolicy(environment);
-const authProvider = process.env.ARCA_WSAA_PROVIDER ?? 'direct';
-if (authProvider !== 'direct' && authProvider !== 'afipsdk')
-  throw new Error('ARCA_WSAA_PROVIDER_INVALID');
-if (authProvider === 'afipsdk' && process.env.ARCA_AFIPSDK_KEY_TRANSFER_APPROVED !== 'true')
-  throw new Error('AFIPSDK_KEY_TRANSFER_APPROVAL_REQUIRED');
-const wsaa = authProvider === 'afipsdk'
-  ? new AfipSdkWsaaLoginClient(requiredToken('AFIPSDK_ACCESS_TOKEN'))
-  : undefined;
-const issuerStore = new ArcaBoundaryStore(masterKey, databasePath, representedCuitCommitmentKey);
-const setup = tokens.setup
-  ? new ArcaSetupBoundary({
-      databasePath,
-      sealKey: deriveDomainKey(masterKey, 'setup-sessions'),
-      commitmentKey: representedCuitCommitmentKey,
-      taxpayerReferenceKey,
-      issuers: issuerStore,
-      environment,
-      providerTemplate: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_WORKSPACE_ID && process.env.ARCA_SETUP_PROVIDER_TEMPLATE_PROFILE_REF
-        ? {
-            workspaceId: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_WORKSPACE_ID,
-            issuerProfileRef: process.env.ARCA_SETUP_PROVIDER_TEMPLATE_PROFILE_REF,
-          }
-        : null,
-      trustedIssuers: loadTrustedIssuers(process.env.ARCA_SETUP_TRUSTED_ISSUERS_FILE),
-    })
-  : null;
-const service = new ArcaBoundaryService(
-  issuerStore,
-  wsaa,
-  retentionPolicy,
-  taxpayerReferenceKey,
-  process.env.ARCA_FISCAL_BETA_ENABLED === 'true'
-    && process.env.TAX_DEPLOYMENT_ENVIRONMENT === 'development'
-    && environment === 'homologation'
-    ? new Set((process.env.ARCA_FISCAL_BETA_WORKSPACE_IDS ?? '').split(',').map(v => v.trim()).filter(Boolean)) : null
-);
-masterKey.fill(0);
-representedCuitCommitmentKey.fill(0);
-taxpayerReferenceKey.fill(0);
-const handler = createBoundaryHandler(service, tokens, environment, undefined, setup);
+const boundary = createBoundary({
+  env: withKeyFilesRead(process.env),
+  database: process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:',
+  // Read only when setup is enabled, as before.
+  ...(process.env.ARCA_BOUNDARY_SETUP_TOKEN && process.env.ARCA_SETUP_TRUSTED_ISSUERS_FILE
+    ? { trustedIssuersPem: readFileSync(process.env.ARCA_SETUP_TRUSTED_ISSUERS_FILE, 'utf8') }
+    : {}),
+});
 
 export const server = Bun.serve({
   hostname,
   port,
-  fetch: handler,
+  fetch: boundary.fetch,
 });
 
-function requiredToken(name: string): string {
-  const value = process.env[name];
-  if (!value || value.length < 32) throw new Error(`${name}_REQUIRED`);
-  return value;
+/** Bun keeps the `*_FILE` key forms: each file replaces its base64 variable, as `crypto.ts` reads it. */
+function withKeyFilesRead(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const resolved: Record<string, string | undefined> = { ...env };
+  for (const name of ['ARCA_BOUNDARY_MASTER_KEY', 'ARCA_BOUNDARY_CUIT_COMMITMENT_KEY', 'ARCA_BOUNDARY_TAXPAYER_REFERENCE_KEY']) {
+    const file = env[`${name}_FILE`];
+    if (file) resolved[name] = readFileSync(file, 'utf8').trim();
+  }
+  return resolved;
 }
 
-function parseArcaEnvironment(raw: string | undefined): 'homologation' | 'production' {
-  if (raw === 'production') return 'production';
-  if (raw === 'homologacion' || raw === 'homologation') return 'homologation';
-  throw new Error('ARCA_ENVIRONMENT_INVALID');
-}
-
-function loadRetentionPolicy(environment: 'homologation' | 'production') {
-  const retentionPolicyId = process.env.ARCA_BOUNDARY_PAYLOAD_RETENTION_POLICY_ID
-    ?? (environment === 'homologation' ? 'arca-authority-terminal-recovery-v1' : '');
-  const rawDays = process.env.ARCA_BOUNDARY_PAYLOAD_TERMINAL_RETENTION_DAYS
-    ?? (environment === 'homologation' ? '30' : '');
-  if (!/^[A-Za-z0-9._:-]{1,100}$/.test(retentionPolicyId))
-    throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_REQUIRED');
-  if (!/^\d+$/.test(rawDays))
-    throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_REQUIRED');
-  const days = Number(rawDays);
-  if (!Number.isSafeInteger(days) || days < 1 || days > 3_650)
-    throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_INVALID');
-  return {
-    retentionPolicyId,
-    terminalRetentionMs: days * 24 * 60 * 60_000,
-  };
-}
-
-if (import.meta.main) console.info(`ARCA authority boundary listening on ${hostname}:${server.port}; environment=${environment}; secrets remain encrypted and outside agent context`);
-
-/** PEM bundle of ARCA's computer-certificate CAs (the official "cadena de certificación"). */
-function loadTrustedIssuers(path: string | undefined): readonly string[] {
-  if (!path) return [];
-  const bundle = readFileSync(path, 'utf8');
-  return bundle.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
-}
+if (import.meta.main) console.info(`ARCA authority boundary listening on ${hostname}:${server.port}; environment=${boundary.environment}; secrets remain encrypted and outside agent context`);

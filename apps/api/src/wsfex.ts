@@ -97,11 +97,11 @@ export class HttpWsfexGateway implements WsfexGateway, WsfexPointOfSaleGateway, 
     this.#baseOrigin = endpoint.origin;
   }
 
-  static fromEnvironment(): HttpWsfexGateway | null {
+  static fromEnvironment(fetcher?: WsfexFetch): HttpWsfexGateway | null {
     const baseUrl = process.env.ARCA_SIGNER_URL ?? '';
     const token = process.env.ARCA_SIGNER_TOKEN ?? '';
     const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
-    return baseUrl && token ? new HttpWsfexGateway({ baseUrl, token, environment }, undefined, assertArcaFiscalBeta) : null;
+    return baseUrl && token ? new HttpWsfexGateway({ baseUrl, token, environment }, fetcher, assertArcaFiscalBeta) : null;
   }
 
   authorize(input: WsfexInvoiceRequest): Promise<WsfexAuthorityResult> {

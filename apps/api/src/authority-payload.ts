@@ -80,11 +80,11 @@ export class HttpAuthorityPayloadWriter implements AuthorityPayloadWriter {
     this.#baseOrigin = endpoint.origin;
   }
 
-  static fromEnvironment(): HttpAuthorityPayloadWriter | null {
+  static fromEnvironment(fetcher?: PayloadFetch): HttpAuthorityPayloadWriter | null {
     const baseUrl = process.env.ARCA_BOUNDARY_URL ?? '';
     const token = process.env.ARCA_BOUNDARY_PAYLOAD_WRITE_TOKEN ?? '';
     const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
-    return baseUrl && token ? new HttpAuthorityPayloadWriter({ baseUrl, token, environment }) : null;
+    return baseUrl && token ? new HttpAuthorityPayloadWriter({ baseUrl, token, environment }, fetcher) : null;
   }
 
   store(input: Readonly<{ workspaceId: string; payload: WsfexAuthorityPayload; expiresAt: string; idempotencyKey: string }>): Promise<AuthorityPayloadReceipt>;

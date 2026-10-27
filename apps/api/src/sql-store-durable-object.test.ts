@@ -55,6 +55,40 @@ describe('API stores on Durable Object SQLite', () => {
     }
   });
 
+  test('no two stores create a table or index with the same name', () => {
+    const opens: Record<string, (database: DurableObjectSqlDatabase) => unknown> = {
+      TaxProfileStore: database => new TaxProfileStore(database, 'test-domain-event-secret'),
+      ArcaIssuerProfileRegistry: database => new ArcaIssuerProfileRegistry(database),
+      ArcaSetupStore: database => new ArcaSetupStore(database),
+      FacturaEAuthorityExecutionStore: database => new FacturaEAuthorityExecutionStore(database, true),
+      PersonalWsfeAttemptStore: database => new PersonalWsfeAttemptStore(database, true),
+      FacturaEFeaturePublicationStore: database => new FacturaEFeaturePublicationStore(
+        featureDependencies({ database, requireDurable: true, singleWriter: true }),
+      ),
+    };
+    const owners = new Map<string, string>();
+    const duplicates: string[] = [];
+    for (const [storeName, open] of Object.entries(opens)) {
+      const storage = createFakeDurableObjectStorage();
+      try {
+        const database = new DurableObjectSqlDatabase(storage);
+        open(database);
+        const names = database.query<{ type: string; name: string }, []>(
+          "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' AND name <> '_sql_store_meta'",
+        ).all();
+        expect(names.length).toBeGreaterThan(0);
+        for (const { type, name } of names) {
+          const owner = owners.get(name);
+          if (owner) duplicates.push(`${type} ${name}: ${owner} and ${storeName}`);
+          else owners.set(name, storeName);
+        }
+      } finally {
+        storage.close();
+      }
+    }
+    expect(duplicates).toEqual([]);
+  });
+
   test('an in-memory injected database is refused where a durable store is required', () => {
     const memory = new BunSqlDatabase(':memory:');
     try {

@@ -51,6 +51,19 @@ test('loads an approved bounded manifest from the mounted artifact', () => {
   expect(resolveArgentinaLaunchPolicyReadiness({ TAX_ENGINE_ARGENTINA_LAUNCH_POLICY_PATH: path }, new Date('2026-07-15T00:00:00.000Z')).state).toBe('approved_boundary');
 });
 
+test('accepts the policy as JSON text, capped at 64 KiB, and ignores the path', () => {
+  const asOf = new Date('2026-07-15T00:00:00.000Z');
+  const environment = { TAX_ENGINE_ARGENTINA_LAUNCH_POLICY_PATH: '/private/missing.json' };
+  expect(resolveArgentinaLaunchPolicyReadiness(environment, asOf, 'null')).toMatchObject({
+    state: 'blocked',
+    failedGateIds: ['signed_decision_memo_missing'],
+  });
+  expect(() => resolveArgentinaLaunchPolicyReadiness(environment, asOf, '{'))
+    .toThrow('ARGENTINA_LAUNCH_POLICY_CONFIGURATION_REQUIRED');
+  expect(() => resolveArgentinaLaunchPolicyReadiness(environment, asOf, ' '.repeat(64 * 1024 + 1)))
+    .toThrow('ARGENTINA_LAUNCH_POLICY_TOO_LARGE');
+});
+
 describe('funding boundary', () => {
   test('keeps consented factoring evidence separate from funding authority', () => {
     expect(() => assertNoTaxEngineFundingAuthority({})).not.toThrow();

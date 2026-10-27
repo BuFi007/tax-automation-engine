@@ -26,11 +26,11 @@ export class HttpWsfePointOfSaleGateway implements WsfePointOfSaleGateway {
     this.#origin = endpoint.origin;
   }
 
-  static fromEnvironment(): HttpWsfePointOfSaleGateway | null {
+  static fromEnvironment(fetcher?: WsfeFetch): HttpWsfePointOfSaleGateway | null {
     const baseUrl = process.env.ARCA_WSFE_SIGNER_URL ?? '';
     const token = process.env.ARCA_WSFE_SIGNER_TOKEN ?? '';
     const environment = process.env.ARCA_ENVIRONMENT === 'production' ? 'production' as const : 'homologation' as const;
-    return baseUrl && token ? new HttpWsfePointOfSaleGateway({ baseUrl, token, environment }, undefined, assertArcaFiscalBeta) : null;
+    return baseUrl && token ? new HttpWsfePointOfSaleGateway({ baseUrl, token, environment }, fetcher, assertArcaFiscalBeta) : null;
   }
 
   discoverPointsOfSale(input: Readonly<{ workspaceId: string; issuerProfileRef: string }>): Promise<PointOfSaleDiscovery> {

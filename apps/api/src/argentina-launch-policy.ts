@@ -12,7 +12,19 @@ const MAX_POLICY_BYTES = 64 * 1024;
 export function resolveArgentinaLaunchPolicyReadiness(
   environment: EnvironmentSource = process.env,
   now = new Date(),
+  /** The policy JSON itself (the Worker's bundled module); when given, the path is not read. */
+  policyJson?: string,
 ): ArgentinaLaunchPolicyReadinessV1 {
+  if (policyJson !== undefined) {
+    if (Buffer.byteLength(policyJson) > MAX_POLICY_BYTES) throw new Error('ARGENTINA_LAUNCH_POLICY_TOO_LARGE');
+    let value: unknown;
+    try {
+      value = JSON.parse(policyJson) as unknown;
+    } catch {
+      throw new Error('ARGENTINA_LAUNCH_POLICY_CONFIGURATION_REQUIRED');
+    }
+    return argentinaLaunchPolicyReadiness(value, now);
+  }
   const path = environment.TAX_ENGINE_ARGENTINA_LAUNCH_POLICY_PATH;
   if (!path) return argentinaLaunchPolicyReadiness(null, now);
   let value: unknown;
