@@ -12,7 +12,7 @@ import {
 } from '@tax-engine/arca-setup-contract';
 
 import { DEFAULT_ARCA_PORTAL_URLS, PlaywrightArcaPortal, type ArcaPortalUrls } from './arca-portal';
-import { HttpBoundaryExecutorClient } from './boundary-client';
+import { boundaryExecutorClient, postReceipt } from './bindings';
 import {
   closeSessionForReal,
   handoffActive,
@@ -33,7 +33,6 @@ import { arcaGuardrailPolicy } from './guardrails';
 import { currentHandoff, TICKET_REFUSAL_MESSAGES, ticketRefusal } from './session-policy';
 import type { ExecutorEnv } from './env';
 import { runArcaSetupOperation, type ReceiptDraft } from './operations';
-import { refuseRedirect } from './http';
 
 type Role = 'customer' | 'provider';
 type Current = {
@@ -177,7 +176,7 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
       if (await this.cancelled()) return 'cancelled' as const;
       const result = await runArcaSetupOperation(order, {
         portal,
-        boundary: new HttpBoundaryExecutorClient(this.env.ARCA_BOUNDARY_URL, this.env.ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN),
+        boundary: boundaryExecutorClient(this.env),
         providerCuit: this.env.ARCA_PROVIDER_CUIT ?? null,
         providerAlias: this.env.ARCA_PROVIDER_ALIAS ?? null,
         now: () => new Date(),
@@ -418,13 +417,12 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
       if (entry.nextAt > Date.now()) continue;
       const body = JSON.stringify(entry.receipt);
       try {
-        const response = await fetch(this.env.TAX_RECEIPT_URL, {
+        const response = await postReceipt(this.env, {
           method: 'POST',
-          redirect: 'manual',
           headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.env.ARCA_SETUP_RECEIPT_SECRET, 'receipt', body)) },
           body,
           signal: AbortSignal.timeout(15_000),
-        }).then(refuseRedirect);
+        });
         // 409/400 mean the tax engine already decided this receipt; stop resending.
         if (response.ok || response.status === 409 || response.status === 400) {
           delivered.add(entry.receipt.receiptId);

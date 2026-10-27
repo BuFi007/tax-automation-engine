@@ -13,13 +13,14 @@
     "bindings": [{ "name": "TAX_STATE", "class_name": "TaxState" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TaxState"] }],
-  // ARCA_SETUP_EXECUTOR (service bufi-arca-setup-executor-homologation) is added in
-  // the second deploy pass: a binding to a Worker that does not exist yet fails to deploy.
+  // API and executor bind each other: a first deploy omits ARCA_SETUP_EXECUTOR
+  // (pass 1), then adds it once the executor exists (pass 2).
   "services": [
     { "binding": "ARCA_BOUNDARY", "service": "bufi-arca-boundary-homologation" },
     { "binding": "ARCA_BOUNDARY_ADMIN", "service": "bufi-arca-boundary-homologation", "entrypoint": "AdminEntrypoint" },
     { "binding": "WSFE_SIGNER", "service": "bufi-wsfe-signer-homologation" },
-    { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer-homologation" }
+    { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer-homologation" },
+    { "binding": "ARCA_SETUP_EXECUTOR", "service": "bufi-arca-setup-executor-homologation" }
   ],
   // Hourly watchdog only; the Durable Object alarm is work-driven and durable.
   "triggers": { "crons": ["0 * * * *"] },
@@ -46,7 +47,8 @@
         { "binding": "ARCA_BOUNDARY", "service": "bufi-arca-boundary" },
         { "binding": "ARCA_BOUNDARY_ADMIN", "service": "bufi-arca-boundary", "entrypoint": "AdminEntrypoint" },
         { "binding": "WSFE_SIGNER", "service": "bufi-wsfe-signer" },
-        { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer" }
+        { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer" },
+        { "binding": "ARCA_SETUP_EXECUTOR", "service": "bufi-arca-setup-executor" }
       ],
       "vars": {
         "ARCA_ENVIRONMENT": "production",

@@ -8,6 +8,7 @@ import {
 
 import { z } from 'zod';
 
+import { requireServiceBindings } from './bindings';
 import type { ExecutorEnv } from './env';
 import { runProof } from './proof';
 
@@ -110,6 +111,7 @@ function assertConfigured(env: ExecutorEnv): void {
   const secrets = [env.ARCA_SETUP_ORDER_SECRET, env.ARCA_SETUP_RECEIPT_SECRET, env.ARCA_SETUP_HANDOFF_SECRET, env.ARCA_BOUNDARY_SETUP_EXECUTOR_TOKEN];
   if (secrets.some(secret => !secret || secret.length < 32) || new Set(secrets).size !== secrets.length)
     throw new Error('ARCA_SETUP_EXECUTOR_CONFIGURATION_REQUIRED');
+  requireServiceBindings(env);
   if (env.ARCA_ENVIRONMENT !== 'homologation' && env.ARCA_ENVIRONMENT !== 'production')
     throw new Error('ARCA_SETUP_EXECUTOR_CONFIGURATION_REQUIRED');
 }

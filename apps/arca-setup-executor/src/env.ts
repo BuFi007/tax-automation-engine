@@ -6,9 +6,12 @@ export interface ExecutorEnv {
   /** Public base URL of this Worker, used to build handoff links. */
   PUBLIC_BASE_URL: string;
   ARCA_ENVIRONMENT: 'homologation' | 'production';
-  /** Tax engine endpoint that accepts signed receipts. */
+  /** Boundary `ExecutorEntrypoint` (executor routes only) and the Tax API (receipts). */
+  ARCA_BOUNDARY: Fetcher;
+  TAX: Fetcher;
+  /** Synthetic request URL for receipts, sent through `TAX`; never resolved. */
   TAX_RECEIPT_URL: string;
-  /** ARCA boundary origin for executor-scoped setup calls. */
+  /** Synthetic boundary origin for setup calls, sent through `ARCA_BOUNDARY`; never resolved. */
   ARCA_BOUNDARY_URL: string;
   /** BUFI's representative CUIT and computer alias for provider delegation. Public values. */
   ARCA_PROVIDER_CUIT?: string;
