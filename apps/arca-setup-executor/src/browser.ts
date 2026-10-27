@@ -9,24 +9,20 @@ import {
   type Page,
 } from '@cloudflare/playwright';
 
+import { ARCA_ALLOWED_DOMAINS, blockedByGuardrails, hostnameAllowed, validateGuardrailPolicy, type GuardrailPolicy } from './guardrails';
+
+export { ARCA_ALLOWED_DOMAINS };
+
 /**
  * Cloudflare Browser Run session lifecycle.
  *
  * - Sessions are acquired with recording off and outbound guardrails limited to
- *   ARCA, so a hijacked page cannot exfiltrate to arbitrary hosts.
+ *   ARCA (see `./guardrails`), so a hijacked page cannot exfiltrate to arbitrary
+ *   hosts and a Live View viewer cannot navigate away.
  * - `connect` + `browser.close()` only DISCONNECTS (Playwright semantics for a
  *   connected session). Ending a session needs `closeSession`, which this
  *   module performs explicitly and then verifies.
  */
-
-export const ARCA_ALLOWED_DOMAINS = [
-  'afip.gob.ar',
-  '*.afip.gob.ar',
-  'afip.gov.ar',
-  '*.afip.gov.ar',
-  'arca.gob.ar',
-  '*.arca.gob.ar',
-] as const;
 
 export const SESSION_KEEP_ALIVE_MS = 600_000;
 export const HANDOFF_TIMEOUT_MS = 15 * 60_000;
@@ -36,13 +32,97 @@ export type BrowserBinding = BrowserWorker & {
   closeSession?: (sessionId: string) => Promise<unknown>;
 };
 
-export async function openSession(binding: BrowserBinding, allowedDomains: readonly string[] = ARCA_ALLOWED_DOMAINS): Promise<string> {
+export async function openSession(
+  binding: BrowserBinding,
+  policy: GuardrailPolicy = { allowedDomains: [...ARCA_ALLOWED_DOMAINS] },
+  options: Readonly<{ lab?: boolean }> = {},
+): Promise<string> {
   const { sessionId } = await acquire(binding, {
     keep_alive: SESSION_KEEP_ALIVE_MS,
     recording: false,
-    guardrails: { allowedDomains: [...allowedDomains], allowedDomainSets: ['common-cdns'] },
-  });
+    guardrails: validateGuardrailPolicy(policy),
+    // Lab sessions run experimental Chrome (WebMCP). Proof routes only; never a customer session.
+    ...(options.lab ? { lab: true } : {}),
+  } as Parameters<typeof acquire>[1]);
   return sessionId;
+}
+
+/**
+ * Watch for Browser Run guardrail blocks on this page. A blocked MAIN-FRAME
+ * navigation means the tab is showing Cloudflare's 403, not ARCA: callers stop
+ * with a stable code instead of reading it.
+ */
+export function watchGuardrailBlocks(page: Page): Readonly<{ mainFrameBlocked: () => boolean; blockedHosts: () => string[] }> {
+  let mainFrameBlocked = false;
+  const hosts = new Set<string>();
+  page.on('response', response => {
+    if (!blockedByGuardrails(response.status(), response.headers())) return;
+    try {
+      hosts.add(new URL(response.url()).hostname);
+    } catch {
+      // Unparseable URL: still counted below.
+    }
+    if (response.request().isNavigationRequest() && response.frame() === page.mainFrame()) mainFrameBlocked = true;
+  });
+  return { mainFrameBlocked: () => mainFrameBlocked, blockedHosts: () => [...hosts].slice(0, 20) };
+}
+
+export function pageOnAllowedHost(page: Page, allowedDomains: readonly string[] = ARCA_ALLOWED_DOMAINS): boolean {
+  try {
+    const url = new URL(page.url());
+    return url.protocol === 'https:' && hostnameAllowed(url.hostname, allowedDomains);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replace the tab with a fresh one on the same ARCA page. Live View connects to
+ * a page TARGET, so closing the old target ends every link issued for it —
+ * this is how a returned (or reassigned) controller loses the interactive tab.
+ * Cookies live in the context, so the customer's ARCA login survives.
+ */
+export async function rotateTab(page: Page): Promise<Page> {
+  const destination = pageOnAllowedHost(page) ? page.url() : null;
+  const fresh = await page.context().newPage();
+  if (destination) await fresh.goto(destination, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+  await page.close().catch(() => undefined);
+  return fresh;
+}
+
+export async function targetIdOf(page: Page): Promise<string> {
+  const cdp = await cdpFor(page);
+  const { targetInfo } = await cdp.send('Target.getTargetInfo');
+  return targetInfo.targetId;
+}
+
+/**
+ * A READ-ONLY Live View for one page target. Cloudflare applies the readonly
+ * guardrail only through its REST API (the CDP command has no viewer
+ * guardrails), so this needs an account-scoped token. It blocks navigation,
+ * input and JavaScript evaluation for this connection only.
+ */
+export async function readonlyLiveViewUrl(
+  credentials: Readonly<{ accountId: string; apiToken: string }>,
+  sessionId: string,
+  targetId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  const response = await fetcher(
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(credentials.accountId)}/browser-run/devtools/browser/${encodeURIComponent(sessionId)}/live_view`,
+    {
+      method: 'POST',
+      redirect: 'error',
+      headers: { authorization: `Bearer ${credentials.apiToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'tab', expiresInMs: 60_000, targetId, guardrails: { mode: 'readonly' } }),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  const payload = await response.json().catch(() => null) as { result?: { devtoolsFrontendUrl?: unknown }; devtoolsFrontendUrl?: unknown } | null;
+  const url = payload?.result?.devtoolsFrontendUrl ?? payload?.devtoolsFrontendUrl;
+  if (!response.ok || typeof url !== 'string' || !url.startsWith('https://live.browser.run/'))
+    throw new Error('ARCA_LIVE_VIEW_UNAVAILABLE');
+  return url;
 }
 
 export async function sessionAlive(binding: BrowserBinding, sessionId: string): Promise<boolean> {

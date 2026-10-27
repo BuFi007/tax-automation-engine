@@ -16,11 +16,12 @@ const actorId = z.string().min(1).max(300);
  * trusted host (Motora) for this exact method, path and body.
  */
 const START_PATH = /^\/v1\/arca-onboarding\/runs\/([^/]+)\/automation$/;
-const ACTION_PATH = /^\/v1\/arca-onboarding\/automation\/([0-9a-f-]{36})\/(authorization|handoff-link|decision|retry|cancel)$/;
+const ACTION_PATH = /^\/v1\/arca-onboarding\/automation\/([0-9a-f-]{36})\/(authorization|handoff-link|view-link|control-link|control|decision|retry|cancel)$/;
 const READ_PATH = /^\/v1\/arca-onboarding\/automation\/([0-9a-f-]{36})$/;
+const CONTROL_READ_PATH = /^\/v1\/arca-onboarding\/automation\/([0-9a-f-]{36})\/control$/;
 
 export function isArcaSetupUserPath(pathname: string): boolean {
-  return START_PATH.test(pathname) || ACTION_PATH.test(pathname) || READ_PATH.test(pathname);
+  return START_PATH.test(pathname) || ACTION_PATH.test(pathname) || READ_PATH.test(pathname) || CONTROL_READ_PATH.test(pathname);
 }
 
 /**
@@ -68,6 +69,13 @@ export async function handleArcaSetupUserRoute(
     assertTaxTenantPrincipalScope(principal, progress.workspaceId);
     return json({ data: progress });
   }
+  const controlRead = url.pathname.match(CONTROL_READ_PATH);
+  if (controlRead && request.method === 'GET') {
+    const actor = url.searchParams.get('actorId') ?? '';
+    const execution = service.get(controlRead[1]!);
+    assertTaxTenantPrincipalScope(principal, execution.workspaceId, actorId.parse(actor));
+    return json({ data: await service.controlStatus({ executionId: execution.executionId, actorId: actor }) });
+  }
   if (!action || request.method !== 'POST') return null;
   const executionId = action[1]!;
   const execution = service.get(executionId);
@@ -100,6 +108,26 @@ export async function handleArcaSetupUserRoute(
       assertTaxTenantPrincipalScope(principal, execution.workspaceId, body.actorId);
       // The link is a credential for the hosted tab: private, never cached, UI channel only.
       return json({ data: await service.handoffLink({ executionId, actorId: body.actorId, purpose: 'customer_authentication' }) }, 200, true);
+    }
+    case 'view-link':
+    case 'control-link': {
+      const body = z.object({ actorId }).strict().parse(raw);
+      assertTaxTenantPrincipalScope(principal, execution.workspaceId, body.actorId);
+      // Read-only preview, or the interactive tab for the acknowledged controller only.
+      return json({ data: await service.handoffLink({
+        executionId,
+        actorId: body.actorId,
+        purpose: action[2] === 'view-link' ? 'customer_view' : 'customer_control',
+      }) }, 200, true);
+    }
+    case 'control': {
+      const body = z.object({
+        actorId,
+        action: z.enum(['pause', 'resume', 'take_control', 'return_control']),
+        requestId: z.uuid(),
+      }).strict().parse(raw);
+      assertTaxTenantPrincipalScope(principal, execution.workspaceId, body.actorId);
+      return json({ data: await service.control({ executionId, ...body }) });
     }
     case 'decision': {
       const body = z.object({

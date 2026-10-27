@@ -29,9 +29,12 @@ import {
   type ArcaSetupWireOrder,
 } from '@tax-engine/arca-setup-contract';
 
+import { arcaSetupControlV1Schema, type ArcaSetupControlV1 } from '@tax-engine/browser-contracts/arca-onboarding';
+
 import type { ArcaOnboardingService } from './arca-onboarding';
 import type { ArcaSetupBoundaryGateway, ArcaSetupExecutorGateway } from './arca-setup-clients';
-import { ArcaSetupStore } from './arca-setup-store';
+import { ArcaSetupStore, type ArcaSetupControlSnapshot } from './arca-setup-store';
+import { createHash, randomUUID } from 'node:crypto';
 
 /**
  * Automated ARCA connection service.
@@ -230,22 +233,85 @@ export class ArcaSetupAutomationService {
   async handoffLink(input: Readonly<{
     executionId: string;
     actorId: string;
-    purpose: 'customer_authentication' | 'provider_authentication';
+    purpose: 'customer_authentication' | 'provider_authentication' | 'customer_view' | 'customer_control';
   }>): Promise<Readonly<{ url: string; expiresAt: string }>> {
     this.requireConfigured();
     if (!this.deps.handoffSecret) throw new Error('ARCA_SETUP_HANDOFF_CONFIGURATION_REQUIRED');
     const execution = this.get(input.executionId);
     const operation = execution.currentOrder?.operation;
     const expected = input.purpose === 'provider_authentication' ? 'provider_accept' : undefined;
+    const terminal = execution.phase === 'connected' || execution.phase === 'cancelled' || execution.phase === 'failed';
     if (
       (input.purpose === 'customer_authentication' && execution.phase !== 'awaiting_user_authentication')
       || (input.purpose === 'provider_authentication' && operation !== expected)
+      || ((input.purpose === 'customer_view' || input.purpose === 'customer_control') && terminal)
     ) throw new Error('ARCA_SETUP_HANDOFF_NOT_PENDING');
+    // The customer-facing tickets carry the opaque actor ref the executor's control state uses.
+    const ticketActor = input.purpose === 'customer_view' || input.purpose === 'customer_control'
+      ? actorRefFor(execution.executionId, input.actorId)
+      : input.actorId;
+    if (input.purpose === 'customer_control') {
+      const control = this.deps.store.control(execution.executionId);
+      if (control?.mode !== 'human' || control.controllerRef !== ticketActor) throw new Error('ARCA_CONTROL_NOT_HOLDER');
+    }
     const minted = await mintArcaSetupHandoffTicket(this.deps.handoffSecret, {
-      executionId: execution.executionId, actorId: input.actorId, purpose: input.purpose,
+      executionId: execution.executionId, actorId: ticketActor, purpose: input.purpose,
     }, this.clock());
     this.deps.store.setPrivate(execution.executionId, { lastHandoffTicketHash: minted.ticketHash }, this.now());
     return { url: this.deps.executor!.handoffUrl(execution.executionId, minted.ticket), expiresAt: minted.expiresAt };
+  }
+
+  /**
+   * Pause, resume, take or return control. The executor applies it at a safe
+   * point and enforces it; this relays its signed answer, so a "paused" here
+   * means the session transport acknowledged it, not that a button was hit.
+   */
+  async control(input: Readonly<{
+    executionId: string;
+    actorId: string;
+    action: 'pause' | 'resume' | 'take_control' | 'return_control';
+    requestId?: string;
+  }>): Promise<ArcaSetupControlV1> {
+    this.requireConfigured();
+    const execution = this.get(input.executionId);
+    if (execution.phase === 'connected' || execution.phase === 'cancelled' || execution.phase === 'failed')
+      throw new Error('ARCA_SETUP_TERMINAL');
+    const actorRef = actorRefFor(execution.executionId, input.actorId);
+    const { state, conflict } = await this.deps.executor!.control({
+      version: 'arca-setup-control-v1',
+      executionId: execution.executionId,
+      action: input.action,
+      actorRef,
+      requestId: input.requestId ?? randomUUID(),
+      requestedAt: this.now(),
+    });
+    this.recordControl(execution.executionId, state);
+    if (conflict) throw new Error(conflict);
+    return projectControl(execution.executionId, state, actorRef);
+  }
+
+  async controlStatus(input: Readonly<{ executionId: string; actorId: string }>): Promise<ArcaSetupControlV1> {
+    this.requireConfigured();
+    const execution = this.get(input.executionId);
+    const state = await this.deps.executor!.controlState(execution.executionId);
+    this.recordControl(execution.executionId, state);
+    return projectControl(execution.executionId, state, actorRefFor(execution.executionId, input.actorId));
+  }
+
+  private recordControl(executionId: string, state: ArcaSetupControlSnapshot): void {
+    const before = this.deps.store.control(executionId);
+    this.deps.store.setControl(executionId, {
+      mode: state.mode,
+      controllerRef: state.controllerRef,
+      requestId: state.requestId,
+      acknowledgedAt: state.acknowledgedAt,
+      handoff: state.handoff,
+      rejection: state.rejection,
+      generation: state.generation,
+      observedAt: state.observedAt,
+    });
+    // Automation is back: let the scheduler move the run on.
+    if (before && before.mode !== 'automation' && state.mode === 'automation') void this.advance(executionId).catch(() => undefined);
   }
 
   async cancel(input: Readonly<{
@@ -350,6 +416,8 @@ export class ArcaSetupAutomationService {
     const plan = planArcaSetup(execution, run, now);
     switch (plan.kind) {
       case 'dispatch':
+        // Paused or human-held: no new order. The executor refuses it too.
+        if ((this.deps.store.control(execution.executionId)?.mode ?? 'automation') !== 'automation') return false;
         await this.dispatch(execution, plan.operation, plan.parameters);
         return false;
       case 'await_order':
@@ -642,4 +710,28 @@ function expiredReceipt(execution: ArcaSetupExecutionV1, now: string): ArcaSetup
 function uuidFrom(seed: string): string {
   const hex = hashCanonical(seed);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Opaque per-execution actor reference: the executor never learns a member id. */
+export function actorRefFor(executionId: string, actorId: string): string {
+  return `actor:${createHash('sha256').update(`arca-setup-actor-v1\u0000${executionId}\u0000${actorId}`).digest('hex')}`;
+}
+
+function projectControl(executionId: string, state: ArcaSetupControlSnapshot, actorRef: string): ArcaSetupControlV1 {
+  const pendingAction = state.mode === 'pause_requested' ? 'pause'
+    : state.mode === 'control_requested' ? 'take_control'
+      : state.mode === 'return_requested' ? 'return_control'
+        : null;
+  return arcaSetupControlV1Schema.parse({
+    version: 'arca-setup-control-v1',
+    executionId,
+    mode: state.mode,
+    heldBy: state.controllerRef === null ? null : state.controllerRef === actorRef ? 'you' : 'another_member',
+    pendingAction,
+    acknowledgedAt: state.acknowledgedAt,
+    handoff: state.handoff,
+    rejection: state.rejection,
+    generation: state.generation,
+    observedAt: state.observedAt,
+  });
 }

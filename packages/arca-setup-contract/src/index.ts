@@ -123,7 +123,14 @@ export const arcaSetupHandoffTicketSchema = z.object({
   version: z.literal('arca-setup-handoff-ticket-v1'),
   executionId: z.uuid(),
   actorId: z.string().min(1).max(300),
-  purpose: z.enum(['customer_authentication', 'provider_authentication']),
+  /**
+   * `*_authentication`: the private sign-in tab while ARCA asks for credentials.
+   * `customer_view`: a READ-ONLY stream (Cloudflare Live View readonly guardrail)
+   *   for the job player; refused while credentials are being entered.
+   * `customer_control`: the interactive tab, only for the session's current
+   *   controller after the executor acknowledged a take-control request.
+   */
+  purpose: z.enum(['customer_authentication', 'provider_authentication', 'customer_view', 'customer_control']),
   nonce: z.string().regex(/^[A-Za-z0-9_-]{22,64}$/),
   expiresAt: iso,
 }).strict();
@@ -132,7 +139,71 @@ export type ArcaSetupHandoffTicket = z.infer<typeof arcaSetupHandoffTicketSchema
 export const ARCA_SETUP_HANDOFF_TICKET_MAX_TTL_MS = 120_000;
 export const ARCA_SETUP_SIGNATURE_MAX_SKEW_MS = 300_000;
 
-export type ArcaSetupSignaturePurpose = 'order' | 'receipt' | 'cancel' | 'cancel-receipt' | 'handoff-ticket';
+export type ArcaSetupSignaturePurpose =
+  | 'order'
+  | 'receipt'
+  | 'cancel'
+  | 'cancel-receipt'
+  | 'handoff-ticket'
+  | 'control'
+  | 'control-state';
+
+/**
+ * Execution control. One controller per browser session, enforced by the
+ * executor (the session transport), never by the UI:
+ *
+ * - `pause` asks automation to stop at the next safe point (between orders,
+ *   or while waiting on a human). It stays `pause_requested` until the
+ *   executor acknowledges it as `paused`.
+ * - `resume` continues the SAME execution from `paused`.
+ * - `take_control` pauses automation, then grants ONE actor the interactive
+ *   tab (`human`). Every other viewer stays read-only.
+ * - `return_control` asks the executor to validate the handoff (no open
+ *   Cloudflare handoff, tab still on an allowed host) and resume automation.
+ *   The controller's tab is rotated, so its Live View link stops working.
+ */
+export const arcaSetupControlActionSchema = z.enum(['pause', 'resume', 'take_control', 'return_control']);
+export type ArcaSetupControlAction = z.infer<typeof arcaSetupControlActionSchema>;
+
+export const arcaSetupControlSchema = z.object({
+  version: z.literal('arca-setup-control-v1'),
+  executionId: z.uuid(),
+  action: arcaSetupControlActionSchema,
+  /** Opaque, tax-engine-derived reference of the requesting actor; never an email or CUIT. */
+  actorRef: z.string().regex(/^actor:[a-f0-9]{64}$/),
+  requestId: z.uuid(),
+  requestedAt: iso,
+}).strict();
+export type ArcaSetupWireControl = z.infer<typeof arcaSetupControlSchema>;
+
+export const arcaSetupControlModeSchema = z.enum([
+  'automation',
+  'pause_requested',
+  'paused',
+  'control_requested',
+  'human',
+  'return_requested',
+]);
+export type ArcaSetupControlMode = z.infer<typeof arcaSetupControlModeSchema>;
+
+export const arcaSetupControlStateSchema = z.object({
+  version: z.literal('arca-setup-control-state-v1'),
+  executionId: z.uuid(),
+  mode: arcaSetupControlModeSchema,
+  /** The actor holding the interactive tab, or the one who asked for it. */
+  controllerRef: z.string().regex(/^actor:[a-f0-9]{64}$/).nullable(),
+  requestId: z.uuid().nullable(),
+  requestedAt: iso.nullable(),
+  acknowledgedAt: iso.nullable(),
+  /** Bumped every time the interactive tab is rotated. */
+  generation: z.number().int().min(0),
+  /** A Cloudflare human handoff is open; `authentication` means credentials are being typed. */
+  handoff: z.enum(['none', 'authentication', 'choice']),
+  /** A handoff the executor refused to return from, with a stable reason. */
+  rejection: code.nullable(),
+  observedAt: iso,
+}).strict();
+export type ArcaSetupWireControlState = z.infer<typeof arcaSetupControlStateSchema>;
 
 export const ARCA_SETUP_TIMESTAMP_HEADER = 'x-arca-setup-timestamp';
 export const ARCA_SETUP_SIGNATURE_HEADER = 'x-arca-setup-signature';

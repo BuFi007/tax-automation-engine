@@ -26,6 +26,17 @@ export type ArcaSetupPrivate = Readonly<{
   cleanupPending: boolean;
 }>;
 
+export type ArcaSetupControlSnapshot = Readonly<{
+  mode: 'automation' | 'pause_requested' | 'paused' | 'control_requested' | 'human' | 'return_requested';
+  controllerRef: string | null;
+  requestId: string | null;
+  acknowledgedAt: string | null;
+  handoff: 'none' | 'authentication' | 'choice';
+  rejection: string | null;
+  generation: number;
+  observedAt: string;
+}>;
+
 export class ArcaSetupStore {
   readonly #db: Database;
 
@@ -34,6 +45,11 @@ export class ArcaSetupStore {
     this.#db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
+      CREATE TABLE IF NOT EXISTS arca_setup_control (
+        execution_id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        observed_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS arca_setup_revisions (
         execution_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -185,6 +201,20 @@ export class ArcaSetupStore {
         cleanup_pending = excluded.cleanup_pending,
         updated_at = excluded.updated_at
     `).run(executionId, next.setupRef, next.enrollmentRef, next.providerAcceptanceEvidenceHash, next.lastHandoffTicketHash, next.cleanupPending ? 1 : 0, at);
+  }
+
+  /** The last control state the executor reported (it, not this table, enforces control). */
+  control(executionId: string): ArcaSetupControlSnapshot | null {
+    const row = this.#db.query<{ state_json: string }, [string]>('SELECT state_json FROM arca_setup_control WHERE execution_id = ?').get(executionId);
+    return row ? JSON.parse(row.state_json) as ArcaSetupControlSnapshot : null;
+  }
+
+  setControl(executionId: string, snapshot: ArcaSetupControlSnapshot): void {
+    this.#db.query(`
+      INSERT INTO arca_setup_control (execution_id, state_json, observed_at) VALUES (?, ?, ?)
+      ON CONFLICT(execution_id) DO UPDATE SET state_json = excluded.state_json, observed_at = excluded.observed_at
+      WHERE excluded.observed_at >= arca_setup_control.observed_at
+    `).run(executionId, JSON.stringify(snapshot), snapshot.observedAt);
   }
 
   listCleanupPending(limit = 50): readonly string[] {

@@ -44,3 +44,26 @@ describe('ARCA setup wire contract', () => {
     expect(await canonicalHash(value)).toBe(hashCanonical(value));
   });
 });
+
+describe('ARCA setup execution control', () => {
+  test('control requests carry an opaque actor ref, never a raw identity', async () => {
+    const { arcaSetupControlSchema } = await import('./index');
+    const base = {
+      version: 'arca-setup-control-v1', executionId: '22222222-2222-4222-8222-222222222222', action: 'take_control',
+      requestId: '33333333-3333-4333-8333-333333333333', requestedAt: '2026-10-26T12:00:00.000Z',
+    } as const;
+    expect(arcaSetupControlSchema.safeParse({ ...base, actorRef: `actor:${'a'.repeat(64)}` }).success).toBe(true);
+    expect(arcaSetupControlSchema.safeParse({ ...base, actorRef: 'customer@example.com' }).success).toBe(false);
+    expect(arcaSetupControlSchema.safeParse({ ...base, actorRef: `actor:${'a'.repeat(64)}`, liveViewUrl: 'x' }).success).toBe(false);
+  });
+
+  test('view and control tickets are distinct purposes', async () => {
+    const now = new Date('2026-10-26T12:00:00.000Z');
+    for (const purpose of ['customer_view', 'customer_control'] as const) {
+      const minted = await mintArcaSetupHandoffTicket(SECRET, {
+        executionId: '22222222-2222-4222-8222-222222222222', actorId: `actor:${'a'.repeat(64)}`, purpose,
+      }, now);
+      expect((await verifyArcaSetupHandoffTicket(SECRET, minted.ticket, now)).purpose).toBe(purpose);
+    }
+  });
+});

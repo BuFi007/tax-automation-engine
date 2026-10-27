@@ -1,10 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import {
+  arcaSetupControlSchema,
   arcaSetupOrderSchema,
   sha256Hex,
   signArcaSetupMessage,
   verifyArcaSetupHandoffTicket,
+  type ArcaSetupWireControlState,
   type ArcaSetupWireOrder,
   type ArcaSetupWireReceipt,
 } from '@tax-engine/arca-setup-contract';
@@ -16,11 +18,18 @@ import {
   handoffActive,
   liveViewUrl,
   openSession,
+  pageOnAllowedHost,
+  readonlyLiveViewUrl,
   requestHandoff,
+  rotateTab,
   sessionAlive,
+  targetIdOf,
   waitForHandoff,
+  watchGuardrailBlocks,
   withSessionPage,
 } from './browser';
+import { applyControlRequest, atSafePoint, automationMayRun, INITIAL_CONTROL, mayControl, type ControlState } from '@tax-engine/arca-setup-contract/control';
+import { arcaGuardrailPolicy } from './guardrails';
 import type { ExecutorEnv } from './env';
 import { runArcaSetupOperation, type ReceiptDraft } from './operations';
 
@@ -37,6 +46,8 @@ type OutboxEntry = { receipt: ArcaSetupWireReceipt; attempts: number; nextAt: nu
 /** Alarms run at most ~15 minutes; leave room to persist and reschedule. */
 const MAX_WAIT_IN_ALARM_MS = 12 * 60_000;
 const IDLE_CLOSE_MS = 20 * 60_000;
+/** While a human holds the session, touch it so Browser Run's idle keep-alive does not end it. */
+const HELD_TOUCH_MS = 4 * 60_000;
 
 const INSTRUCTIONS: Record<Role, Record<'authentication' | 'choice', string>> = {
   customer: {
@@ -64,6 +75,9 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
     if (request.method === 'POST' && url.pathname === '/order') return this.acceptOrder(await request.json());
     if (request.method === 'POST' && url.pathname === '/cancel') return this.cancel(await request.json() as { executionId: string });
     if (request.method === 'GET' && url.pathname === '/handoff') return this.openHandoff(url.searchParams.get('ticket') ?? '');
+    if (request.method === 'POST' && url.pathname === '/control') return this.requestControl(await request.json());
+    if (request.method === 'POST' && url.pathname === '/control-state')
+      return Response.json(await this.controlState((await request.json() as { executionId: string }).executionId));
     return Response.json({ error: 'NOT_FOUND' }, { status: 404 });
   }
 
@@ -71,13 +85,16 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
     await this.flushOutbox();
     if (!(await this.cancelled())) {
       const current = await this.current();
-      if (current && current.state !== 'done') {
+      const mayRun = await this.safePoint(current);
+      if (current && current.state !== 'done' && mayRun) {
         try {
           await this.execute(current);
         } catch (error) {
           // Unknown effect: never assume success. The tax engine re-inspects first.
           await this.finish(current.order, await receiptDraft('uncertain', codeOf(error, 'ARCA_SETUP_EXECUTOR_ERROR')));
         }
+      } else if (!mayRun) {
+        await this.touchHeldSession();
       } else {
         const meta = await this.meta();
         if (meta.doneAt && Date.now() - meta.doneAt > IDLE_CLOSE_MS) await this.closeAll();
@@ -129,12 +146,13 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
         await this.finish(order, await receiptDraft('blocked', 'BROWSER_SESSION_GONE'));
         return;
       }
-      sessionId = await openSession(this.env.BROWSER);
+      sessionId = await openSession(this.env.BROWSER, arcaGuardrailPolicy(this.env.ARCA_ENVIRONMENT, this.env.ARCA_GUARDRAIL_DOMAIN_SETS));
       await this.setSession(role, sessionId);
     }
 
     const outcome = await withSessionPage(this.env.BROWSER, sessionId, async page => {
       const portal = new PlaywrightArcaPortal(page, this.env.ARCA_ENVIRONMENT, this.portalUrls());
+      const guardrails = watchGuardrailBlocks(page);
 
       // A human step is open: wait for it without reading the page.
       if (current.state === 'awaiting_handoff' && current.handoff) {
@@ -142,6 +160,8 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
           const deadline = Date.now() + MAX_WAIT_IN_ALARM_MS;
           while (Date.now() < deadline && await handoffActive(page)) {
             if (await this.cancelled()) return 'cancelled' as const;
+            // A pause or take-control request is applied at the next alarm's safe point.
+            if (!automationMayRun(await this.control())) return 'still_waiting' as const;
             await new Promise(resolve => setTimeout(resolve, 3_000));
           }
           if (await handoffActive(page)) return 'still_waiting' as const;
@@ -160,6 +180,7 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
         providerAlias: this.env.ARCA_PROVIDER_ALIAS ?? null,
         now: () => new Date(),
       });
+      if (guardrails.mainFrameBlocked()) return receiptDraft('blocked', 'ARCA_GUARDRAIL_BLOCKED');
       if (result.outcome === 'handoff_required') return this.handoff(current, page, role, 'choice');
       return result;
     });
@@ -209,24 +230,127 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
     }
     const role: Role = claims.purpose === 'provider_authentication' ? 'provider' : 'customer';
     const ticketKey = `ticket:${await sha256Hex(ticket)}`;
-    const redeemable = await this.ctx.storage.transaction(async txn => {
+    const refusal = await this.ctx.storage.transaction(async txn => {
       const meta = await txn.get<Meta>('meta');
       const current = await txn.get<Current>('current');
-      if (
-        meta?.executionId !== claims.executionId
-        || await txn.get(ticketKey)
-        || current?.state !== 'awaiting_handoff'
-        || current.handoff?.role !== role
-      ) return false;
+      const control = (await txn.get<ControlState>('control')) ?? INITIAL_CONTROL;
+      if (meta?.executionId !== claims.executionId || await txn.get(ticketKey) || await txn.get<boolean>('cancelled'))
+        return 'Este enlace ya se usó o el trámite terminó. Volvé a BUFI.';
+      switch (claims.purpose) {
+        case 'customer_authentication':
+        case 'provider_authentication':
+          if (current?.state !== 'awaiting_handoff' || current.handoff?.role !== role) return 'No hay un ingreso pendiente para este trámite. Volvé a BUFI.';
+          break;
+        case 'customer_view':
+          // Credentials are being typed: no shared preview, only the private sign-in tab.
+          if (current?.state === 'awaiting_handoff' && current.handoff?.reason === 'authentication')
+            return 'Ingreso privado en curso. La vista previa vuelve cuando termines de ingresar.';
+          if (!this.env.CF_ACCOUNT_ID || !this.env.CF_LIVE_VIEW_API_TOKEN) return 'La vista previa no está disponible.';
+          break;
+        case 'customer_control':
+          if (!mayControl(control, claims.actorId)) return 'El control de esta sesión no es tuyo en este momento.';
+          break;
+      }
       await txn.put(ticketKey, Date.now());
-      return true;
+      return null;
     });
-    if (!redeemable) return new Response(page('No hay un ingreso pendiente para este trámite. Volvé a BUFI.'), { status: 409, headers: html });
+    if (refusal) return new Response(page(refusal), { status: 409, headers: html });
     const sessionId = (await this.sessions())[role];
     if (!sessionId) return new Response(page('La sesión segura terminó. Volvé a BUFI para empezar de nuevo.'), { status: 410, headers: html });
-    const location = await withSessionPage(this.env.BROWSER, sessionId, livePage => liveViewUrl(livePage, 60_000));
+    let location: string;
+    try {
+      location = await withSessionPage(this.env.BROWSER, sessionId, async livePage => claims.purpose === 'customer_view'
+        ? readonlyLiveViewUrl(
+          { accountId: this.env.CF_ACCOUNT_ID!, apiToken: this.env.CF_LIVE_VIEW_API_TOKEN! },
+          sessionId,
+          await targetIdOf(livePage),
+        )
+        : liveViewUrl(livePage, 60_000));
+    } catch {
+      return new Response(page('No pudimos abrir la sesión ahora. Probá de nuevo en unos segundos.'), { status: 503, headers: html });
+    }
     // The link leaves only toward the browser that presented the ticket, once.
     return new Response(null, { status: 302, headers: { ...headers, location } });
+  }
+
+  private async requestControl(raw: unknown): Promise<Response> {
+    const request = arcaSetupControlSchema.parse(raw);
+    const outcome = await this.ctx.storage.transaction(async txn => {
+      const meta = await txn.get<Meta>('meta');
+      if (!meta?.executionId || meta.executionId !== request.executionId) return { status: 409, code: 'ARCA_SETUP_EXECUTION_MISMATCH' };
+      if (await txn.get<boolean>('cancelled')) return { status: 409, code: 'ARCA_SETUP_CANCELLED' };
+      const result = applyControlRequest((await txn.get<ControlState>('control')) ?? INITIAL_CONTROL, request);
+      if (result.outcome === 'conflict') return { status: 409, code: result.code };
+      await txn.put('control', result.state);
+      return { status: 202, code: null };
+    });
+    if (outcome.status === 202) await this.ctx.storage.setAlarm(Date.now());
+    const state = await this.controlState(request.executionId);
+    return Response.json(outcome.code ? { error: outcome.code, state } : { state }, { status: outcome.status });
+  }
+
+  private async controlState(executionId: string): Promise<ArcaSetupWireControlState> {
+    const control = await this.control();
+    const current = await this.current();
+    return {
+      version: 'arca-setup-control-state-v1',
+      executionId,
+      mode: control.mode,
+      controllerRef: control.controllerRef,
+      requestId: control.requestId,
+      requestedAt: control.requestedAt,
+      acknowledgedAt: control.acknowledgedAt,
+      generation: control.generation,
+      handoff: current?.state === 'awaiting_handoff' && current.handoff ? current.handoff.reason : 'none',
+      rejection: control.rejection,
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Apply pending control requests where nothing is mid-operation: the alarm
+   * runs orders one at a time, so its start is between orders. Returns whether
+   * automation may touch the page now.
+   */
+  private async safePoint(current: Current | null): Promise<boolean> {
+    const before = await this.control();
+    if (!['pause_requested', 'control_requested', 'return_requested'].includes(before.mode)) return automationMayRun(before);
+    const sessionId = (await this.sessions()).customer;
+    const handoff = current?.state === 'awaiting_handoff' && current.handoff ? current.handoff.reason : 'none';
+    const result = sessionId && await sessionAlive(this.env.BROWSER, sessionId).catch(() => false)
+      ? await withSessionPage(this.env.BROWSER, sessionId, async page => {
+        const open = handoff === 'none' && await handoffActive(page).catch(() => false) ? 'choice' : handoff;
+        const applied = atSafePoint(before, { handoff: open, pageOnAllowedHost: pageOnAllowedHost(page), now: new Date() });
+        if (applied.rotateTab) await rotateTab(page);
+        return applied;
+      })
+      : atSafePoint(before, { handoff, pageOnAllowedHost: true, now: new Date() });
+    const stored = await this.ctx.storage.transaction(async txn => {
+      const latest = (await txn.get<ControlState>('control')) ?? INITIAL_CONTROL;
+      // A newer request arrived meanwhile: it is handled on the next alarm.
+      if (latest.requestId !== before.requestId) return false;
+      await txn.put('control', result.state);
+      return true;
+    });
+    if (stored && result.reinspect && current && current.state === 'queued') {
+      // Planned before the human acted: report it unknown so the tax engine re-inspects first.
+      await this.finish(current.order, await receiptDraft('uncertain', 'ARCA_CONTROL_RETURNED_REINSPECT'));
+      return false;
+    }
+    return stored ? automationMayRun(result.state) : false;
+  }
+
+  private async touchHeldSession(): Promise<void> {
+    const last = (await this.ctx.storage.get<number>('heldTouchAt')) ?? 0;
+    if (Date.now() - last < HELD_TOUCH_MS) return;
+    const sessionId = (await this.sessions()).customer;
+    if (!sessionId) return;
+    await withSessionPage(this.env.BROWSER, sessionId, async page => page.title()).catch(() => undefined);
+    await this.ctx.storage.put('heldTouchAt', Date.now());
+  }
+
+  private async control(): Promise<ControlState> {
+    return (await this.ctx.storage.get<ControlState>('control')) ?? INITIAL_CONTROL;
   }
 
   private async cancel(input: { executionId: string }): Promise<Response> {
@@ -330,7 +454,12 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
     const outbox = (await this.ctx.storage.get<OutboxEntry[]>('outbox')) ?? [];
     if (outbox.length > 0) candidates.push(Math.min(...outbox.map(entry => entry.nextAt)));
     const current = await this.current();
-    if (current && current.state !== 'done' && !(await this.cancelled())) candidates.push(Date.now() + 1_000);
+    const control = await this.control();
+    const cancelled = await this.cancelled();
+    const awaitingAck = ['pause_requested', 'control_requested', 'return_requested'].includes(control.mode);
+    if (!cancelled && awaitingAck) candidates.push(Date.now() + 1_000);
+    else if (!cancelled && !automationMayRun(control) && Object.keys(await this.sessions()).length > 0) candidates.push(Date.now() + 30_000);
+    else if (current && current.state !== 'done' && !cancelled) candidates.push(Date.now() + 1_000);
     const meta = await this.meta();
     if (meta.doneAt && Object.keys(await this.sessions()).length > 0) candidates.push(meta.doneAt + IDLE_CLOSE_MS + 1_000);
     if (candidates.length > 0) await this.ctx.storage.setAlarm(Math.max(Date.now(), Math.min(...candidates)));

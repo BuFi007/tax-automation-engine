@@ -123,3 +123,11 @@ Package `0.12.0` adds the automated ARCA connection contracts on the
 existing onboarding run bytes and both frozen fixture digests are unchanged.
 The handoff link is a short-lived credential for the signed-in customer's
 browser; consumers must never log it, cache it, or pass it to an agent.
+
+Package `0.13.0` adds `arcaSetupControlV1Schema` (`arca-setup-control-v1`) on
+`./arca-onboarding`: the per-caller view of who drives the hosted browser
+(automation, a pending or acknowledged pause, or one member's interactive
+control). The handoff link schema now also carries the read-only preview and
+the controller's interactive tab; both are single-use, two-minute credentials
+redeemed only in the signed-in member's browser. Additive; frozen fixture
+digests are unchanged.

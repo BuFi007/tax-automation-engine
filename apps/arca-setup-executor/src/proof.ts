@@ -3,7 +3,8 @@ import { connect } from '@cloudflare/playwright';
 
 import { readDownload } from './arca-portal';
 import type { Locator, Page } from '@cloudflare/playwright';
-import { ARCA_ALLOWED_DOMAINS, closeSessionForReal, handoffActive, sessionAlive, liveViewUrl, openSession, requestHandoff, waitForHandoff } from './browser';
+import { closeSessionForReal, handoffActive, liveViewUrl, openSession, readonlyLiveViewUrl, sessionAlive, requestHandoff, targetIdOf, waitForHandoff } from './browser';
+import { arcaGuardrailPolicy, blockedByGuardrails } from './guardrails';
 import type { ExecutorEnv } from './env';
 
 /**
@@ -61,13 +62,16 @@ export async function runProof(request: Request, env: ExecutorEnv): Promise<Resp
     results.fileTransfer = await proveFileTransfer(env, base);
     results.arcaReachability = await proveArcaReachability(env);
     results.handoff = await proveHandoff(env, base);
+    results.guardrails = await proveGuardrails(env, base);
+    results.readonlyLiveView = await proveReadonlyLiveView(env, base);
+    results.webmcp = await proveArcaWebMcp(env);
     return Response.json(results);
   }
   return new Response('Not found', { status: 404 });
 }
 
 async function proveFileTransfer(env: ExecutorEnv, base: URL) {
-  const sessionId = await openSession(env.BROWSER, [base.hostname]);
+  const sessionId = await openSession(env.BROWSER, { allowedDomains: [base.hostname] });
   try {
     const browser = await connect(env.BROWSER, sessionId);
     const context = browser.contexts()[0] ?? (await browser.newContext());
@@ -108,7 +112,7 @@ async function proveFileTransfer(env: ExecutorEnv, base: URL) {
 }
 
 async function proveArcaReachability(env: ExecutorEnv) {
-  const sessionId = await openSession(env.BROWSER, ARCA_ALLOWED_DOMAINS);
+  const sessionId = await openSession(env.BROWSER, arcaGuardrailPolicy(env.ARCA_ENVIRONMENT, env.ARCA_GUARDRAIL_DOMAIN_SETS));
   try {
     const browser = await connect(env.BROWSER, sessionId);
     const context = browser.contexts()[0] ?? (await browser.newContext());
@@ -198,7 +202,7 @@ async function downloadStrategies(page: Page, link: Locator) {
  * The Live View link is checked for shape and discarded, never returned.
  */
 async function proveHandoff(env: ExecutorEnv, base: URL) {
-  const sessionId = await openSession(env.BROWSER, [base.hostname]);
+  const sessionId = await openSession(env.BROWSER, { allowedDomains: [base.hostname] });
   try {
     const browser = await connect(env.BROWSER, sessionId);
     const context = browser.contexts()[0] ?? (await browser.newContext());
@@ -222,6 +226,102 @@ async function proveHandoff(env: ExecutorEnv, base: URL) {
       activeAfter,
       session: await closeSessionForReal(env.BROWSER, sessionId),
     };
+  } catch (error) {
+    return { error: String(error).slice(0, 300), session: await closeSessionForReal(env.BROWSER, sessionId) };
+  }
+}
+
+/**
+ * Guardrails in a real session: the allowed host loads; a host outside the
+ * allowlist answers Cloudflare's 403 with `cf-mitigated: guardrails`, both for
+ * a navigation and for a page-initiated fetch.
+ */
+async function proveGuardrails(env: ExecutorEnv, base: URL) {
+  const sessionId = await openSession(env.BROWSER, { allowedDomains: [base.hostname] });
+  try {
+    const browser = await connect(env.BROWSER, sessionId);
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    const allowed = await page.goto(new URL('/proof/fixtures/upload', base).toString());
+    const blocked = await page.goto('https://example.org/', { timeout: 15_000 }).catch(() => null);
+    const blockedHeaders = blocked?.headers() ?? {};
+    await page.goto(new URL('/proof/fixtures/upload', base).toString());
+    const fetchStatus = await page.evaluate(async () => {
+      try {
+        return (await fetch('https://example.org/', { mode: 'no-cors' })).type;
+      } catch {
+        return 'blocked';
+      }
+    });
+    await browser.close();
+    return {
+      allowedStatus: allowed?.status() ?? null,
+      blockedNavigation: blocked ? blockedByGuardrails(blocked.status(), blockedHeaders) : null,
+      blockedReason: blockedHeaders['cf-brapi-guardrails-reason'] ?? null,
+      pageFetchOutsideAllowlist: fetchStatus,
+      session: await closeSessionForReal(env.BROWSER, sessionId),
+    };
+  } catch (error) {
+    return { error: String(error).slice(0, 300), session: await closeSessionForReal(env.BROWSER, sessionId) };
+  }
+}
+
+/**
+ * The job player's preview: a readonly Live View for one target, and whether
+ * Cloudflare's hosted viewer may be framed by BUFI. The link itself is never
+ * returned, only the facts about it.
+ */
+async function proveReadonlyLiveView(env: ExecutorEnv, base: URL) {
+  if (!env.CF_ACCOUNT_ID || !env.CF_LIVE_VIEW_API_TOKEN) return { skipped: 'CF_LIVE_VIEW_CREDENTIALS_MISSING' };
+  const sessionId = await openSession(env.BROWSER, { allowedDomains: [base.hostname] });
+  try {
+    const browser = await connect(env.BROWSER, sessionId);
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(new URL('/proof/fixtures/upload', base).toString());
+    const url = await readonlyLiveViewUrl({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_LIVE_VIEW_API_TOKEN }, sessionId, await targetIdOf(page));
+    const viewer = await fetch(url, { redirect: 'manual' });
+    const csp = viewer.headers.get('content-security-policy') ?? '';
+    await browser.close();
+    return {
+      host: new URL(url).hostname,
+      viewerStatus: viewer.status,
+      xFrameOptions: viewer.headers.get('x-frame-options'),
+      frameAncestors: /frame-ancestors[^;]*/.exec(csp)?.[0] ?? null,
+      session: await closeSessionForReal(env.BROWSER, sessionId),
+    };
+  } catch (error) {
+    return { error: String(error).slice(0, 300), session: await closeSessionForReal(env.BROWSER, sessionId) };
+  }
+}
+
+/**
+ * Does ARCA expose WebMCP tools? A Lab session (experimental Chrome, never a
+ * customer session) opens the public login page and lists page tools through
+ * the CDP `WebMCP` domain. Zero tools means the portal keeps being driven by
+ * the Playwright locators; the result is evidence, not an assumption.
+ */
+async function proveArcaWebMcp(env: ExecutorEnv) {
+  const sessionId = await openSession(env.BROWSER, arcaGuardrailPolicy(env.ARCA_ENVIRONMENT, env.ARCA_GUARDRAIL_DOMAIN_SETS), { lab: true })
+    .catch(error => { throw new Error(`LAB_SESSION_UNAVAILABLE:${String(error).slice(0, 120)}`); });
+  try {
+    const browser = await connect(env.BROWSER, sessionId);
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    const cdp = await page.context().newCDPSession(page);
+    const tools: string[] = [];
+    cdp.on('WebMCP.toolsAdded' as never, ((event: { tools?: Array<{ name?: string }> }) => {
+      for (const tool of event.tools ?? []) if (typeof tool.name === 'string') tools.push(tool.name.slice(0, 80));
+    }) as never);
+    const enabled = await cdp.send('WebMCP.enable' as never).then(() => true, () => false);
+    await page.goto('https://auth.afip.gob.ar/contribuyente_/login.xhtml', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    const pageSide = await page.evaluate(async () => {
+      const context = (document as unknown as { modelContext?: { getTools?: () => Promise<Array<{ name: string }>> } }).modelContext;
+      return context?.getTools ? (await context.getTools()).map(tool => tool.name).slice(0, 50) : null;
+    }).catch(() => null);
+    await browser.close();
+    return { webmcpDomainEnabled: enabled, cdpTools: tools, pageTools: pageSide, session: await closeSessionForReal(env.BROWSER, sessionId) };
   } catch (error) {
     return { error: String(error).slice(0, 300), session: await closeSessionForReal(env.BROWSER, sessionId) };
   }

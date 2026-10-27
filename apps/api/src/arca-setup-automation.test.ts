@@ -9,8 +9,10 @@ import {
   type ArcaSetupWireInventory,
   type ArcaSetupWireOrder,
 } from '@tax-engine/arca-setup-contract';
-import { arcaSetupHandoffLinkV1Schema, arcaSetupProgressV1Schema } from '@tax-engine/browser-contracts/arca-onboarding';
+import { arcaSetupControlV1Schema, arcaSetupHandoffLinkV1Schema, arcaSetupProgressV1Schema } from '@tax-engine/browser-contracts/arca-onboarding';
 import { hashCanonical, type ArcaOnboardingRunV1 } from '@tax-engine/core';
+
+import { applyControlRequest, atSafePoint, INITIAL_CONTROL, type ControlState } from '@tax-engine/arca-setup-contract/control';
 
 import { invokeArcaConnectionAgentTool } from './arca-connection-agent-tools';
 import { ArcaOnboardingService } from './arca-onboarding';
@@ -49,6 +51,25 @@ class FakeExecutor implements ArcaSetupExecutorGateway {
   }
   handoffUrl(executionId: string, ticket: string) {
     return `https://executor.example/handoff/${executionId}?ticket=${encodeURIComponent(ticket)}`;
+  }
+  // The executor's real control state machine; a read is a safe point.
+  controlValue: ControlState = INITIAL_CONTROL;
+  async control(request: Parameters<ArcaSetupExecutorGateway['control']>[0]) {
+    const result = applyControlRequest(this.controlValue, request);
+    if (result.outcome !== 'conflict') this.controlValue = result.state;
+    return { state: this.wire(request.executionId), conflict: result.outcome === 'conflict' ? result.code : null };
+  }
+  async controlState(executionId: string) {
+    this.controlValue = atSafePoint(this.controlValue, { handoff: 'none', pageOnAllowedHost: true, now: new Date() }).state;
+    return this.wire(executionId);
+  }
+  private wire(executionId: string) {
+    const c = this.controlValue;
+    return {
+      version: 'arca-setup-control-state-v1' as const, executionId, mode: c.mode, controllerRef: c.controllerRef, requestId: c.requestId,
+      requestedAt: c.requestedAt, acknowledgedAt: c.acknowledgedAt, generation: c.generation, handoff: 'none' as const,
+      rejection: c.rejection, observedAt: new Date().toISOString(),
+    };
   }
   get last() { return this.orders.at(-1)!; }
 }
@@ -394,5 +415,38 @@ describe('automated ARCA connection', () => {
     // Existing active delegation: no new relationship, but BUFI's own acceptance receipt is still required.
     expect(service.status(started.executionId).phase).toBe('awaiting_provider_acceptance');
     expect(executor.orders.some(order => order.operation === 'delegate_to_provider')).toBe(false);
+  });
+
+  test('pause, take and return control are acknowledged by the executor and gate dispatch', async () => {
+    const { service, executor } = harness();
+    const started = await service.start({ onboardingId: ONBOARDING_ID, workspaceId: WORKSPACE, startedBy: { kind: 'user', actorId: 'user-1' }, idempotencyKey: 'start-control' });
+    await service.authorize({ executionId: started.executionId, actorId: 'user-1', consent: userConsent, idempotencyKey: 'grant-control' });
+    await send(service, executor.last, 'completed');
+    const before = executor.orders.length;
+
+    const pausing = await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'pause' });
+    expect(arcaSetupControlV1Schema.parse(pausing)).toMatchObject({ mode: 'pause_requested', pendingAction: 'pause', acknowledgedAt: null });
+    await send(service, executor.last, 'completed', { inventory: inventory() });
+    expect(executor.orders).toHaveLength(before); // nothing new while paused
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' })).toMatchObject({ mode: 'paused', pendingAction: null });
+
+    const taking = await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'take_control' });
+    expect(taking).toMatchObject({ mode: 'control_requested', heldBy: 'you' });
+    await expect(service.handoffLink({ executionId: started.executionId, actorId: 'user-1', purpose: 'customer_control' })).rejects.toThrow('ARCA_CONTROL_NOT_HOLDER');
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-2' })).toMatchObject({ mode: 'human', heldBy: 'another_member' });
+    await expect(service.handoffLink({ executionId: started.executionId, actorId: 'user-2', purpose: 'customer_control' })).rejects.toThrow('ARCA_CONTROL_NOT_HOLDER');
+    await expect(service.control({ executionId: started.executionId, actorId: 'user-2', action: 'take_control' })).rejects.toThrow('ARCA_CONTROL_ALREADY_HELD');
+    const controlLink = await service.handoffLink({ executionId: started.executionId, actorId: 'user-1', purpose: 'customer_control' });
+    expect(arcaSetupHandoffLinkV1Schema.parse(controlLink).url).toContain('/handoff/');
+    const viewLink = await service.handoffLink({ executionId: started.executionId, actorId: 'user-2', purpose: 'customer_view' });
+    expect(viewLink.url).toContain('/handoff/');
+    expect(executor.orders).toHaveLength(before);
+
+    await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'return_control' });
+    const back = await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' });
+    expect(back).toMatchObject({ mode: 'automation', heldBy: null, generation: 2 });
+    await service.advance(started.executionId);
+    expect(executor.orders.length).toBeGreaterThan(before); // automation continues the same execution
+    expect(JSON.stringify(back)).not.toMatch(/actor:|live\.browser\.run|ticket/);
   });
 });

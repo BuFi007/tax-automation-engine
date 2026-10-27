@@ -1,9 +1,12 @@
 import {
   arcaSetupCancelSchema,
+  arcaSetupControlSchema,
   arcaSetupOrderSchema,
   signArcaSetupMessage,
   verifyArcaSetupMessage,
 } from '@tax-engine/arca-setup-contract';
+
+import { z } from 'zod';
 
 import type { ExecutorEnv } from './env';
 import { runProof } from './proof';
@@ -11,6 +14,12 @@ import { runProof } from './proof';
 export { ArcaSetupSession } from './session';
 
 const MAX_BODY_BYTES = 64 * 1024;
+
+const controlReadSchema = z.object({
+  version: z.literal('arca-setup-control-read-v1'),
+  executionId: z.uuid(),
+  requestedAt: z.iso.datetime({ offset: true }),
+}).strict();
 
 export default {
   async fetch(request: Request, env: ExecutorEnv): Promise<Response> {
@@ -45,6 +54,31 @@ export default {
         });
         return new Response(receipt, {
           headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(env.ARCA_SETUP_RECEIPT_SECRET, 'cancel-receipt', receipt)) },
+        });
+      }
+
+      // Execution control: pause, resume, take and return control. The answer is
+      // the executor's own control state, signed, so the tax engine relays what
+      // the session transport actually enforces.
+      if (request.method === 'POST' && (url.pathname === '/v1/control' || url.pathname === '/v1/control-state')) {
+        const body = await boundedText(request);
+        await verifyArcaSetupMessage(env.ARCA_SETUP_ORDER_SECRET, 'control', request.headers, body);
+        const parsed = JSON.parse(body) as unknown;
+        let executionId: string;
+        let response: Response;
+        if (url.pathname === '/v1/control') {
+          const control = arcaSetupControlSchema.parse(parsed);
+          executionId = control.executionId;
+          response = await stub(env, executionId).fetch('https://session/control', { method: 'POST', body });
+        } else {
+          const read = controlReadSchema.parse(parsed);
+          executionId = read.executionId;
+          response = await stub(env, executionId).fetch('https://session/control-state', { method: 'POST', body: JSON.stringify({ executionId }) });
+        }
+        const text = await response.text();
+        return new Response(text, {
+          status: response.status,
+          headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(env.ARCA_SETUP_RECEIPT_SECRET, 'control-state', text)) },
         });
       }
 

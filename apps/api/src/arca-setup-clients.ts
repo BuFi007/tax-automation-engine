@@ -1,5 +1,8 @@
 import {
   arcaSetupCancelReceiptSchema,
+  arcaSetupControlStateSchema,
+  type ArcaSetupWireControl,
+  type ArcaSetupWireControlState,
   signArcaSetupMessage,
   verifyArcaSetupMessage,
   type ArcaSetupWireCancelReceipt,
@@ -13,6 +16,9 @@ export interface ArcaSetupExecutorGateway {
   dispatch(order: ArcaSetupWireOrder): Promise<'accepted' | 'duplicate' | 'busy'>;
   cancel(executionId: string, reason: 'customer_cancelled' | 'agent_cancelled' | 'superseded' | 'completed' | 'failed'): Promise<ArcaSetupWireCancelReceipt>;
   handoffUrl(executionId: string, ticket: string): string;
+  /** Record a control request; answers the executor's signed control state (conflicts included). */
+  control(request: ArcaSetupWireControl): Promise<Readonly<{ state: ArcaSetupWireControlState; conflict: string | null }>>;
+  controlState(executionId: string): Promise<ArcaSetupWireControlState>;
 }
 
 export interface ArcaSetupBoundaryGateway {
@@ -104,6 +110,40 @@ export class HttpArcaSetupExecutorGateway implements ArcaSetupExecutorGateway {
     const receipt = arcaSetupCancelReceiptSchema.parse(JSON.parse(text));
     if (receipt.executionId !== executionId) throw new Error('ARCA_SETUP_EXECUTOR_CANCEL_MISMATCH');
     return receipt;
+  }
+
+  async control(request: ArcaSetupWireControl) {
+    const payload = await this.signedControlCall('/v1/control', JSON.stringify(request)) as { state?: unknown; error?: unknown };
+    const state = arcaSetupControlStateSchema.parse(payload.state);
+    if (state.executionId !== request.executionId) throw new Error('ARCA_SETUP_EXECUTOR_CONTROL_MISMATCH');
+    return { state, conflict: typeof payload.error === 'string' && /^[A-Z0-9_]+$/.test(payload.error) ? payload.error : null };
+  }
+
+  async controlState(executionId: string) {
+    const body = JSON.stringify({ version: 'arca-setup-control-read-v1', executionId, requestedAt: new Date().toISOString() });
+    const state = arcaSetupControlStateSchema.parse(await this.signedControlCall('/v1/control-state', body));
+    if (state.executionId !== executionId) throw new Error('ARCA_SETUP_EXECUTOR_CONTROL_MISMATCH');
+    return state;
+  }
+
+  private async signedControlCall(path: string, body: string): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await this.fetcher(new URL(path, this.#origin), {
+        method: 'POST',
+        redirect: 'error',
+        headers: { 'content-type': 'application/json', ...(await signArcaSetupMessage(this.orderSecret, 'control', body)) },
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error('ARCA_SETUP_EXECUTOR_UNAVAILABLE');
+    }
+    const text = await response.text();
+    if (response.status !== 200 && response.status !== 202 && response.status !== 409) throw new Error('ARCA_SETUP_EXECUTOR_CONTROL_REJECTED');
+    // Only the executor's own signature makes this the session's control state.
+    await verifyArcaSetupMessage(this.receiptSecret, 'control-state', response.headers, text);
+    return JSON.parse(text) as unknown;
   }
 
   handoffUrl(executionId: string, ticket: string): string {

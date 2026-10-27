@@ -95,9 +95,8 @@ thing: a **private human display**.
 
 - The executor requests `Cloudflare.handoff` after subscribing to
   `Cloudflare.handoffComplete`, and makes no page reads until it completes.
-- Sessions are acquired with `recording: false` and guardrails that allow only
-  ARCA hosts (`*.afip.gob.ar`, `*.afip.gov.ar`, `*.arca.gob.ar`) plus the
-  `common-cdns` set.
+- Sessions are acquired with `recording: false` and Browser Run session
+  guardrails (see "Guardrails" below).
 - The customer reaches the tab through a two-minute, single-use handoff ticket
   minted by Tax for their own principal. The executor redeems it once and
   redirects that browser to a tab-mode Live View link. Neither the ticket nor
@@ -159,6 +158,88 @@ All between Tax and the executor are in `packages/arca-setup-contract`:
 
 Every secret is distinct and scoped; the startup checks refuse equal values.
 
+## Guardrails
+
+Browser Run fixes a session's hostname allowlist when it starts and enforces it
+for every request and every Live View connection
+([docs](https://developers.cloudflare.com/browser-run/features/guardrails/)).
+`src/guardrails.ts` owns the policy:
+
+- `allowedDomains`: `afip.gob.ar`, `afip.gov.ar`, `arca.gob.ar` and their
+  subdomains. Nothing else.
+- `allowedDomainSets`: production uses none by default; homologation keeps
+  Cloudflare's `common-cdns` (the measured login page loaded with it).
+  `ARCA_GUARDRAIL_DOMAIN_SETS` overrides per environment (comma separated,
+  `common-cdns` or HTTPS hosted lists). Cloudflare may change `common-cdns`, so
+  a production override should be a hosted list BUFI controls.
+- The policy is validated against Cloudflare's own rules (≤50 hostnames, ≤4
+  sets, one wildcard, hostname only) before acquiring, so a bad value fails
+  before a customer is asked to sign in.
+- A blocked request answers 403 with `cf-mitigated: guardrails`. A blocked
+  main-frame navigation ends the order with `ARCA_GUARDRAIL_BLOCKED` instead of
+  reading Cloudflare's block page as if it were ARCA.
+- Live View viewers are bound by the same session allowlist; the read-only
+  viewer guardrail (below) additionally blocks input, navigation and script.
+
+`/proof/run` now also proves a blocked navigation (`cf-mitigated`) and a
+blocked page fetch in a real session.
+
+## Execution control and the job player
+
+One controller per browser session, enforced by the executor (the session
+transport), not by the UI. The state machine is
+`packages/arca-setup-contract/src/control.ts`; the Durable Object applies it.
+
+| Action | Effect |
+| --- | --- |
+| `pause` | `pause_requested` until the executor reaches a safe point (between orders, or while waiting on a human), then `paused` with `acknowledgedAt`. No order is dispatched (Tax) or executed (executor) while not `automation`. |
+| `resume` | Continues the same execution from `paused`. |
+| `take_control` | `control_requested`, then at the safe point `human` for that one actor; the tab is rotated, so any interactive link issued before stops working. |
+| `return_control` | The executor validates the handoff (no open Cloudflare handoff, tab on an ARCA host). Accepted: tab rotated again (the controller's link dies), automation resumes, and an order planned before the human acted is reported `uncertain` (`ARCA_CONTROL_RETURNED_REINSPECT`) so Tax re-inspects first. Refused: stays `human` with `rejection`. |
+
+Tickets (single-use, two minutes, minted by Tax for the caller's opaque
+`actor:` reference — the executor never sees a member id):
+
+- `customer_view`: a **read-only** Live View for the current target, issued only
+  through Cloudflare's REST API (`guardrails: { mode: "readonly" }`; the CDP
+  command has no viewer guardrail). Refused while credentials are being typed
+  (`handoff = authentication`): the player shows a private sign-in placeholder.
+  Needs `CF_ACCOUNT_ID` + `CF_LIVE_VIEW_API_TOKEN` (Browser Rendering Write);
+  without them there is no preview, everything else works.
+- `customer_control`: the interactive tab, only for the acknowledged
+  controller.
+- `customer_authentication`: unchanged — the private sign-in tab.
+
+While a human holds the session the Durable Object touches it every four
+minutes so Browser Run's idle keep-alive does not end it.
+
+Tax routes (all `tax-tenant-principal-v3`, request-bound):
+`POST …/automation/:id/control` `{ actorId, action, requestId }`,
+`GET …/automation/:id/control?actorId=`, `POST …/automation/:id/view-link`,
+`POST …/automation/:id/control-link`. Answers use `arca-setup-control-v1`
+(`heldBy: you | another_member`, never who).
+
+Embedding: `/proof/run` reports the read-only viewer's `x-frame-options` and
+`frame-ancestors`. Until that proof says BUFI may frame it, Desk opens the
+preview and the controller tab in a protected full-screen window instead of
+an iframe.
+
+## WebMCP
+
+Browser Run exposes WebMCP (page tools registered with `document.modelContext`)
+only in **Lab** sessions (experimental Chrome) or Kitesurf
+([docs](https://developers.cloudflare.com/browser-run/features/webmcp/)), and
+Cloudflare says Lab must not carry production workloads. So:
+
+- Customer sessions stay on the standard pool and drive ARCA with the
+  versioned Playwright locators.
+- `/proof/run` opens ARCA's public login page in a Lab session and lists its
+  WebMCP tools through the CDP `WebMCP` domain. If ARCA ever registers tools,
+  that proof is the evidence to switch an operation to them.
+- BUFI's own WebMCP and MCP surfaces for this journey (start, status, pause,
+  resume, cancel; never credentials, links or control) live in Desk and Open
+  Agents and reuse these same Tax operations.
+
 ## Deploying the executor
 
 ```bash
@@ -178,7 +259,9 @@ Vars (`wrangler.jsonc`): `ARCA_ENVIRONMENT`, `PUBLIC_BASE_URL` (the executor's
 own HTTPS origin, used in handoff links), `TAX_RECEIPT_URL`
 (`https://<tax>/v1/arca-setup/receipts`), `ARCA_BOUNDARY_URL`,
 `ARCA_PROVIDER_CUIT` and `ARCA_PROVIDER_ALIAS` (public; provider delegation),
-optional `ARCA_PORTAL_URLS_JSON` (ARCA hosts only). Keep homologation and
+optional `ARCA_PORTAL_URLS_JSON` (ARCA hosts only), optional
+`ARCA_GUARDRAIL_DOMAIN_SETS`, and `CF_ACCOUNT_ID` (var) +
+`CF_LIVE_VIEW_API_TOKEN` (secret) for the read-only preview. Keep homologation and
 production in separate Workers with separate secrets.
 
 To re-run the Browser Run proof in a non-production account:

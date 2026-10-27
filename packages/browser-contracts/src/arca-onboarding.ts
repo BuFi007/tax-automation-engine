@@ -507,3 +507,27 @@ export const arcaSetupHandoffLinkV1Schema = z
   })
   .strict();
 export type ArcaSetupHandoffLinkV1 = z.infer<typeof arcaSetupHandoffLinkV1Schema>;
+
+/**
+ * Who drives the hosted browser right now, as the job player shows it.
+ *
+ * Projected per caller: `heldBy` says `you` or `another_member`, never who.
+ * `pendingAction` is a request the executor has NOT acknowledged yet (a pause
+ * stays "Pausing…" until it is). Contains no link, no session or target id.
+ */
+export const arcaSetupControlV1Schema = z
+  .object({
+    version: z.literal('arca-setup-control-v1'),
+    executionId: z.uuid(),
+    mode: z.enum(['automation', 'pause_requested', 'paused', 'control_requested', 'human', 'return_requested']),
+    heldBy: z.enum(['you', 'another_member']).nullable(),
+    pendingAction: z.enum(['pause', 'take_control', 'return_control']).nullable(),
+    acknowledgedAt: isoDateTimeSchema.nullable(),
+    /** `authentication`: credentials are being typed; the shared preview is suppressed. */
+    handoff: z.enum(['none', 'authentication', 'choice']),
+    rejection: z.string().regex(/^[A-Z0-9_]{3,120}$/).nullable(),
+    generation: z.number().int().min(0),
+    observedAt: isoDateTimeSchema,
+  })
+  .strict();
+export type ArcaSetupControlV1 = z.infer<typeof arcaSetupControlV1Schema>;
