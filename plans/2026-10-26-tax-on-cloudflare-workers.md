@@ -1,7 +1,8 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
 Status: Phase 0, 0b, 1, 2, 3, 4 and 4b DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 5.
+"Spike results") · Phase 5 deploy steps 1–4 done, executor rewire and E2E
+open (see Phase 5 "As built").
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -742,6 +743,62 @@ For each of `apps/wsfe-signer` and `apps/wsfex-signer`:
 **Done:** both dry-runs build.
 
 ### Phase 5: Wire the executor, deploy homologation, end-to-end · 1 day
+
+As built, 2026-10-27 (deploy steps 1–4 from `713d04f`; rewire, pass 2 and
+the E2E NOT done):
+- Deployed with `worker:deploy` (never `versions upload`). Active versions
+  after the secret writes: boundary `bda80079`, wsfe-signer `9b0c243e`,
+  wsfex-signer `63d44e8c`, API pass 1 `027df1d2` (no `ARCA_SETUP_EXECUTOR`
+  binding), executor `18599c55`.
+- Secrets, streamed from Secret Manager by a scratchpad `bun` script into
+  `wrangler secret bulk` on stdin; no value printed or written. Names now set:
+  - boundary (11): `ARCA_BOUNDARY_{ADMIN,PAYLOAD_RESOLVE,PAYLOAD_WRITE,SETUP,SETUP_EXECUTOR,STATUS,WSAA}_TOKEN`,
+    `ARCA_BOUNDARY_{CUIT_COMMITMENT,TAXPAYER_REFERENCE}_KEY`,
+    `TAX_DEPLOYMENT_ENVIRONMENT` (all from `tax-homologation-boundary-env`),
+    `ARCA_BOUNDARY_MASTER_KEY` (the fresh one set earlier, left untouched).
+  - wsfe/wsfex signer (3 each): `WSF{E,EX}_SIGNER_API_TOKEN` (fresh),
+    `WSF{E,EX}_SIGNER_VAULT_TOKEN` = boundary `PAYLOAD_RESOLVE_TOKEN`,
+    `WSF{E,EX}_WSAA_BROKER_TOKEN` = boundary `WSAA_TOKEN`.
+  - API (27): every `tax-homologation-api-env` key except
+    `ARCA_SETUP_EXECUTOR_URL` (a var), plus `ARCA_SIGNER_TOKEN` /
+    `ARCA_WSFE_SIGNER_TOKEN` (= the signers' API tokens) and a fresh
+    `TAX_OPERATOR_PROXY_TOKEN`.
+  The three fresh tokens exist only in Cloudflare (Secret Manager was not
+  changed). The next operator run must rotate them in one process, as this
+  run did twice.
+- **Executor: redirect fix only, still VM-pointing.** Deployed from HEAD with
+  `--var` keeping the live values (`ARCA_BOUNDARY_URL` =
+  `https://boundary.104-154-28-207.sslip.io`, `TAX_RECEIPT_URL` =
+  `https://tax.104-154-28-207.sslip.io/v1/arca-setup/receipts`, workers.dev
+  `PUBLIC_BASE_URL`); secrets unchanged. The binding rewire was not applied:
+  the VM Tax API calls this executor and receives its receipts, so binding the
+  executor to the Worker boundary/API would break the VM path. The rewire
+  (executor code + `services`, then API pass 2) is the cutover step.
+- Verified (HTTP codes):
+  - boundary, wsfe-signer, wsfex-signer `*.workers.dev/health` and
+    `<version>-*.workers.dev/health`: 404 `error code: 1042` (no surface).
+  - Tax API `/health`: 401 without key, 200 with `Bearer TAX_ENGINE_API_KEY`.
+  - Operator proxy: 401 without proxy token; wsfex and wsfe `/health` 401
+    without signer token, **200 authenticated** (through the boundary
+    `SignerEntrypoint`); boundary admin `revoke` without admin token 401 from
+    the boundary (reached); non-admin path and `%2e%2e` escape 404.
+  - `probe-signer` / `probe-wsfe-signer` through the proxy: reach the signers
+    (200) but exit 1: `certificateDelegationConfigured=false`,
+    `wsaaReady=false`, expected until the delegated issuer is re-provisioned.
+    Also a real bug: `signerHealthSchema` (`homologation.ts:90`) is `.strict()`
+    and rejects the wsfex signer's `sequenceReservationsRequired` field, so
+    `probe-signer` will fail even when WSAA is ready. Fix before the E2E.
+  - Idle: `wrangler tail` on the API for 66 s after a request showed only the
+    request (Worker + DO), no alarm.
+  - Executor `/health` 200. VM `https://tax.104-154-28-207.sslip.io/health`
+    401 without key (still answering).
+- Not done, in order: fix the probe schema; executor binding rewire + API
+  pass 2 (at cutover); re-import the provider template credential and
+  `homologation:activate-delegation` through the proxy; setup E2E to
+  `connected`; one Factura C and one Factura E with the VM stopped; the DO
+  duration measurement. Then repoint Motora dev `TAX_AUTHORITY_URL` and the
+  Shiva dev `TAX_AUTOMATION_ENGINE_CONFIG` url to
+  `https://bufi-tax-api-homologation.tomas-cordero-esp.workers.dev`.
 
 - `apps/arca-setup-executor/wrangler.jsonc`:
   - add `services: [{ binding: "ARCA_BOUNDARY", service: "bufi-arca-boundary-homologation", entrypoint: "ExecutorEntrypoint" }, { binding: "TAX", service: "bufi-tax-api-homologation" }]`;
