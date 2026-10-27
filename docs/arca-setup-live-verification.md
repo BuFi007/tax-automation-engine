@@ -137,3 +137,9 @@ that record.
   commits or evidence files.
 - Keep homologation and production in separate Workers with distinct secrets;
   never reuse a proof or homologation value in production.
+
+## Homologation VM cost
+
+Stop the VM when no one is testing: `deploy/gcp-vm/vm.sh stop` (`start` waits for `/health`, `status` reads it).
+The containers and SQLite data come back on boot; the startup script re-runs `docker compose up -d`.
+A stopped VM still bills its persistent disk and static IP (~$4/month).
