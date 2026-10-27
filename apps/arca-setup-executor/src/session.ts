@@ -28,8 +28,9 @@ import {
   watchGuardrailBlocks,
   withSessionPage,
 } from './browser';
-import { applyControlRequest, atSafePoint, automationMayRun, INITIAL_CONTROL, mayControl, type ControlState } from '@tax-engine/arca-setup-contract/control';
+import { applyControlRequest, atSafePoint, automationMayRun, INITIAL_CONTROL, type ControlState } from '@tax-engine/arca-setup-contract/control';
 import { arcaGuardrailPolicy } from './guardrails';
+import { currentHandoff, TICKET_REFUSAL_MESSAGES, ticketRefusal } from './session-policy';
 import type { ExecutorEnv } from './env';
 import { runArcaSetupOperation, type ReceiptDraft } from './operations';
 
@@ -234,23 +235,18 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
       const meta = await txn.get<Meta>('meta');
       const current = await txn.get<Current>('current');
       const control = (await txn.get<ControlState>('control')) ?? INITIAL_CONTROL;
-      if (meta?.executionId !== claims.executionId || await txn.get(ticketKey) || await txn.get<boolean>('cancelled'))
-        return 'Este enlace ya se usó o el trámite terminó. Volvé a BUFI.';
-      switch (claims.purpose) {
-        case 'customer_authentication':
-        case 'provider_authentication':
-          if (current?.state !== 'awaiting_handoff' || current.handoff?.role !== role) return 'No hay un ingreso pendiente para este trámite. Volvé a BUFI.';
-          break;
-        case 'customer_view':
-          // Credentials are being typed: no shared preview, only the private sign-in tab.
-          if (current?.state === 'awaiting_handoff' && current.handoff?.reason === 'authentication')
-            return 'Ingreso privado en curso. La vista previa vuelve cuando termines de ingresar.';
-          if (!this.env.CF_ACCOUNT_ID || !this.env.CF_LIVE_VIEW_API_TOKEN) return 'La vista previa no está disponible.';
-          break;
-        case 'customer_control':
-          if (!mayControl(control, claims.actorId)) return 'El control de esta sesión no es tuyo en este momento.';
-          break;
-      }
+      const refusal = ticketRefusal({
+        purpose: claims.purpose,
+        ticketExecutionId: claims.executionId,
+        actorId: claims.actorId,
+        metaExecutionId: meta?.executionId ?? null,
+        redeemed: Boolean(await txn.get(ticketKey)),
+        cancelled: Boolean(await txn.get<boolean>('cancelled')),
+        current: current ?? null,
+        control,
+        liveViewConfigured: Boolean(this.env.CF_ACCOUNT_ID && this.env.CF_LIVE_VIEW_API_TOKEN),
+      });
+      if (refusal) return TICKET_REFUSAL_MESSAGES[refusal];
       await txn.put(ticketKey, Date.now());
       return null;
     });
@@ -301,7 +297,7 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
       requestedAt: control.requestedAt,
       acknowledgedAt: control.acknowledgedAt,
       generation: control.generation,
-      handoff: current?.state === 'awaiting_handoff' && current.handoff ? current.handoff.reason : 'none',
+      handoff: currentHandoff(current),
       rejection: control.rejection,
       observedAt: new Date().toISOString(),
     };
@@ -316,7 +312,7 @@ export class ArcaSetupSession extends DurableObject<ExecutorEnv> {
     const before = await this.control();
     if (!['pause_requested', 'control_requested', 'return_requested'].includes(before.mode)) return automationMayRun(before);
     const sessionId = (await this.sessions()).customer;
-    const handoff = current?.state === 'awaiting_handoff' && current.handoff ? current.handoff.reason : 'none';
+    const handoff = currentHandoff(current);
     const result = sessionId && await sessionAlive(this.env.BROWSER, sessionId).catch(() => false)
       ? await withSessionPage(this.env.BROWSER, sessionId, async page => {
         const open = handoff === 'none' && await handoffActive(page).catch(() => false) ? 'choice' : handoff;

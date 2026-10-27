@@ -275,6 +275,8 @@ curl -X POST -H "authorization: Bearer $PROOF_TOKEN" https://<host>/proof/run
 npx wrangler delete -c wrangler.proof.jsonc
 ```
 
+Pass criteria, evidence and the homologation checklist: [arca-setup-live-verification.md](arca-setup-live-verification.md).
+
 ## Configuration on the other services
 
 Tax API (`apps/api`):

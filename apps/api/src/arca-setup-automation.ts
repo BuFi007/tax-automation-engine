@@ -50,6 +50,8 @@ import { createHash, randomUUID } from 'node:crypto';
 const LEASE_TTL_MS = 2 * 60_000;
 const ORDER_TTL_MS = 30 * 60_000;
 const ORDER_REDISPATCH_MS = 2 * 60_000;
+const CONTROL_SNAPSHOT_FRESH_MS = 10_000;
+const SETTLED_CONTROL_MODES: ReadonlySet<string> = new Set(['automation', 'paused', 'human']);
 const AUTHORIZATION_TTL_MS = 24 * 60 * 60_000;
 const PROPAGATION_MAX_ATTEMPTS = 14;
 const MAX_STEPS_PER_ADVANCE = 12;
@@ -293,12 +295,19 @@ export class ArcaSetupAutomationService {
   async controlStatus(input: Readonly<{ executionId: string; actorId: string }>): Promise<ArcaSetupControlV1> {
     this.requireConfigured();
     const execution = this.get(input.executionId);
+    const actorRef = actorRefFor(execution.executionId, input.actorId);
+    // A settled, recent snapshot answers polling without waking the executor;
+    // a pending request always asks, so its acknowledgement shows promptly.
+    const stored = this.deps.store.control(execution.executionId);
+    if (stored && SETTLED_CONTROL_MODES.has(stored.mode)
+      && this.clock().getTime() - Date.parse(stored.observedAt) < CONTROL_SNAPSHOT_FRESH_MS)
+      return projectControl(execution.executionId, stored, actorRef);
     const state = await this.deps.executor!.controlState(execution.executionId);
     this.recordControl(execution.executionId, state);
-    return projectControl(execution.executionId, state, actorRefFor(execution.executionId, input.actorId));
+    return projectControl(execution.executionId, state, actorRef);
   }
 
-  private recordControl(executionId: string, state: ArcaSetupControlSnapshot): void {
+  private recordControl(executionId: string, state: ArcaSetupControlSnapshot, resume = true): void {
     const before = this.deps.store.control(executionId);
     this.deps.store.setControl(executionId, {
       mode: state.mode,
@@ -311,7 +320,7 @@ export class ArcaSetupAutomationService {
       observedAt: state.observedAt,
     });
     // Automation is back: let the scheduler move the run on.
-    if (before && before.mode !== 'automation' && state.mode === 'automation') void this.advance(executionId).catch(() => undefined);
+    if (resume && before && before.mode !== 'automation' && state.mode === 'automation') void this.advance(executionId).catch(() => undefined);
   }
 
   async cancel(input: Readonly<{
@@ -367,6 +376,16 @@ export class ArcaSetupAutomationService {
       if (execution) await this.closeSessions(executionId, execution.phase === 'connected' ? 'completed' : 'customer_cancelled');
     }
     for (const execution of this.deps.store.listOpen(limit)) {
+      // The executor acknowledges control at its own safe point; without this
+      // refresh a run whose control was returned stays parked until a UI reads it.
+      const control = this.deps.executor ? this.deps.store.control(execution.executionId) : null;
+      if (control && control.mode !== 'automation') {
+        try {
+          this.recordControl(execution.executionId, await this.deps.executor!.controlState(execution.executionId), false);
+        } catch {
+          // Unreachable executor: keep the recorded mode; dispatch stays gated.
+        }
+      }
       try {
         await this.advance(execution.executionId);
       } catch {

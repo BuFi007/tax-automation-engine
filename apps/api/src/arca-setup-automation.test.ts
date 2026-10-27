@@ -449,4 +449,41 @@ describe('automated ARCA connection', () => {
     expect(executor.orders.length).toBeGreaterThan(before); // automation continues the same execution
     expect(JSON.stringify(back)).not.toMatch(/actor:|live\.browser\.run|ticket/);
   });
+
+  test('an acknowledged return resumes dispatch on tick with no UI read', async () => {
+    const { service, executor, path } = harness();
+    const started = await service.start({ onboardingId: ONBOARDING_ID, workspaceId: WORKSPACE, startedBy: { kind: 'user', actorId: 'user-1' }, idempotencyKey: 'start-tick' });
+    await service.authorize({ executionId: started.executionId, actorId: 'user-1', consent: userConsent, idempotencyKey: 'grant-tick' });
+    await send(service, executor.last, 'completed');
+    await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'take_control' });
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' })).toMatchObject({ mode: 'human' });
+    await send(service, executor.last, 'completed', { inventory: inventory() });
+    const before = executor.orders.length;
+
+    await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'return_control' });
+    expect(executor.orders).toHaveLength(before);
+    // Nobody reads controlStatus: the scheduler alone observes the acknowledgement.
+    await service.tick();
+    expect(executor.orders.length).toBeGreaterThan(before);
+    expect(new ArcaSetupStore(path).control(started.executionId)?.mode).toBe('automation');
+  });
+
+  test('a settled snapshot is served without waking the executor', async () => {
+    const { service, executor } = harness();
+    let reads = 0;
+    const read = executor.controlState.bind(executor);
+    executor.controlState = async (executionId: string) => { reads += 1; return read(executionId); };
+    const started = await service.start({ onboardingId: ONBOARDING_ID, workspaceId: WORKSPACE, startedBy: { kind: 'user', actorId: 'user-1' }, idempotencyKey: 'start-cache' });
+    await service.authorize({ executionId: started.executionId, actorId: 'user-1', consent: userConsent, idempotencyKey: 'grant-cache' });
+
+    await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'pause' });
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' })).toMatchObject({ mode: 'paused' });
+    expect(reads).toBe(1); // pending: asked the executor
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' })).toMatchObject({ mode: 'paused' });
+    expect(reads).toBe(1); // settled and fresh: served from the snapshot
+
+    await service.control({ executionId: started.executionId, actorId: 'user-1', action: 'take_control' });
+    expect(await service.controlStatus({ executionId: started.executionId, actorId: 'user-1' })).toMatchObject({ mode: 'human' });
+    expect(reads).toBe(2); // pending again: asked the executor
+  });
 });
