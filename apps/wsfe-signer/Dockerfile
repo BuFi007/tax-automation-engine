@@ -7,6 +7,7 @@ COPY apps/arca-boundary/package.json apps/arca-boundary/package.json
 COPY apps/reclaim-proof-vault/package.json apps/reclaim-proof-vault/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/core/package.json packages/core/package.json
+COPY packages/sql-store/package.json packages/sql-store/package.json
 COPY packages/erp/package.json packages/erp/package.json
 COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
 COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
@@ -14,6 +15,7 @@ COPY apps/wsfecred/package.json apps/wsfecred/package.json
 RUN bun install --frozen-lockfile
 
 COPY packages/core packages/core
+COPY packages/sql-store packages/sql-store
 # The Factura C signer imports the shared isValidCuit validator from the
 # Factura E signer's contracts subpath, so its source must be present.
 COPY apps/wsfex-signer apps/wsfex-signer

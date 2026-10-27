@@ -2,7 +2,8 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import {
   assertTaxDomainEventV1,
@@ -194,12 +195,14 @@ export interface FacturaEFeaturePublicationDependencies {
   domainEventCommitmentSecret?: string;
   policyVersion: string;
   databasePath?: string;
+  /** An injected database (Durable Object); takes precedence over `databasePath`. */
+  database?: SqlDatabase;
   requireDurable?: boolean;
   singleWriter?: boolean;
 }
 
 export class FacturaEFeaturePublicationStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
   readonly #readSource: FacturaEFeaturePublicationDependencies['readSource'];
   readonly #signer: FacturaEFeatureSigningGateway;
   readonly #secret: string;
@@ -208,10 +211,15 @@ export class FacturaEFeaturePublicationStore {
   readonly #restrictedHeadLocks = new Map<string, Promise<void>>();
 
   constructor(dependencies: FacturaEFeaturePublicationDependencies) {
+    const injected = dependencies.database;
     const path = dependencies.databasePath ?? ':memory:';
     const requireDurable = dependencies.requireDurable ?? process.env.NODE_ENV === 'production';
     if (requireDurable) {
-      assertDurableDatabasePath(path);
+      if (injected) {
+        if (!injected.durable) throw new Error('TAX_FACTURA_E_FEATURE_DURABLE_STORE_REQUIRED');
+      } else {
+        assertDurableDatabasePath(path);
+      }
       assertFacturaEFeatureSingleWriterConfiguration(
         dependencies.singleWriter
           ?? process.env.TAX_FACTURA_E_FEATURE_SINGLE_WRITER === 'true'
@@ -229,9 +237,10 @@ export class FacturaEFeaturePublicationStore {
     this.#domainEventCommitmentSecret = dependencies.domainEventCommitmentSecret
       ?? resolveTaxDomainEventCommitmentSecret();
     this.#policyVersion = dependencies.policyVersion;
-    this.#db = new Database(path, { create: true });
-    this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-    if (requireDurable) {
+    if (!injected) assertFacturaEFeatureDatabaseSeparateFromTaxEngine(path);
+    this.#db = injected ?? openSqlDatabase(path);
+    this.#db.configure({ busyTimeoutMs: 5000, wal: true, foreignKeys: true });
+    if (requireDurable && !injected) {
       try {
         assertDurableDatabaseBacking(this.#db, path);
       } catch (error) {
@@ -239,6 +248,7 @@ export class FacturaEFeaturePublicationStore {
         throw error;
       }
     }
+    if (!injected) renameLegacyTaxDomainEventOutbox(this.#db);
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS factura_e_factoring_consents (
         execution_id TEXT PRIMARY KEY,
@@ -310,7 +320,7 @@ export class FacturaEFeaturePublicationStore {
       );
       CREATE INDEX IF NOT EXISTS factura_e_feature_outbox_claim_idx
         ON factura_e_feature_outbox (state, next_attempt_at, created_at);
-      CREATE TABLE IF NOT EXISTS tax_domain_event_outbox (
+      CREATE TABLE IF NOT EXISTS factura_e_feature_tax_domain_event_outbox (
         event_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -324,8 +334,8 @@ export class FacturaEFeaturePublicationStore {
         last_error_code TEXT,
         UNIQUE (workspace_id, idempotency_key)
       );
-      CREATE INDEX IF NOT EXISTS tax_domain_event_outbox_pending
-        ON tax_domain_event_outbox (delivered_at, leased_until, appended_at);
+      CREATE INDEX IF NOT EXISTS factura_e_feature_tax_domain_event_outbox_pending
+        ON factura_e_feature_tax_domain_event_outbox (delivered_at, leased_until, appended_at);
       CREATE UNIQUE INDEX IF NOT EXISTS factura_e_feature_head_feature_id_idx
         ON factura_e_feature_heads (feature_id);
       CREATE TABLE IF NOT EXISTS factura_e_feature_restricted_heads (
@@ -1447,13 +1457,13 @@ export class FacturaEFeaturePublicationStore {
         delivery_attempts: number;
       }, [string, number]>(`
         SELECT event_id, event_hash, event_json, delivery_attempts
-        FROM tax_domain_event_outbox
+        FROM factura_e_feature_tax_domain_event_outbox
         WHERE delivered_at IS NULL AND (leased_until IS NULL OR leased_until <= ?)
         ORDER BY appended_at ASC, event_id ASC
         LIMIT ?
       `).all(input.now, input.limit);
       const claim = this.#db.query(`
-        UPDATE tax_domain_event_outbox
+        UPDATE factura_e_feature_tax_domain_event_outbox
         SET leased_until = ?, lease_token = ?, delivery_attempts = delivery_attempts + 1,
             last_error_code = NULL
         WHERE event_id = ? AND delivered_at IS NULL
@@ -1486,14 +1496,14 @@ export class FacturaEFeaturePublicationStore {
 
   ackTaxDomainEventClaim(eventId: string, leaseToken: string, deliveredAt: string): void {
     const updated = this.#db.query(`
-      UPDATE tax_domain_event_outbox
+      UPDATE factura_e_feature_tax_domain_event_outbox
       SET delivered_at = ?, leased_until = NULL, lease_token = NULL,
           last_error_code = NULL
       WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
     `).run(deliveredAt, eventId, leaseToken);
     if (updated.changes === 1) return;
     const row = this.#db.query<{ delivered_at: string | null }, [string]>(`
-      SELECT delivered_at FROM tax_domain_event_outbox WHERE event_id = ?
+      SELECT delivered_at FROM factura_e_feature_tax_domain_event_outbox WHERE event_id = ?
     `).get(eventId);
     if (!row) throw new Error('TAX_DOMAIN_EVENT_NOT_FOUND');
     if (row.delivered_at !== null) return;
@@ -1510,7 +1520,7 @@ export class FacturaEFeaturePublicationStore {
       throw new Error('TAX_DOMAIN_EVENT_ERROR_CODE_INVALID');
     }
     const updated = this.#db.query(`
-      UPDATE tax_domain_event_outbox
+      UPDATE factura_e_feature_tax_domain_event_outbox
       SET leased_until = ?, lease_token = NULL, last_error_code = ?
       WHERE event_id = ? AND lease_token = ? AND delivered_at IS NULL
     `).run(retryAt, errorCode, eventId, leaseToken);
@@ -1521,7 +1531,7 @@ export class FacturaEFeaturePublicationStore {
 
   listPendingTaxDomainEvents(): readonly TaxDomainEventV1[] {
     return this.#db.query<{ event_json: string }, []>(`
-      SELECT event_json FROM tax_domain_event_outbox
+      SELECT event_json FROM factura_e_feature_tax_domain_event_outbox
       WHERE delivered_at IS NULL ORDER BY appended_at ASC, event_id ASC
     `).all().map(row => assertTaxDomainEventV1(JSON.parse(row.event_json)));
   }
@@ -1536,7 +1546,7 @@ export class FacturaEFeaturePublicationStore {
       event_hash: string;
       event_json: string;
     }, [string]>(`
-      SELECT event_hash, event_json FROM tax_domain_event_outbox WHERE event_id = ?
+      SELECT event_hash, event_json FROM factura_e_feature_tax_domain_event_outbox WHERE event_id = ?
     `).get(event.eventId);
     if (byEventId) {
       if (byEventId.event_hash !== eventHash) {
@@ -1551,7 +1561,7 @@ export class FacturaEFeaturePublicationStore {
       event_hash: string;
       event_json: string;
     }, [string, string]>(`
-      SELECT event_hash, event_json FROM tax_domain_event_outbox
+      SELECT event_hash, event_json FROM factura_e_feature_tax_domain_event_outbox
       WHERE workspace_id = ? AND idempotency_key = ?
     `).get(event.workspaceId, event.idempotencyKey);
     if (byIdempotency) {
@@ -1564,7 +1574,7 @@ export class FacturaEFeaturePublicationStore {
       };
     }
     this.#db.query(`
-      INSERT INTO tax_domain_event_outbox (
+      INSERT INTO factura_e_feature_tax_domain_event_outbox (
         event_id, workspace_id, idempotency_key, event_hash, event_json,
         appended_at, leased_until, lease_token, delivery_attempts,
         delivered_at, last_error_code
@@ -2107,6 +2117,45 @@ function isMemory(path: string): boolean {
   return path === ':memory:' || path.startsWith('file::memory:') || /[?&]mode=memory(?:&|$)/.test(path);
 }
 
+function canonicalDatabasePath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+/**
+ * Bun only. The feature outbox shared its table and index names with
+ * `TaxProfileStore`'s; on one database they would merge. Refuse a file shared
+ * with the tax-engine store rather than rename that store's live table.
+ */
+export function assertFacturaEFeatureDatabaseSeparateFromTaxEngine(
+  featurePath: string,
+  taxEnginePath = process.env.TAX_ENGINE_DB_PATH,
+): void {
+  const taxEngine = taxEnginePath?.trim();
+  if (isMemory(featurePath) || !featurePath.trim() || !taxEngine || isMemory(taxEngine)) return;
+  if (canonicalDatabasePath(featurePath) === canonicalDatabasePath(taxEngine)) {
+    throw new Error('FACTURA_E_FEATURE_DB_SHARED_WITH_TAX_ENGINE');
+  }
+}
+
+/** Bun only: moves a pre-rename feature outbox (its own file) to the new names. */
+function renameLegacyTaxDomainEventOutbox(database: SqlDatabase): void {
+  const tables = database.query<{ name: string }, []>(`
+    SELECT name FROM sqlite_master
+    WHERE type = 'table'
+      AND name IN ('tax_domain_event_outbox', 'factura_e_feature_tax_domain_event_outbox')
+  `).all().map(row => row.name);
+  if (!tables.includes('tax_domain_event_outbox') || tables.includes('factura_e_feature_tax_domain_event_outbox')) return;
+  database.transaction(() => {
+    database.exec('ALTER TABLE tax_domain_event_outbox RENAME TO factura_e_feature_tax_domain_event_outbox');
+    database.exec('DROP INDEX IF EXISTS tax_domain_event_outbox_pending');
+  })();
+}
+
 export function assertFacturaEFeatureSingleWriterConfiguration(singleWriter: boolean): void {
   if (!singleWriter) {
     throw new Error('TAX_FACTURA_E_FEATURE_SINGLE_WRITER_REQUIRED');
@@ -2124,7 +2173,7 @@ function assertDurableDatabasePath(path: string): void {
   }
 }
 
-function assertDurableDatabaseBacking(database: Database, configuredPath: string): void {
+function assertDurableDatabaseBacking(database: SqlDatabase, configuredPath: string): void {
   const row = database.query<{ name: string; file: string }, []>(
     'PRAGMA database_list'
   ).all().find(candidate => candidate.name === 'main');

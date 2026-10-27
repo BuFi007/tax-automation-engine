@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import { type DocumentType, isWsfeDocumentType, signerResponseSchema, type SignerRequest, type SignerResponse } from './contracts';
 
@@ -19,12 +20,12 @@ export type SignerAttempt = Readonly<{
 // The store keeps only hashes and safe document coordinates (never the receptor
 // DocNro, token/sign, represented CUIT, opaque payload reference, or raw SOAP).
 export class SignerAttemptStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
-  constructor(path = process.env.WSFE_SIGNER_DB_PATH ?? ':memory:') {
-    this.#db = new Database(path, { create: true });
+  constructor(path: string | SqlDatabase = process.env.WSFE_SIGNER_DB_PATH ?? ':memory:') {
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS wsfe_attempts (
         request_id TEXT PRIMARY KEY,
         intent_hash TEXT NOT NULL,

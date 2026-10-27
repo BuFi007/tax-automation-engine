@@ -9,6 +9,7 @@ COPY apps/reclaim-proof-vault/package.json apps/reclaim-proof-vault/package.json
 COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
 COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
 COPY packages/core/package.json packages/core/package.json
+COPY packages/sql-store/package.json packages/sql-store/package.json
 COPY packages/erp/package.json packages/erp/package.json
 COPY apps/wsfecred/package.json apps/wsfecred/package.json
 COPY apps/arca-setup-executor/package.json apps/arca-setup-executor/package.json
@@ -17,6 +18,7 @@ COPY packages/arca-setup-contract/package.json packages/arca-setup-contract/pack
 RUN bun install --frozen-lockfile
 
 COPY packages/core packages/core
+COPY packages/sql-store packages/sql-store
 COPY apps/wsfex-signer/src/contracts.ts apps/wsfex-signer/src/contracts.ts
 COPY apps/wsfex-signer apps/wsfex-signer
 COPY apps/wsfe-signer apps/wsfe-signer

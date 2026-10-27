@@ -6,7 +6,8 @@ import {
   type ArcaSetupEventV1,
   type ArcaSetupExecutionV1,
 } from '@tax-engine/core';
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 /**
  * Durable state for automated ARCA connections.
@@ -38,13 +39,14 @@ export type ArcaSetupControlSnapshot = Readonly<{
 }>;
 
 export class ArcaSetupStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
-  constructor(path = process.env.TAX_ARCA_SETUP_DB_PATH ?? process.env.TAX_ENGINE_DB_PATH ?? ':memory:') {
-    this.#db = new Database(path, { create: true });
+  constructor(
+    path: string | SqlDatabase = process.env.TAX_ARCA_SETUP_DB_PATH ?? process.env.TAX_ENGINE_DB_PATH ?? ':memory:',
+  ) {
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true, busyTimeoutMs: 5000 });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS arca_setup_control (
         execution_id TEXT PRIMARY KEY,
         state_json TEXT NOT NULL,

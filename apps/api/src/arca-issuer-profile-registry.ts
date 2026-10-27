@@ -1,14 +1,15 @@
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 /** Durable issuer references only. Certificate material stays in the ARCA boundary. */
 export class ArcaIssuerProfileRegistry extends Map<string, string> {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
-  constructor(path: string, defaults: ReadonlyMap<string, string> = new Map()) {
+  constructor(path: string | SqlDatabase, defaults: ReadonlyMap<string, string> = new Map()) {
     super(defaults);
-    this.#db = new Database(path, { create: true });
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS arca_issuer_profile_bindings (
         workspace_id TEXT PRIMARY KEY,
         issuer_profile_ref TEXT NOT NULL,

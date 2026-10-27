@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import { hashCanonical } from '@tax-engine/core';
 import { signerRequestSchema, type SignerRequest } from '@tax-engine/wsfe-signer/contracts';
@@ -33,14 +34,16 @@ export type PersonalWsfeAttempt = Readonly<Omit<PersonalWsfeAttemptInput, 'issue
 
 /** Tax stores no receptor identity, represented CUIT, certificate or WSAA ticket. */
 export class PersonalWsfeAttemptStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
-  constructor(path: string, requireDurable = true) {
-    if (requireDurable && (!path || path === ':memory:' || /(?:\?|&)mode=memory(?:&|$)/i.test(path)))
+  constructor(path: string | SqlDatabase, requireDurable = true) {
+    if (requireDurable && (typeof path === 'string'
+      ? !path || path === ':memory:' || /(?:\?|&)mode=memory(?:&|$)/i.test(path)
+      : !path.durable))
       throw new Error('PERSONAL_WSFE_DURABLE_DB_REQUIRED');
-    this.#db = new Database(path, { create: true });
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS personal_wsfe_attempts (
         invoice_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,

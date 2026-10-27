@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { hashCanonical } from '@tax-engine/core';
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import {
   anyAuthorityPayloadSchema,
@@ -45,7 +46,7 @@ export type IssuerCredential = Readonly<{
 }>;
 
 export class ArcaBoundaryStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
   readonly #payloadKeys: Record<PayloadFamily, Buffer>;
   readonly #issuerKey: Buffer;
   readonly #ticketKey: Buffer;
@@ -53,7 +54,7 @@ export class ArcaBoundaryStore {
 
   constructor(
     masterKey: Buffer,
-    path = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:',
+    path: string | SqlDatabase = process.env.ARCA_BOUNDARY_DB_PATH ?? ':memory:',
     representedCuitCommitmentKey = deriveDomainKey(
       masterKey,
       'represented-cuit-commitments'
@@ -68,11 +69,9 @@ export class ArcaBoundaryStore {
     if (representedCuitCommitmentKey.length !== 32)
       throw new Error('ARCA_BOUNDARY_CUIT_COMMITMENT_KEY_INVALID');
     this.#representedCuitCommitmentKey = Buffer.from(representedCuitCommitmentKey);
-    this.#db = new Database(path, { create: true });
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true, foreignKeys: true, secureDelete: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
-      PRAGMA secure_delete = ON;
       CREATE TABLE IF NOT EXISTS authority_payloads (
         reference TEXT PRIMARY KEY,
         workspace_id_hash TEXT NOT NULL,
@@ -208,7 +207,7 @@ export class ArcaBoundaryStore {
     if (!row.retire_after || Date.parse(row.retire_after) > Date.parse(occurredAt))
       throw new Error('AUTHORITY_PAYLOAD_RETENTION_POLICY_ACTIVE');
     this.#db.transaction(() => this.retirePayloadRow(row, occurredAt))();
-    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    this.#db.checkpoint();
   }
 
   markPayloadTerminal(
@@ -298,7 +297,7 @@ export class ArcaBoundaryStore {
       for (const row of rows) this.retirePayloadRow(row, occurredAt);
       return rows.length;
     })();
-    if (retired > 0) this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    if (retired > 0) this.#db.checkpoint();
     return retired;
   }
 

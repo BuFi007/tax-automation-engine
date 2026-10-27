@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import { hashCanonical } from '@tax-engine/core';
 
@@ -91,12 +92,12 @@ type SequenceReservationInput = Readonly<{
 }>;
 
 export class SignerAttemptStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
-  constructor(path = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:') {
-    this.#db = new Database(path, { create: true });
+  constructor(path: string | SqlDatabase = process.env.WSFEX_SIGNER_DB_PATH ?? ':memory:') {
+    this.#db = openSqlDatabase(path);
     try {
-      this.#db.exec('PRAGMA journal_mode = WAL;');
+      this.#db.configure({ wal: true });
       this.migrateSchema();
     } catch (error) {
       this.#db.close();
@@ -360,12 +361,12 @@ export class SignerAttemptStore {
         .filter(column => column.pk > 0)
         .sort((left, right) => left.pk - right.pk)
         .map(column => column.name);
-      const storedVersion = this.#db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
+      const storedVersion = this.#db.userVersion;
       if (sameColumns(primaryKey, SCOPED_PRIMARY_KEY)) {
         if (storedVersion > ATTEMPT_SCHEMA_VERSION || SCOPED_COLUMNS.some(column => !columnNames.includes(column))) {
           throw new Error('WSFEX_ATTEMPT_SCHEMA_RECONCILIATION_REQUIRED');
         }
-        this.#db.exec(`PRAGMA user_version = ${ATTEMPT_SCHEMA_VERSION};`);
+        this.#db.userVersion = ATTEMPT_SCHEMA_VERSION;
         return;
       }
 
@@ -458,8 +459,8 @@ export class SignerAttemptStore {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (environment, represented_cuit_commitment, request_id)
       );
-      PRAGMA user_version = ${ATTEMPT_SCHEMA_VERSION};
     `);
+    this.#db.userVersion = ATTEMPT_SCHEMA_VERSION;
   }
 
   acquireAuthoritySequenceLease(

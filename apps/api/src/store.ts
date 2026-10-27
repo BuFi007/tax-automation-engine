@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -125,18 +126,17 @@ type StoredFacturaEFactoringProjectionRow = Readonly<{
 }>;
 
 export class TaxProfileStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
   readonly #domainEventCommitmentSecret: string;
 
   constructor(
-    path = process.env.TAX_ENGINE_DB_PATH,
+    path: string | SqlDatabase | undefined = process.env.TAX_ENGINE_DB_PATH,
     domainEventCommitmentSecret = resolveTaxDomainEventCommitmentSecret(),
   ) {
-    const databasePath = resolveTaxEngineDatabasePath(path);
     this.#domainEventCommitmentSecret = domainEventCommitmentSecret;
-    this.#db = new Database(databasePath, { create: true });
+    this.#db = openSqlDatabase(typeof path === 'object' ? path : resolveTaxEngineDatabasePath(path));
+    this.#db.configure({ wal: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,
         applied_at TEXT NOT NULL

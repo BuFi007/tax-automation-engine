@@ -1,5 +1,6 @@
 import { assertArcaFiscalBeta, assertFiscalHumanActor, type ArcaFiscalBetaConfig } from './arca-fiscal-beta';
-import { Database } from 'bun:sqlite';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 
 import { hashCanonical } from '@tax-engine/core';
 
@@ -141,17 +142,17 @@ export type FacturaERunAuthorityState = Readonly<{
 }>;
 
 export class FacturaEAuthorityExecutionStore {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
 
   constructor(
-    path = process.env.TAX_AUTHORITY_EXECUTION_DB_PATH ?? ':memory:',
+    path: string | SqlDatabase = process.env.TAX_AUTHORITY_EXECUTION_DB_PATH ?? ':memory:',
     requireDurable = process.env.NODE_ENV === 'production'
   ) {
-    if (requireDurable && (path === ':memory:' || path.trim() === '')) {
+    if (requireDurable && (typeof path === 'string' ? path === ':memory:' || path.trim() === '' : !path.durable)) {
       throw new Error('TAX_AUTHORITY_EXECUTION_DURABLE_STORE_CONFIGURATION_REQUIRED');
     }
-    this.#db = new Database(path, { create: true });
-    this.#db.exec('PRAGMA journal_mode = WAL;');
+    this.#db = openSqlDatabase(path);
+    this.#db.configure({ wal: true });
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS factura_e_authority_executions (
         execution_id TEXT PRIMARY KEY,

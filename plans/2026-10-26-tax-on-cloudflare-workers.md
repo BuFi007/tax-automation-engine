@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0 and 0b DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 1.
+Status: Phase 0, 0b and 1 DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 2.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -303,7 +303,7 @@ any launch policy ship as bundled text modules, not secrets).
 
 **Done:** four results appended to "Spike results".
 
-### Phase 1: SQL adapter, stores take a database · 1.25 days
+### Phase 1: SQL adapter, stores take a database · 1.25 days · DONE 2026-10-27
 
 The adapter is the only new abstraction. Stores keep accepting a path, which keeps
 Bun, tests and the VM unchanged, and can also accept an injected database.

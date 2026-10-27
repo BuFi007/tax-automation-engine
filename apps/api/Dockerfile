@@ -11,6 +11,7 @@ COPY apps/wsfex-signer/package.json apps/wsfex-signer/package.json
 COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
 COPY apps/wsfecred/package.json apps/wsfecred/package.json
 COPY packages/core/package.json packages/core/package.json
+COPY packages/sql-store/package.json packages/sql-store/package.json
 COPY packages/erp/package.json packages/erp/package.json
 COPY packages/browser-contracts/package.json packages/browser-contracts/package.json
 COPY packages/arca-setup-contract/package.json packages/arca-setup-contract/package.json

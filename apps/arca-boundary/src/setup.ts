@@ -1,8 +1,9 @@
-import { generateKeyPairSync, randomUUID, X509Certificate, createPrivateKey } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, X509Certificate, createPrivateKey, createPublicKey } from 'node:crypto';
 
 import { hashCanonical } from '@tax-engine/core';
+import type { SqlDatabase } from '@tax-engine/sql-store';
+import { openSqlDatabase } from '@tax-engine/sql-store/bun';
 import { isValidCuit } from '@tax-engine/wsfex-signer/contracts';
-import { Database } from 'bun:sqlite';
 import * as forge from 'node-forge';
 import { z } from 'zod';
 
@@ -134,13 +135,13 @@ export type SetupStatus = Readonly<{
 export type SetupProviderTemplate = Readonly<{ workspaceId: string; issuerProfileRef: string }>;
 
 export class ArcaSetupBoundary {
-  readonly #db: Database;
+  readonly #db: SqlDatabase;
   readonly #sealKey: Buffer;
   readonly #commitmentKey: Buffer;
   readonly #taxpayerReferenceKey: Buffer;
 
   constructor(private readonly options: Readonly<{
-    databasePath: string;
+    databasePath: string | SqlDatabase;
     sealKey: Buffer;
     commitmentKey: Buffer;
     taxpayerReferenceKey: Buffer;
@@ -157,10 +158,9 @@ export class ArcaSetupBoundary {
     this.#sealKey = Buffer.from(options.sealKey);
     this.#commitmentKey = Buffer.from(options.commitmentKey);
     this.#taxpayerReferenceKey = Buffer.from(options.taxpayerReferenceKey);
-    this.#db = new Database(options.databasePath, { create: true });
+    this.#db = openSqlDatabase(options.databasePath);
+    this.#db.configure({ wal: true, secureDelete: true });
     this.#db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA secure_delete = ON;
       CREATE TABLE IF NOT EXISTS arca_setup_sessions (
         setup_ref TEXT PRIMARY KEY,
         execution_id TEXT NOT NULL UNIQUE,
@@ -337,7 +337,7 @@ export class ArcaSetupBoundary {
         chainVerified: this.verifyChain(certificate),
       };
     }
-    if (!certificate.checkPrivateKey(createPrivateKey(sealed.privateKeyPem)))
+    if (!certificateMatchesPrivateKey(certificate, sealed.privateKeyPem))
       throw new Error('ARCA_SETUP_CERTIFICATE_KEY_MISMATCH');
     const subjectCuit = /serialNumber=CUIT (\d{11})/.exec(certificate.subject)?.[1];
     if (subjectCuit !== sealed.representedCuit) throw new Error('ARCA_SETUP_CERTIFICATE_SUBJECT_MISMATCH');
@@ -495,6 +495,17 @@ export function createCsr(privateKeyPem: string, alias: string, representedCuit:
   csr.sign(privateKey, forge.md.sha256.create());
   if (!csr.verify()) throw new Error('ARCA_SETUP_CSR_INVALID');
   return forge.pki.certificationRequestToPem(csr);
+}
+
+/**
+ * `X509Certificate.checkPrivateKey` returns false for a matching key in workerd,
+ * so compare the SPKI DER of the certificate key and of the private key's public half.
+ */
+export function certificateMatchesPrivateKey(certificate: X509Certificate, privateKeyPem: string): boolean {
+  // Node and workerd accept a private KeyObject here; @types/node does not declare it.
+  const fromKey = createPublicKey(createPrivateKey(privateKeyPem) as never).export({ type: 'spki', format: 'der' });
+  const fromCertificate = certificate.publicKey.export({ type: 'spki', format: 'der' });
+  return fromKey.equals(fromCertificate);
 }
 
 function normalizePem(value: string): string {

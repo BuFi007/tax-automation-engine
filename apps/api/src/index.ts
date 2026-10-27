@@ -57,7 +57,10 @@ import {
   assertTaxAuthoritySecretsDistinct,
   type TaxAuthorityPrincipalSecrets,
 } from './authority-principal';
-import { FacturaEFeaturePublicationStore } from './factura-e-feature-publication';
+import {
+  assertFacturaEFeatureDatabaseSeparateFromTaxEngine,
+  FacturaEFeaturePublicationStore,
+} from './factura-e-feature-publication';
 import { FacturaEFeatureSourceReader } from './factura-e-feature-source';
 import { HttpFacturaEFeatureSigningGateway } from './factura-e-feature-signer';
 import { handleFacturaEFeatureRoute } from './factura-e-feature-routes';
@@ -358,6 +361,9 @@ if (
   && (authorityCorridorEnabled || authorityRemoteEffectsEnabled || facturaEFeatureEnabled)
 ) assertArgentinaProductionBoundary(argentinaLaunchPolicy);
 
+// Before TaxProfileStore migrates its outbox: the feature store must not share its file.
+if (facturaEFeatureEnabled)
+  assertFacturaEFeatureDatabaseSeparateFromTaxEngine(process.env.TAX_FACTURA_E_FEATURE_DB_PATH ?? ':memory:');
 const store = new TaxProfileStore();
 const taxDomainEventPublisher = taxDomainEventDeliveryEnabled
   ? HttpTaxDomainEventPublisher.fromEnvironment()
