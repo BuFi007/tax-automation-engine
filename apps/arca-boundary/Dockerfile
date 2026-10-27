@@ -11,6 +11,9 @@ COPY apps/wsfe-signer/package.json apps/wsfe-signer/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/erp/package.json packages/erp/package.json
 COPY apps/wsfecred/package.json apps/wsfecred/package.json
+COPY apps/arca-setup-executor/package.json apps/arca-setup-executor/package.json
+COPY packages/browser-contracts/package.json packages/browser-contracts/package.json
+COPY packages/arca-setup-contract/package.json packages/arca-setup-contract/package.json
 RUN bun install --frozen-lockfile
 
 COPY packages/core packages/core

@@ -1,0 +1,37 @@
+# Homologation stack for the automated ARCA connection on one GCE VM.
+# State is SQLite on the VM's persistent disk (/srv/tax/data), which is why
+# this is a VM and not Cloud Run. Secrets come from /srv/tax/env/*.env, written
+# by fetch-secrets.sh from Secret Manager; nothing secret lives in this file.
+services:
+  api:
+    image: ${REGISTRY}/tax-api:${TAG}
+    restart: unless-stopped
+    env_file: [/srv/tax/env/api.env]
+    environment:
+      NODE_ENV: production
+      ARCA_ENVIRONMENT: homologation
+      # Same public TLS name, resolved to Caddy inside this network (alias below),
+      # so Tax keeps its https-only boundary rule without leaving the VM.
+      ARCA_BOUNDARY_URL: https://${BOUNDARY_HOST}
+    volumes: [/srv/tax/data/api:/data]
+  boundary:
+    image: ${REGISTRY}/tax-arca-boundary:${TAG}
+    restart: unless-stopped
+    env_file: [/srv/tax/env/boundary.env]
+    environment:
+      NODE_ENV: production
+      ARCA_ENVIRONMENT: homologation
+    volumes: [/srv/tax/data/boundary:/data]
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      TAX_HOST: ${TAX_HOST}
+      BOUNDARY_HOST: ${BOUNDARY_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/tax/caddy:/data
+    networks:
+      default:
+        aliases: ["${TAX_HOST}", "${BOUNDARY_HOST}"]

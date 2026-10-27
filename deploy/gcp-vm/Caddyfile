@@ -1,0 +1,19 @@
+# Automatic TLS. Public callers reach the boundary ONLY on the executor's setup
+# routes; containers on this VM's private network (Tax) reach every route.
+{$TAX_HOST} {
+	reverse_proxy api:4100
+}
+
+{$BOUNDARY_HOST} {
+	@internal remote_ip private_ranges
+	handle @internal {
+		reverse_proxy boundary:4300
+	}
+	@executor path /v1/setup/executor/*
+	handle @executor {
+		reverse_proxy boundary:4300
+	}
+	handle {
+		respond 404
+	}
+}
