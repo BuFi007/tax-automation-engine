@@ -533,12 +533,16 @@ As built, where it differs from the text below:
   the DO calls `reschedule()` after it. Each loop's work and wake:
   - Factura E: work is a projection candidate (`projectionCandidates(1)`: an
     active consent or head; expiry and source changes are only observed by
-    projecting) or a `pending`/`inflight` outbox row → `now + poll interval`.
-    The text below lists only the outbox; without the candidates a consent
-    would never expire or re-project on Workers. Consequence: while any
-    consent is active the DO wakes every 1–10 s. The feature is off unless
-    `TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED=true`; revisit before enabling
-    it on Workers (e.g. wake at the earliest consent expiry instead).
+    projecting) → `now + poll interval`, or an undelivered outbox row → its
+    next claimable time (`nextFeatureOutboxDueAt()`: a pending row's
+    `next_attempt_at`, an inflight row's lease end), floored at `now + poll
+    interval`, so a backed-off row does not wake the DO early. The text below
+    lists only the outbox; without the candidates a consent would never expire
+    or re-project on Workers. Consequence: while any consent is active the DO
+    wakes every 1–10 s. `computeNextWakeAt` (`next-wake.ts`) schedules no
+    Factura E wake at all unless `TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED`
+    is `true`, whatever the store holds. Enabling it on Workers is a Phase 7
+    blocker.
   - Tax-domain outboxes: the earliest undelivered `leased_until` (now if
     unleased), always floored at `now + poll interval` so a failing publisher
     cannot spin the alarm.
@@ -861,6 +865,14 @@ These must land before `env.production` is deployed. Track each in its own plan:
   hosts were probed.
 - The official ARCA production CA bundle as a bundled text module
   (`setup.ts:155-156` refuses to start production without it).
+- **Factura E feature publication on Workers (cost blocker).** With
+  `TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED=true`, any active consent or head
+  is a projection candidate, so the `TaxState` DO wakes every poll (1–10 s)
+  for as long as one exists: about the "rejected" row of the Cost table
+  (≈ 324,000 GB-s/month at 5 s), not $0. Keep the flag off on Workers until the
+  feature loop wakes at the earliest consent expiry or source change instead
+  of polling candidates. The flag gate is enforced and tested in
+  `next-wake.ts` / `next-wake.test.ts`.
 
 ## Verification command summary
 

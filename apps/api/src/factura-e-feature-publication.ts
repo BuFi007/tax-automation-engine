@@ -1431,11 +1431,16 @@ export class FacturaEFeaturePublicationStore {
     })();
   }
 
-  /** Whether the feature loop has anything to do: a projection candidate or an undelivered outbox row. */
-  hasPendingFeatureWork(): boolean {
-    return this.projectionCandidates(1).length > 0 || this.#db.query<{ found: number }, []>(
-      "SELECT 1 AS found FROM factura_e_feature_outbox WHERE state IN ('pending', 'inflight') LIMIT 1"
-    ).get() !== null;
+  /**
+   * When an undelivered feature event is next claimable: a pending row's
+   * `next_attempt_at` (so a backed-off row waits) or an inflight row's lease
+   * end. `null` when none is undelivered.
+   */
+  nextFeatureOutboxDueAt(): string | null {
+    return this.#db.query<{ due: string | null }, []>(`
+      SELECT MIN(CASE state WHEN 'pending' THEN next_attempt_at ELSE lease_expires_at END) AS due
+      FROM factura_e_feature_outbox WHERE state IN ('pending', 'inflight')
+    `).get()?.due ?? null;
   }
 
   /** Earliest undelivered event's lease end; `''` when one is claimable now, `null` when none is undelivered. */

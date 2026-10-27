@@ -41,6 +41,7 @@ import {
 import { handleTaxBrowserSnapshotRoute } from './browser-snapshot-routes';
 import { handleFacturaEFactoringBrowserRoute } from './factura-e-factoring-browser-routes';
 import { classifyApiError } from './api-errors';
+import { computeNextWakeAt } from './next-wake';
 import {
   assertTaxTenantPrincipalScope,
   requiredTaxTenantPrincipalCapability,
@@ -1089,22 +1090,20 @@ export function createTaxApi(options: TaxApiOptions): TaxApi {
   const arcaSetupIntervalMs = Number.isInteger(arcaSetupInterval) && arcaSetupInterval >= 5_000 ? arcaSetupInterval : 30_000;
 
   function nextWakeAt(now: number): number | null {
-    const due: number[] = [];
-    if (facturaEFeatures && facturaEFeatureEventPublisher && facturaEFeatures.hasPendingFeatureWork())
-      due.push(now + facturaEFeaturePollIntervalMs!);
-    if (taxDomainEventPublisher) {
-      for (const outbox of facturaEFeatures ? [store, facturaEFeatures] : [store]) {
-        const leasedUntil = outbox.nextTaxDomainEventDueAt();
-        if (leasedUntil === null) continue;
-        const at = Date.parse(leasedUntil);
-        // Floored at one poll interval, so a failing publisher cannot spin the alarm.
-        due.push(Math.max(Number.isFinite(at) ? at : now, now + taxDomainEventPollIntervalMs));
-      }
-    }
-    if (arcaSetup && arcaSetupStore
-      && (arcaSetupStore.listOpen(1).length > 0 || arcaSetupStore.listCleanupPending(1).length > 0))
-      due.push(now + arcaSetupIntervalMs);
-    return due.length > 0 ? Math.min(...due) : null;
+    return computeNextWakeAt(now, {
+      facturaE: facturaEFeatures && facturaEFeatureEventPublisher
+        ? { enabled: facturaEFeatureEnabled, pollIntervalMs: facturaEFeaturePollIntervalMs!, store: facturaEFeatures }
+        : null,
+      taxDomain: taxDomainEventPublisher
+        ? { pollIntervalMs: taxDomainEventPollIntervalMs, outboxes: facturaEFeatures ? [store, facturaEFeatures] : [store] }
+        : null,
+      arcaSetup: arcaSetup && arcaSetupStore
+        ? {
+            intervalMs: arcaSetupIntervalMs,
+            hasWork: () => arcaSetupStore.listOpen(1).length > 0 || arcaSetupStore.listCleanupPending(1).length > 0,
+          }
+        : null,
+    });
   }
 
   return {

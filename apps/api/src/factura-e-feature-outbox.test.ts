@@ -123,6 +123,28 @@ describe('Factura E feature outbox delivery', () => {
     }
   });
 
+  test('reports the next claimable time, so a backed-off row does not wake the alarm early', async () => {
+    const store = await fixture();
+    try {
+      expect(store.nextFeatureOutboxDueAt()).toBe(T0.toISOString());
+      await drainFacturaEFeatureOutbox(store, {
+        async publish() {
+          throw new Error('upstream unavailable');
+        },
+      }, { now: T0, leaseSeconds: 30 });
+      const retryAt = store.nextFeatureOutboxDueAt();
+      expect(retryAt).not.toBeNull();
+      expect(Date.parse(retryAt!)).toBeGreaterThan(T2.getTime());
+      // The reported time is exactly when claimOutbox accepts the row again.
+      expect(store.claimOutbox({ limit: 1, leaseSeconds: 5, now: new Date(Date.parse(retryAt!) - 1) })).toEqual([]);
+      expect(store.claimOutbox({ limit: 1, leaseSeconds: 5, now: new Date(retryAt!) })).toHaveLength(1);
+      // Inflight: due when its lease lapses.
+      expect(store.nextFeatureOutboxDueAt()).toBe(new Date(Date.parse(retryAt!) + 5_000).toISOString());
+    } finally {
+      store.close();
+    }
+  });
+
   test('nacks with a safe code and retries after deterministic backoff', async () => {
     const store = await fixture();
     try {
