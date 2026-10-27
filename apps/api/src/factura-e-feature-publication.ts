@@ -1431,6 +1431,20 @@ export class FacturaEFeaturePublicationStore {
     })();
   }
 
+  /** Whether the feature loop has anything to do: a projection candidate or an undelivered outbox row. */
+  hasPendingFeatureWork(): boolean {
+    return this.projectionCandidates(1).length > 0 || this.#db.query<{ found: number }, []>(
+      "SELECT 1 AS found FROM factura_e_feature_outbox WHERE state IN ('pending', 'inflight') LIMIT 1"
+    ).get() !== null;
+  }
+
+  /** Earliest undelivered event's lease end; `''` when one is claimable now, `null` when none is undelivered. */
+  nextTaxDomainEventDueAt(): string | null {
+    return this.#db.query<{ due: string | null }, []>(
+      "SELECT MIN(COALESCE(leased_until, '')) AS due FROM factura_e_feature_tax_domain_event_outbox WHERE delivered_at IS NULL"
+    ).get()?.due ?? null;
+  }
+
   claimTaxDomainEvents(input: Readonly<{
     now: string;
     leaseUntil: string;

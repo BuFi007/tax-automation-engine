@@ -1,7 +1,7 @@
 # Tax API, ARCA boundary and issuance signers on Cloudflare Workers (zero fixed cost)
 
-Status: Phase 0, 0b, 1 and 2 DONE (gates passed, one crypto fallback chosen; see
-"Spike results") · next: Phase 3.
+Status: Phase 0, 0b, 1, 2 and 3 DONE (gates passed, one crypto fallback chosen; see
+"Spike results") · next: Phase 4.
 Written 2026-10-26 against branch `feat/arca-automated-connection`.
 Revised 2026-10-26 after an adversarial review (see "Review notes" at the end).
 Revised 2026-10-27 with the Phase 0 spike results and a second code review.
@@ -522,7 +522,36 @@ locally with the dev env and check that `/health` answers on each.
 **Done:** images built from this commit behave exactly as before. The existing
 tests pass.
 
-### Phase 3: Tax API Worker · 1 day
+### Phase 3: Tax API Worker · 1 day · DONE 2026-10-27
+
+As built, where it differs from the text below:
+- `bun:sqlite` is in the bundle graph (stores import the Bun adapter for the
+  path form), so `wrangler.jsonc` aliases it to
+  `packages/sql-store/src/bun-sqlite-unavailable.ts`, which throws if a store
+  is ever handed a path on Workers. Phases 4 and 4b need the same alias.
+- `nextWakeAt(now)` is a separate method; `tick()` still returns nothing, and
+  the DO calls `reschedule()` after it. Each loop's work and wake:
+  - Factura E: work is a projection candidate (`projectionCandidates(1)`: an
+    active consent or head; expiry and source changes are only observed by
+    projecting) or a `pending`/`inflight` outbox row → `now + poll interval`.
+    The text below lists only the outbox; without the candidates a consent
+    would never expire or re-project on Workers. Consequence: while any
+    consent is active the DO wakes every 1–10 s. The feature is off unless
+    `TAX_FACTURA_E_FEATURE_PUBLICATION_ENABLED=true`; revisit before enabling
+    it on Workers (e.g. wake at the earliest consent expiry instead).
+  - Tax-domain outboxes: the earliest undelivered `leased_until` (now if
+    unleased), always floored at `now + poll interval` so a failing publisher
+    cannot spin the alarm.
+  - ARCA setup: an open session **or** a `cleanup_pending` row → `now + tick`.
+- The operator proxy returns 404 (proxy off) when `TAX_OPERATOR_PROXY_TOKEN`
+  is missing, shorter than 32 chars or equal to any other env value; 401 for a
+  missing/wrong header; 404 for any path/method outside the allowlist. It drops
+  the query string and the proxy header before forwarding.
+- `wrangler dev --local` needs `--var NODE_ENV:development` (the config's
+  `NODE_ENV=production` requires every production credential).
+- Measured: dry-run bundle 3,438 KiB / **660 KiB gzip**; local `wrangler dev`
+  `/health` → 200; idle `nextWakeAt` → `null` (unit test on the real
+  `createTaxApi` over the fake DO storage).
 
 - `apps/api/wrangler.jsonc` (new), copying the executor's shape:
   - `name: bufi-tax-api-homologation`, `main: src/worker.ts`,

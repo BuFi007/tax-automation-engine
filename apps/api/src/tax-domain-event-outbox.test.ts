@@ -48,4 +48,19 @@ describe('TaxDomainEvent outbox', () => {
       store.close();
     }
   });
+
+  test('reports when undelivered work is next due, for the work-driven alarm', () => {
+    const store = new TaxProfileStore(':memory:');
+    try {
+      expect(store.nextTaxDomainEventDueAt()).toBeNull();
+      store.appendTaxDomainEvent(event(), now);
+      expect(store.nextTaxDomainEventDueAt()).toBe('');
+      store.leaseTaxDomainEvents({ now, leaseUntil: '2026-07-17T00:01:00.000Z', limit: 1 });
+      expect(store.nextTaxDomainEventDueAt()).toBe('2026-07-17T00:01:00.000Z');
+      store.ackTaxDomainEventDelivery(event().eventId, '2026-07-17T00:00:02.000Z');
+      expect(store.nextTaxDomainEventDueAt()).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
 });

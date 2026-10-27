@@ -1,0 +1,61 @@
+{
+  // Tax API: one SQLite-backed Durable Object (`TaxState`) runs the whole API.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bufi-tax-api-homologation",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  // Stores open a file only on Bun; the Worker always injects the Durable Object database.
+  "alias": { "bun:sqlite": "../../packages/sql-store/src/bun-sqlite-unavailable.ts" },
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "TAX_STATE", "class_name": "TaxState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TaxState"] }],
+  // ARCA_SETUP_EXECUTOR (service bufi-arca-setup-executor-homologation) is added in
+  // the second deploy pass: a binding to a Worker that does not exist yet fails to deploy.
+  "services": [
+    { "binding": "ARCA_BOUNDARY", "service": "bufi-arca-boundary-homologation" },
+    { "binding": "ARCA_BOUNDARY_ADMIN", "service": "bufi-arca-boundary-homologation", "entrypoint": "AdminEntrypoint" },
+    { "binding": "WSFE_SIGNER", "service": "bufi-wsfe-signer-homologation" },
+    { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer-homologation" }
+  ],
+  // Hourly watchdog only; the Durable Object alarm is work-driven and durable.
+  "triggers": { "crons": ["0 * * * *"] },
+  "observability": { "enabled": true },
+  // The URLs are never resolved: calls to them go through the service bindings.
+  "vars": {
+    "ARCA_ENVIRONMENT": "homologation",
+    "NODE_ENV": "production",
+    "ARCA_BOUNDARY_URL": "https://arca-boundary.internal",
+    "ARCA_SIGNER_URL": "https://wsfex-signer.internal",
+    "ARCA_WSFE_SIGNER_URL": "https://wsfe-signer.internal",
+    "ARCA_SETUP_EXECUTOR_URL": "https://arca-setup-executor.internal"
+  },
+  // Secrets (wrangler secret bulk, from Secret Manager): the Tax API env plus
+  // TAX_OPERATOR_PROXY_TOKEN. Never the boundary keys.
+  "env": {
+    // Not deployed by the Workers plan; see its Phase 7 prerequisites.
+    "production": {
+      "name": "bufi-tax-api",
+      "durable_objects": {
+        "bindings": [{ "name": "TAX_STATE", "class_name": "TaxState" }]
+      },
+      "services": [
+        { "binding": "ARCA_BOUNDARY", "service": "bufi-arca-boundary" },
+        { "binding": "ARCA_BOUNDARY_ADMIN", "service": "bufi-arca-boundary", "entrypoint": "AdminEntrypoint" },
+        { "binding": "WSFE_SIGNER", "service": "bufi-wsfe-signer" },
+        { "binding": "WSFEX_SIGNER", "service": "bufi-wsfex-signer" }
+      ],
+      "vars": {
+        "ARCA_ENVIRONMENT": "production",
+        "NODE_ENV": "production",
+        "ARCA_BOUNDARY_URL": "https://arca-boundary.internal",
+        "ARCA_SIGNER_URL": "https://wsfex-signer.internal",
+        "ARCA_WSFE_SIGNER_URL": "https://wsfe-signer.internal",
+        "ARCA_SETUP_EXECUTOR_URL": "https://arca-setup-executor.internal"
+      }
+    }
+  }
+}

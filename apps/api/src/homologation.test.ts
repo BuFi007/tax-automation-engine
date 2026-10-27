@@ -99,6 +99,19 @@ describe('ARCA homologation acceptance harness', () => {
     );
     expect(report).toEqual(expect.objectContaining({ state: 'ready', signerVersion: '1.0.0', safeHealthReceiptHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
     expect(probeWsfexHomologationSigner({ baseUrl: 'http://signer.example.test', token: 'token' })).rejects.toThrow('ARCA_SIGNER_HTTPS_REQUIRED');
+    await probeWsfexHomologationSigner(
+      { baseUrl: 'https://tax.example.test/v1/operator/wsfex-signer', token: 'signer-token', headers: { 'x-bufi-operator-token': 'proxy-token', authorization: 'Bearer spoofed' } },
+      async (url, init) => {
+        expect(String(url)).toBe('https://tax.example.test/v1/operator/wsfex-signer/health');
+        const headers = new Headers(init?.headers);
+        expect(headers.get('x-bufi-operator-token')).toBe('proxy-token');
+        expect(headers.get('authorization')).toBe('Bearer signer-token');
+        return Response.json({
+          version: 'motora-wsfex-signer-health-v1', environment: 'homologation', signerVersion: '1.0.0', wsfexVersion: '3.1.1',
+          certificateDelegationConfigured: true, wsaaReady: true,
+        });
+      }
+    );
     expect(probeWsfexHomologationSigner(
       { baseUrl: 'https://signer.example.test', token: 'token' },
       async () => Response.json({
@@ -123,6 +136,14 @@ describe('ARCA homologation acceptance harness', () => {
     );
     expect(report).toEqual(expect.objectContaining({ state: 'ready', safeHealthReceiptHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
     expect(probeWsfeHomologationSigner({ baseUrl: 'http://wsfe-signer.example.test', token: 'token' })).rejects.toThrow('ARCA_WSFE_SIGNER_HTTPS_REQUIRED');
+    await probeWsfeHomologationSigner(
+      { baseUrl: 'https://tax.example.test/v1/operator/wsfe-signer', token: 'wsfe-token', headers: { 'x-bufi-operator-token': 'proxy-token' } },
+      async (url, init) => {
+        expect(String(url)).toBe('https://tax.example.test/v1/operator/wsfe-signer/health');
+        expect(new Headers(init?.headers).get('x-bufi-operator-token')).toBe('proxy-token');
+        return Response.json({ schema: 'motora-wsfe-signer-health-v1', environment: 'homologacion', certificateDelegationConfigured: true, wsaaReady: true });
+      }
+    );
     expect(probeWsfeHomologationSigner(
       { baseUrl: 'https://wsfe-signer.example.test', token: 'token' },
       async () => Response.json({ schema: 'motora-wsfe-signer-health-v1', environment: 'production', certificateDelegationConfigured: true, wsaaReady: true })

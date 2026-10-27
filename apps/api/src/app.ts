@@ -142,6 +142,12 @@ export type TaxApi = Readonly<{
   fetch(request: Request): Promise<Response>;
   /** Runs the three background loop bodies once. */
   tick(): Promise<void>;
+  /**
+   * When a loop next has work (epoch ms), or `null` when none does. Each loop
+   * counts only while enabled and holding work, so an idle Durable Object sets
+   * no alarm.
+   */
+  nextWakeAt(now: number): number | null;
   loops: Readonly<{
     facturaEFeatures: TaxApiLoop | null;
     taxDomainEvents: TaxApiLoop | null;
@@ -587,9 +593,10 @@ export function createTaxApi(options: TaxApiOptions): TaxApi {
       ? !env.TAX_ARCA_SETUP_DB_PATH && !env.TAX_ENGINE_DB_PATH
       : !arcaSetupDatabase.durable))
     throw new Error('TAX_ARCA_SETUP_DURABLE_STORE_REQUIRED');
-  const arcaSetup = arcaSetupEnabled
+  const arcaSetupStore = arcaSetupEnabled ? new ArcaSetupStore(arcaSetupDatabase) : null;
+  const arcaSetup = arcaSetupStore
     ? new ArcaSetupAutomationService({
-        store: new ArcaSetupStore(arcaSetupDatabase),
+        store: arcaSetupStore,
         onboarding: arcaOnboarding,
         executor: HttpArcaSetupExecutorGateway.fromEnvironment(serviceFetch(options.fetchers?.executor)),
         boundary: HttpArcaSetupBoundaryGateway.fromEnvironment(boundaryFetch),
@@ -1079,6 +1086,26 @@ export function createTaxApi(options: TaxApiOptions): TaxApi {
     }
   }
   const arcaSetupInterval = Number(env.TAX_ARCA_SETUP_TICK_MS ?? 30_000);
+  const arcaSetupIntervalMs = Number.isInteger(arcaSetupInterval) && arcaSetupInterval >= 5_000 ? arcaSetupInterval : 30_000;
+
+  function nextWakeAt(now: number): number | null {
+    const due: number[] = [];
+    if (facturaEFeatures && facturaEFeatureEventPublisher && facturaEFeatures.hasPendingFeatureWork())
+      due.push(now + facturaEFeaturePollIntervalMs!);
+    if (taxDomainEventPublisher) {
+      for (const outbox of facturaEFeatures ? [store, facturaEFeatures] : [store]) {
+        const leasedUntil = outbox.nextTaxDomainEventDueAt();
+        if (leasedUntil === null) continue;
+        const at = Date.parse(leasedUntil);
+        // Floored at one poll interval, so a failing publisher cannot spin the alarm.
+        due.push(Math.max(Number.isFinite(at) ? at : now, now + taxDomainEventPollIntervalMs));
+      }
+    }
+    if (arcaSetup && arcaSetupStore
+      && (arcaSetupStore.listOpen(1).length > 0 || arcaSetupStore.listCleanupPending(1).length > 0))
+      due.push(now + arcaSetupIntervalMs);
+    return due.length > 0 ? Math.min(...due) : null;
+  }
 
   return {
     fetch: handle,
@@ -1087,6 +1114,7 @@ export function createTaxApi(options: TaxApiOptions): TaxApi {
       await tickTaxDomainEvents();
       await tickArcaSetup();
     },
+    nextWakeAt,
     loops: {
       facturaEFeatures: facturaEFeatureEnabled
         ? { intervalMs: facturaEFeaturePollIntervalMs!, run: tickFacturaEFeatures }
@@ -1095,10 +1123,7 @@ export function createTaxApi(options: TaxApiOptions): TaxApi {
         ? { intervalMs: taxDomainEventPollIntervalMs, run: tickTaxDomainEvents }
         : null,
       arcaSetup: arcaSetup
-        ? {
-            intervalMs: Number.isInteger(arcaSetupInterval) && arcaSetupInterval >= 5_000 ? arcaSetupInterval : 30_000,
-            run: tickArcaSetup,
-          }
+        ? { intervalMs: arcaSetupIntervalMs, run: tickArcaSetup }
         : null,
     },
     executionMode: wsfexGateway ? 'human_gated_agent' : 'manual_only',

@@ -2,6 +2,9 @@ import { buildHomologationPreflight, probeReclaimProofVault, probeWsfeHomologati
 import { HttpWsfexGateway } from './wsfex';
 
 const [command, evidencePath] = process.argv.slice(2);
+// Through the Tax API's operator proxy, the signer URLs are `$TAX/v1/operator/{wsfex,wsfe}-signer`.
+const operatorProxyToken = process.env.TAX_OPERATOR_PROXY_TOKEN;
+const operatorHeaders = operatorProxyToken ? { headers: { 'x-bufi-operator-token': operatorProxyToken } } : {};
 
 if (command === 'preflight') {
   const report = buildHomologationPreflight();
@@ -24,7 +27,7 @@ if (command === 'preflight') {
 } else if (command === 'probe-signer') {
   const baseUrl = process.env.ARCA_SIGNER_URL ?? '';
   const token = process.env.ARCA_SIGNER_TOKEN ?? '';
-  const report = await probeWsfexHomologationSigner({ baseUrl, token });
+  const report = await probeWsfexHomologationSigner({ baseUrl, token, ...operatorHeaders });
   console.log(JSON.stringify(report, null, 2));
 } else if (command === 'probe-points-of-sale') {
   if (process.env.ARCA_ENVIRONMENT === 'production') {
@@ -53,7 +56,7 @@ if (command === 'preflight') {
 } else if (command === 'probe-wsfe-signer') {
   const baseUrl = process.env.ARCA_WSFE_SIGNER_URL ?? '';
   const token = process.env.ARCA_WSFE_SIGNER_TOKEN ?? '';
-  const report = await probeWsfeHomologationSigner({ baseUrl, token });
+  const report = await probeWsfeHomologationSigner({ baseUrl, token, ...operatorHeaders });
   console.log(JSON.stringify(report, null, 2));
 } else if (command === 'probe-proof-vault') {
   const report = await probeReclaimProofVault({ baseUrl: process.env.RECLAIM_PROOF_VAULT_URL ?? '', token: process.env.RECLAIM_PROOF_VAULT_TOKEN ?? '' });

@@ -991,6 +991,13 @@ export class TaxProfileStore {
     return this.claimTaxDomainEvents(input).map(claim => claim.event);
   }
 
+  /** Earliest undelivered event's lease end; `''` when one is claimable now, `null` when none is undelivered. */
+  nextTaxDomainEventDueAt(): string | null {
+    return this.#db.query<{ due: string | null }, []>(
+      "SELECT MIN(COALESCE(leased_until, '')) AS due FROM tax_domain_event_outbox WHERE delivered_at IS NULL"
+    ).get()?.due ?? null;
+  }
+
   /**
    * Fenced claim used by the network relay. A stale worker cannot acknowledge
    * or release a lease after another worker has taken it over.

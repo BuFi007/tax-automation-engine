@@ -259,7 +259,7 @@ export function validateHomologationEvidence(
 }
 
 export async function probeWsfexHomologationSigner(
-  config: Readonly<{ baseUrl: string; token: string }>,
+  config: Readonly<{ baseUrl: string; token: string; headers?: Readonly<Record<string, string>> }>,
   fetcher: HomologationFetch = (input, init) => fetch(input, init)
 ): Promise<Readonly<{
   version: 'wsfex-homologation-probe-v1';
@@ -272,7 +272,7 @@ export async function probeWsfexHomologationSigner(
   if (!config.token) throw new Error('ARCA_SIGNER_TOKEN_REQUIRED');
   const response = await fetcher(`${config.baseUrl.replace(/\/$/, '')}/health`, {
     method: 'GET',
-    headers: { authorization: `Bearer ${config.token}` },
+    headers: { ...config.headers, authorization: `Bearer ${config.token}` },
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`ARCA_SIGNER_HEALTH_REJECTED_${response.status}`);
@@ -287,14 +287,14 @@ export async function probeWsfexHomologationSigner(
 }
 
 export async function probeWsfeHomologationSigner(
-  config: Readonly<{ baseUrl: string; token: string }>,
+  config: Readonly<{ baseUrl: string; token: string; headers?: Readonly<Record<string, string>> }>,
   fetcher: HomologationFetch = (input, init) => fetch(input, init)
 ): Promise<Readonly<{ version: 'wsfe-homologation-probe-v1'; state: 'ready'; safeHealthReceiptHash: string }>> {
   if (!config.baseUrl.startsWith('https://')) throw new Error('ARCA_WSFE_SIGNER_HTTPS_REQUIRED');
   if (!config.token) throw new Error('ARCA_WSFE_SIGNER_TOKEN_REQUIRED');
   const response = await fetcher(`${config.baseUrl.replace(/\/$/, '')}/health`, {
     method: 'GET',
-    headers: { authorization: `Bearer ${config.token}` },
+    headers: { ...config.headers, authorization: `Bearer ${config.token}` },
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`ARCA_WSFE_SIGNER_HEALTH_REJECTED_${response.status}`);
