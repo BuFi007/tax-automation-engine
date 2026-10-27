@@ -93,7 +93,8 @@ export class ArcaSetupAutomationService {
         'customer_authenticates_inside_the_same_hosted_session',
         'automation_and_observation_pause_during_credential_entry',
         'private_keys_and_raw_cuits_stay_in_the_boundary',
-        'connected_requires_api_verification_and_reclaim_proof',
+        'connected_requires_arca_api_verification_receipts',
+        'reclaim_witness_proof_is_optional',
       ],
     };
   }
@@ -461,8 +462,16 @@ export class ArcaSetupAutomationService {
         return true;
       case 'verify_api':
         return this.verify(execution, run, plan.service);
-      case 'request_proof':
-        return this.awaitProof(execution);
+      case 'record_readiness':
+        // WSFE must have answered for the domestic point the customer chose for this run.
+        if (execution.chosenDomesticPointOfSale !== null && run.requestedServices.includes('wsfe')
+          && run.domesticPointOfSale?.number !== execution.chosenDomesticPointOfSale)
+          throw new Error('ARCA_POINT_OF_SALE_VERIFICATION_MISMATCH');
+        this.deps.onboarding.recordApiVerifiedReadiness({
+          onboardingId: run.onboardingId, actorId: 'tax:arca-setup',
+          idempotencyKey: `arca-setup:${execution.executionId}:api-verified-ready`, occurredAt: now,
+        });
+        return true;
       case 'connected':
         this.connect(execution, run);
         return false;
@@ -638,25 +647,6 @@ export class ArcaSetupAutomationService {
       }, 'tax:arca-setup');
       return false;
     }
-  }
-
-  /**
-   * The Reclaim WITNESS proof is captured by the customer on their own device
-   * (ARCA binds sessions to the prover's network). The hosted browser is not
-   * needed any more, so it is closed now.
-   */
-  private async awaitProof(execution: ArcaSetupExecutionV1): Promise<boolean> {
-    if (execution.phase === 'waiting_for_proof') return false;
-    this.apply(execution, {
-      kind: 'set_phase',
-      phase: 'waiting_for_proof',
-      blocker: this.deps.reclaimAvailable
-        ? null
-        : { code: 'RECLAIM_ARCA_ONBOARDING_CONFIGURATION_REQUIRED', retryable: false, userAction: 'contact_support', observedAt: this.now() },
-      idempotencyKey: `phase:waiting_for_proof:${execution.revision}`,
-    }, 'tax:arca-setup');
-    await this.closeSessions(execution.executionId, 'completed');
-    return false;
   }
 
   private connect(execution: ArcaSetupExecutionV1, run: ArcaOnboardingRunV1): void {

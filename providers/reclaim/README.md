@@ -20,7 +20,7 @@ Before setting any provider ID in production:
 6. The CAE provider proves the actual constatement result and cannot succeed from the blank form alone. Document 19 must expose no associated document; documents 20/21 must expose the exact original Factura E type, point of sale, and invoice number.
 7. The provider version has no AI tag. Motora configures `allowedTags: []`.
 8. If TEE enforcement is enabled, all enabled providers produce a TEE attestation accepted by SDK 5.8.0 before `RECLAIM_REQUIRE_TEE=true` is set.
-9. The onboarding provider proves service adherence, active export point of sale, and WSFEX/WSFE delegation, while the final readiness decision independently requires authoritative API receipts bound to the same point of sale.
+9. Optional since 2026-10-27: the automated "Connect my ARCA" run reaches `ready` from the WSFEX/WSFE API receipts alone; a proof is not required. The onboarding provider proves service adherence, active export point of sale, and WSFEX/WSFE delegation, while the final readiness decision independently requires authoritative API receipts bound to the same point of sale.
 10. A browser regression run is captured after every material ARCA DOM/request change.
 11. Provider IDs and Reclaim application credentials are stored only in the server secret manager.
 

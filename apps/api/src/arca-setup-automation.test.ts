@@ -196,6 +196,18 @@ function harness(options: Partial<{ services: ('wsfex' | 'wsfe')[]; provider: bo
   return { clock, onboarding, executor, boundary, wsfex, wsfe, service: build(), rebuild: build, path };
 }
 
+/** Customer-certificate path up to the API verification step. */
+async function reachVerification(service: ArcaSetupAutomationService, executor: FakeExecutor) {
+  const started = await service.start({ onboardingId: ONBOARDING_ID, workspaceId: WORKSPACE, startedBy: { kind: 'user', actorId: 'user-1' }, idempotencyKey: 'start-1' });
+  await service.authorize({ executionId: started.executionId, actorId: 'user-1', consent: userConsent, idempotencyKey: 'grant-1' });
+  await send(service, executor.last, 'completed');
+  const points = { exportWebServices: [2], domesticWebServices: [1], usedNumbers: [1, 2], domicileCount: 1 };
+  await send(service, executor.last, 'completed', { inventory: inventory({ pointsOfSale: points }) });
+  await send(service, executor.last, 'completed', { inventory: inventory({ pointsOfSale: points, certificates: { intendedAliasExists: true, intendedAliasCertificateValidUntil: null, otherAliasCount: 0 } }) });
+  await send(service, executor.last, 'completed', { inventory: inventory({ pointsOfSale: points, relationships: { wsfex: 'customer_alias', wsfe: 'customer_alias' } }) });
+  return started;
+}
+
 async function send(
   service: ArcaSetupAutomationService,
   order: ArcaSetupWireOrder,
@@ -287,16 +299,63 @@ describe('automated ARCA connection', () => {
 
     clock.advance(6 * 60_000);
     await service.tick();
-    expect(onboarding.getRun(ONBOARDING_ID).currentStep).toBe('zk_evidence');
-    expect(service.status(started.executionId).phase).toBe('waiting_for_proof');
-    // The hosted browser is no longer needed once API verification passed.
-    expect(executor.cancellations).toContain(started.executionId);
-
-    await onboarding.startReclaim({ onboardingId: ONBOARDING_ID, actorId: 'user-1', idempotencyKey: 'reclaim-start-1', occurredAt: clock.now().toISOString() });
-    await onboarding.ingestReclaimCallback('reclaim-session-1', { proofs: [] }, clock.now().toISOString());
-    await service.tick();
+    // ARCA's own WSFEX answer is the evidence: connected without a device proof.
+    const run = onboarding.getRun(ONBOARDING_ID);
+    expect(run).toMatchObject({ status: 'ready', currentStep: 'ready', zkEvidence: null });
+    const ready = run.steps.find(step => step.step === 'ready')!;
+    expect(ready.evidenceHashes).toEqual([run.apiVerificationReceipts!.wsfex!]);
+    expect(ready.safeMetadata).toMatchObject({ readinessEvidence: 'arca_api_verification', exportPointOfSale: 2 });
     expect(service.status(started.executionId).phase).toBe('connected');
     expect(arcaSetupProgressV1Schema.parse(service.status(started.executionId)).waitingOn).toBe('nobody');
+    // The hosted browser is no longer needed once API verification passed.
+    expect(executor.cancellations).toContain(started.executionId);
+  });
+
+  test('connects without any Reclaim configuration once WSFEX and WSFE answer', async () => {
+    const { service, executor, onboarding } = harness({ services: ['wsfex', 'wsfe'], provider: false, reclaim: false });
+    const started = await reachVerification(service, executor);
+    const run = onboarding.getRun(ONBOARDING_ID);
+    expect(run).toMatchObject({ status: 'ready', zkEvidence: null, domesticPointOfSale: { number: 1, active: true } });
+    expect(run.steps.find(step => step.step === 'ready')!.evidenceHashes)
+      .toEqual([run.apiVerificationReceipts!.wsfex!, run.apiVerificationReceipts!.wsfe!]);
+    expect(service.status(started.executionId)).toMatchObject({ phase: 'connected', blocker: null });
+    expect(service.capabilities().reclaimWitness).toBe('configuration_required');
+  });
+
+  test('a failed or propagating ARCA verification never connects', async () => {
+    const { service, executor, onboarding, wsfex, clock } = harness({ services: ['wsfex', 'wsfe'], provider: false, reclaim: false });
+    wsfex.failures = 100;
+    const started = await reachVerification(service, executor);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      clock.advance(3 * 60 * 60_000);
+      await service.tick();
+    }
+    expect(onboarding.getRun(ONBOARDING_ID)).toMatchObject({ status: 'active', currentStep: 'api_verification' });
+    expect(service.status(started.executionId).phase).not.toBe('connected');
+  });
+
+  test('a verification for a point of sale other than the run\'s never connects', async () => {
+    const { service, executor, onboarding, wsfex } = harness({ services: ['wsfex', 'wsfe'], provider: false, reclaim: false });
+    wsfex.activePoints = [5];
+    const started = await reachVerification(service, executor);
+    expect(onboarding.getRun(ONBOARDING_ID)).toMatchObject({ status: 'active', currentStep: 'api_verification', apiVerification: { wsfex: false } });
+    const progress = service.status(started.executionId);
+    expect(progress.phase).not.toBe('connected');
+    expect(progress.blocker).toMatchObject({ code: 'ARCA_POINT_OF_SALE_NOT_ACTIVE' });
+  });
+
+  test('no actor can mark the connection ready or connected without ARCA verification', async () => {
+    const { service, executor, onboarding } = harness({ services: ['wsfex', 'wsfe'], provider: false, reclaim: false });
+    const started = await service.start({ onboardingId: ONBOARDING_ID, workspaceId: WORKSPACE, startedBy: { kind: 'agent', actorId: 'agent:tax' }, idempotencyKey: 'start-1' });
+    await service.authorize({ executionId: started.executionId, actorId: 'user-1', consent: userConsent, idempotencyKey: 'grant-1' });
+    await send(service, executor.last, 'completed');
+    expect(() => onboarding.recordApiVerifiedReadiness({ onboardingId: ONBOARDING_ID, actorId: 'agent:tax', idempotencyKey: 'forge-ready', occurredAt: new Date().toISOString() }))
+      .toThrow('ARCA_ONBOARDING_EXPECTED_SERVICE_ADHERENCE');
+    expect(() => onboarding.applyManualCommand({ onboardingId: ONBOARDING_ID, actorId: 'agent:tax', occurredAt: new Date().toISOString(),
+      command: { kind: 'record_api_verified_readiness', idempotencyKey: 'forge-manual' } as never }))
+      .toThrow('ARCA_ONBOARDING_INTERNAL_COMMAND_REQUIRED');
+    expect(service.status(started.executionId).phase).not.toBe('connected');
+    expect(onboarding.getRun(ONBOARDING_ID).status).toBe('active');
   });
 
   test('a run can be resumed by a new process after the app was closed', async () => {
@@ -329,7 +388,7 @@ describe('automated ARCA connection', () => {
     await send(service, executor.last, 'completed', { inventory: inventory({ pointsOfSale: points, relationships: { wsfex: 'customer_alias', wsfe: 'customer_alias' } }) });
     const run = onboarding.getRun(ONBOARDING_ID);
     expect(run.apiVerification).toMatchObject({ wsfex: true, wsfe: true });
-    expect(run.currentStep).toBe('zk_evidence');
+    expect(run.currentStep).toBe('ready');
     expect(wsfe.calls).toBe(1);
     expect(run.domesticPointOfSale).toMatchObject({ number: 1, active: true });
   });

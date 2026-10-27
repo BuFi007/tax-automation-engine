@@ -188,6 +188,11 @@ export type ArcaOnboardingCommand =
       idempotencyKey: string;
     }>
   | Readonly<{
+      /** Ready from ARCA's own WSFE/WSFEX answers; the Reclaim proof is optional. */
+      kind: 'record_api_verified_readiness';
+      idempotencyKey: string;
+    }>
+  | Readonly<{
       kind: 'start_zk_evidence';
       session: ArcaOnboardingReclaimSessionV1;
       idempotencyKey: string;
@@ -529,6 +534,38 @@ export function applyArcaOnboardingCommand(
       };
       safeMetadata = { authoritativeApiVerification: true };
       break;
+    case 'record_api_verified_readiness': {
+      requireCurrentStep(run, 'zk_evidence');
+      // The evidence is the signers' authenticated answers already recorded for this run.
+      const receipts = run.requestedServices.map(service => run.apiVerificationReceipts?.[service] ?? null);
+      if (run.requestedServices.length === 0 || !requestedServicesSatisfied(run.requestedServices, run.apiVerification)
+        || receipts.some(receipt => receipt === null || !/^[a-f0-9]{64}$/.test(receipt)))
+        throw new Error('ARCA_API_VERIFICATION_REQUIRED_BEFORE_READY');
+      const verified = run.steps.find(record => record.step === 'api_verification');
+      if (verified?.state !== 'completed' || !run.pointOfSale.active || run.pointOfSale.number === null
+        || (run.requestedServices.includes('wsfex') && verified.safeMetadata.exportPointOfSale !== run.pointOfSale.number))
+        throw new Error('ARCA_POINT_OF_SALE_VERIFICATION_MISMATCH');
+      let steps = updateStep(run.steps, 'zk_evidence', { state: 'skipped', safeMetadata: { reclaimProof: 'optional_not_required' } });
+      steps = updateStep(steps, 'ready', {
+        state: 'completed',
+        completedAt: occurredAt,
+        evidenceHashes: receipts as string[],
+        safeMetadata: {
+          readinessEvidence: 'arca_api_verification',
+          exportPointOfSale: run.pointOfSale.number,
+          domesticPointOfSale: run.domesticPointOfSale?.number ?? null,
+        },
+      });
+      next = {
+        ...run,
+        steps,
+        status: 'ready',
+        currentStep: 'ready',
+        reclaimSession: run.reclaimSession?.state === 'pending' ? { ...run.reclaimSession, state: 'cancelled' } : run.reclaimSession,
+      };
+      safeMetadata = { readinessEvidence: 'arca_api_verification', onboardingReady: true };
+      break;
+    }
     case 'start_zk_evidence':
       requireCurrentStep(run, 'zk_evidence');
       if (run.reclaimSession?.state === 'pending') throw new Error('RECLAIM_SESSION_ALREADY_PENDING');

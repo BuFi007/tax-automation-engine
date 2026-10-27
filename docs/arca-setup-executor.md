@@ -4,8 +4,10 @@ The customer says "Connect my ARCA" (to Bu, or from Invoices). BUFI asks once
 for a scoped authorization, opens ARCA's own login page inside a hosted
 Cloudflare browser that the customer drives directly, and then completes the
 services, certificate, delegation and point-of-sale work itself. BUFI reports
-**connected** only after the existing WSFEX/WSFE verification and the Reclaim
-proof succeed.
+**connected** only after ARCA's own web services answer: the existing WSFEX/WSFE
+signers call ARCA with the customer's certificate for the point of sale bound to
+the run, and those receipts are the connected evidence. The Reclaim proof is
+optional (owner decision, 2026-10-27).
 
 The guided manual flow in Invoices stays available. The automated run is the
 paid alternative (AI credits; the price is set in Desk).
@@ -77,8 +79,11 @@ so the run observes the portal first and asks the API last:
    `FEParamGetPtosVenta` through the WSFE signer, bound to the same issuer
    profile and represented-CUIT commitment. WSFEX success never stands in for
    WSFE. ARCA propagation delays retry with backoff for about a day.
-7. `zk_evidence` — the customer completes the Reclaim WITNESS proof on their own
-   device. The hosted browser is closed before this step.
+7. `ready` — recorded by `record_api_verified_readiness` from the receipts in
+   step 6 (the `zk_evidence` step is `skipped`). The command carries no evidence
+   of its own, is not reachable from the manual routes, and refuses a run whose
+   requested services lack a receipt for its bound point of sale. The hosted
+   browser is closed.
 8. `connected`.
 
 Every mutating operation re-reads ARCA first. A response that the executor
@@ -138,9 +143,11 @@ ARCA binds an authenticated session to the client's network context, and the
 reviewed Reclaim flow is prover-side (WITNESS). A session that lives in
 Cloudflare's network cannot be proven from an attestor or from the customer's
 phone. So the hosted session is used for setup only, and the Reclaim proof is
-captured on the customer's own device afterwards, exactly as before. If Reclaim
-is not configured, the run stays in `waiting_for_proof` with
-`RECLAIM_ARCA_ONBOARDING_CONFIGURATION_REQUIRED` and never reports connected.
+captured on the customer's own device. It is no longer required: the automated
+run reaches `connected` from the WSFEX/WSFE receipts with or without Reclaim
+configured, and never enters `waiting_for_proof`. The Reclaim onboarding
+session and callback stay available for runs that stop at `zk_evidence` through
+the manual flow.
 
 ## Contracts
 

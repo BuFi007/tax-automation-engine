@@ -837,11 +837,13 @@ As built, 2026-10-27, cutover (owner: "ok cut over then"):
   request, one event, no alarm. The executor→API and API→executor bindings are
   only exercised end to end by a setup order (no non-mutating route calls the
   executor; `arcaSetup.executor` reports configuration, not reachability).
-- **Blocker for `connected`:** `connected` requires the Reclaim proof step.
-  `RECLAIM_APP_ID`, `RECLAIM_APP_SECRET`, `RECLAIM_CALLBACK_BASE_URL`,
-  `RECLAIM_ARCA_ONBOARDING_PROVIDER_ID` are absent from
-  `tax-homologation-api-env` (so the VM never had them either). A setup run
-  stops at `waiting_for_proof` with `RECLAIM_ARCA_ONBOARDING_CONFIGURATION_REQUIRED`.
+- ~~**Blocker for `connected`:** `connected` requires the Reclaim proof step.~~
+  **Resolved by decision (owner, 2026-10-27, option 3):** `connected` comes
+  from ARCA's own WSFEX/WSFE verification. The run records
+  `record_api_verified_readiness` from the signers' receipts for the bound point
+  of sale; the Reclaim proof is optional and never blocks. The `RECLAIM_*`
+  variables (absent from `tax-homologation-api-env`) are no longer needed for
+  `connected`.
 - Delegation re-provisioning is **not** needed for `customer_certificate`
   (`ARCA_SETUP_PROVIDER_DELEGATION_ENABLED=false`): the setup imports the
   customer's own certificate in `provision_boundary`. It is needed only for

@@ -140,6 +140,36 @@ describe('ARCA onboarding step engine', () => {
     expect(run.apiVerification).toEqual({ wsfex: true, wsfe: false, observedAt: now });
   });
 
+  test('reaches ready from the ARCA web-service verification receipts, with the Reclaim proof optional', () => {
+    let run = advanceToDiscovery(createRun(['wsfex']));
+    run = apply(run, {
+      kind: 'record_point_of_sale_discovery', exportPointOfSale: 8, evidenceHash: hash('pos-eight'), idempotencyKey: 'discover-eight',
+    });
+    run = apply(run, {
+      kind: 'record_ws_delegation', delegatedServices: { wsfex: true, wsfe: false },
+      issuerProfileReferenceHash: hash('issuer-profile'), representedCuitCommitment: hash('represented-cuit'),
+      evidenceHash: hash('wsfex-only'), idempotencyKey: 'delegate-wsfex',
+    });
+    // Before ARCA answered, nothing can mark the run ready.
+    expect(() => apply(run, { kind: 'record_api_verified_readiness', idempotencyKey: 'ready-early' }))
+      .toThrow('ARCA_ONBOARDING_EXPECTED_API_VERIFICATION');
+    run = apply(run, {
+      kind: 'record_service_api_verification', service: 'wsfex', activePointOfSale: 8,
+      observedAt: now, receiptHash: hash('wsfex-receipt'), idempotencyKey: 'verify-wsfex',
+    });
+    expect(run.currentStep).toBe('zk_evidence');
+    run = apply(run, { kind: 'record_api_verified_readiness', idempotencyKey: 'ready-1' });
+    expect(run.status).toBe('ready');
+    expect(run.currentStep).toBe('ready');
+    expect(run.zkEvidence).toBeNull();
+    expect(run.steps.find(step => step.step === 'zk_evidence')?.state).toBe('skipped');
+    const ready = run.steps.find(step => step.step === 'ready')!;
+    expect(ready.state).toBe('completed');
+    expect(ready.evidenceHashes).toEqual([hash('wsfex-receipt')]);
+    expect(ready.safeMetadata).toMatchObject({ readinessEvidence: 'arca_api_verification', exportPointOfSale: 8 });
+    expect(arcaOnboardingNextActions(run)).toEqual([]);
+  });
+
   test('rejects out-of-order transitions and cannot become ready from zk evidence alone', () => {
     const run = createRun();
     expect(() => apply(run, {

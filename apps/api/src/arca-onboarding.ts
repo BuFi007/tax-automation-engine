@@ -28,7 +28,10 @@ export type ArcaOnboardingMutationResult<T = undefined> = Readonly<{
 }>;
 
 export type ManualArcaOnboardingCommand = Exclude<ArcaOnboardingCommand,
-  Readonly<{ kind: 'start_zk_evidence' }> | Readonly<{ kind: 'record_zk_evidence' }>>;
+  Readonly<{ kind: 'start_zk_evidence' }> | Readonly<{ kind: 'record_zk_evidence' }>
+  | Readonly<{ kind: 'record_api_verified_readiness' }>>;
+
+const INTERNAL_COMMANDS: readonly string[] = ['start_zk_evidence', 'record_zk_evidence', 'record_api_verified_readiness'];
 
 export class ArcaOnboardingService {
   private workbenchPublishTail: Promise<void> = Promise.resolve();
@@ -69,7 +72,8 @@ export class ArcaOnboardingService {
         'credentials_and_browser_cookies_are_never_collected',
         'user_confirms_account_and_permission_changes_at_action_time',
         'reclaim_proves_outcomes_but_does_not_create_arca_permissions',
-        'ready_requires_authoritative_wsfex_wsfe_verification_and_zk_evidence',
+        'ready_requires_authoritative_wsfex_wsfe_verification',
+        'reclaim_witness_proof_is_optional',
       ],
     };
   }
@@ -115,12 +119,30 @@ export class ArcaOnboardingService {
     actorId: string;
     occurredAt: string;
   }>): ArcaOnboardingMutationResult {
-    const replay = this.store.getArcaOnboardingRunByIdempotency(input.onboardingId, input.command.idempotencyKey);
+    if (INTERNAL_COMMANDS.includes(input.command.kind)) throw new Error('ARCA_ONBOARDING_INTERNAL_COMMAND_REQUIRED');
+    return this.applyCommand(input.onboardingId, input.command, input.actorId, input.occurredAt);
+  }
+
+  /**
+   * Mark the run ready from the WSFE/WSFEX receipts the signers already
+   * recorded. Carries no evidence of its own, so it cannot stand in for them.
+   */
+  recordApiVerifiedReadiness(input: Readonly<{
+    onboardingId: string;
+    actorId: string;
+    idempotencyKey: string;
+    occurredAt: string;
+  }>): ArcaOnboardingMutationResult {
+    return this.applyCommand(input.onboardingId, { kind: 'record_api_verified_readiness', idempotencyKey: input.idempotencyKey }, input.actorId, input.occurredAt);
+  }
+
+  private applyCommand(onboardingId: string, command: ArcaOnboardingCommand, actorId: string, occurredAt: string): ArcaOnboardingMutationResult {
+    const replay = this.store.getArcaOnboardingRunByIdempotency(onboardingId, command.idempotencyKey);
     if (replay) return result(replay, true, undefined);
-    const current = this.getRun(input.onboardingId);
-    const applied = applyArcaOnboardingCommand(current, input.command, input.actorId, input.occurredAt);
+    const current = this.getRun(onboardingId);
+    const applied = applyArcaOnboardingCommand(current, command, actorId, occurredAt);
     if (!applied.event) return result(applied.run, true, undefined);
-    return result(this.persist(applied.run, applied.event, input.occurredAt), false, undefined);
+    return result(this.persist(applied.run, applied.event, occurredAt), false, undefined);
   }
 
   /** Import an already configured issuer only after live certificate and official point checks. */

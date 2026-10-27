@@ -271,7 +271,7 @@ export type ArcaSetupNextStep =
   | Readonly<{ kind: 'provision_boundary' }>
   | Readonly<{ kind: 'apply_onboarding'; command: 'login' | 'service_adherence' | 'point_of_sale' | 'ws_delegation' }>
   | Readonly<{ kind: 'verify_api'; service: ArcaWebService }>
-  | Readonly<{ kind: 'request_proof' }>
+  | Readonly<{ kind: 'record_readiness' }>
   | Readonly<{ kind: 'connected' }>
   | Readonly<{ kind: 'stop'; phase: ArcaSetupPhase }>;
 
@@ -581,7 +581,7 @@ export function applyArcaSetupCommand(
   return finish(execution, next, command, actorId, occurredAt, metadata);
 }
 
-/** Mark an execution connected only from a ready onboarding run. */
+/** Mark an execution connected only from a run ARCA's web services verified. */
 export function connectArcaSetupExecution(
   execution: ArcaSetupExecutionV1,
   run: ArcaOnboardingRunV1,
@@ -589,8 +589,12 @@ export function connectArcaSetupExecution(
 ): Readonly<{ execution: ArcaSetupExecutionV1; event: ArcaSetupEventV1 | null }> {
   if (run.onboardingId !== execution.onboardingId || run.workspaceId !== execution.workspaceId)
     throw new Error('ARCA_SETUP_RUN_MISMATCH');
-  if (run.status !== 'ready' || !run.zkEvidence || !execution.requestedServices.every(service => run.apiVerification[service]))
+  if (run.status !== 'ready' || !execution.requestedServices.every(service =>
+    run.apiVerification[service] && SHA256.test(run.apiVerificationReceipts?.[service] ?? '')))
     throw new Error('ARCA_SETUP_NOT_VERIFIED');
+  if (execution.chosenDomesticPointOfSale !== null && run.requestedServices.includes('wsfe')
+    && run.domesticPointOfSale?.number !== execution.chosenDomesticPointOfSale)
+    throw new Error('ARCA_POINT_OF_SALE_VERIFICATION_MISMATCH');
   const key = `connected:${run.revision}`;
   if (execution.processedKeys.includes(key)) return { execution, event: null };
   return finish(execution, { ...execution, phase: 'connected', blocker: null, decision: null, currentOrder: null }, {
@@ -641,7 +645,8 @@ function planArcaSetupStep(
     const service = execution.requestedServices.find(candidate => !run.apiVerification[candidate]);
     return service ? { kind: 'verify_api', service } : { kind: 'await_order' };
   }
-  if (run.currentStep === 'zk_evidence') return { kind: 'request_proof' };
+  // ARCA's web-service answers are the readiness evidence; a Reclaim proof is optional.
+  if (run.currentStep === 'zk_evidence') return { kind: 'record_readiness' };
 
   if (!done.has('authenticate')) return dispatch('authenticate', { intendedAlias: execution.intendedAlias });
   if (run.currentStep === 'login_handoff' || run.currentStep === 'human_auth')
